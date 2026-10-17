@@ -3863,6 +3863,89 @@ def test_scripted_exit_writes_back_unsaved_disc_writes():
     return True
 
 
+# Writes sector 0 of the Symbiface II IDE master (ports &FD08-&FD0F, the ATA
+# register file) full of 0xA5, then parks at IDE_WRITE_PARK.
+IDE_WRITE_SECTOR_0 = bytes([
+    0xF3,                    # di
+    0x01, 0x0A, 0xFD,        # ld bc,&FD0A
+    0x3E, 0x01,              # ld a,1
+    0xED, 0x79,              # out (c),a      sector count = 1
+    0xAF,                    # xor a
+    0x0C, 0xED, 0x79,        # LBA low = 0
+    0x0C, 0xED, 0x79,        # LBA mid = 0
+    0x0C, 0xED, 0x79,        # LBA high = 0
+    0x0C, 0x3E, 0xE0, 0xED, 0x79,  # drive/head: master, LBA
+    0x0C, 0x3E, 0x30, 0xED, 0x79,  # command: WRITE SECTORS
+    0x0E, 0x08,              # ld c,&08       data register
+    0x3E, 0xA5,              # ld a,&A5
+    0x16, 0x02,              # ld d,2
+    0x1E, 0x00,              # ld e,0         2 x 256 bytes
+    0xED, 0x79,              # loop: out (c),a
+    0x1D,                    # dec e
+    0x20, 0xFB,              # jr nz,loop
+    0x15,                    # dec d
+    0x20, 0xF8,              # jr nz,loop
+    0x18, 0xFE,              # park: jr park
+])
+IDE_WRITE_PARK = 0x4000 + len(IDE_WRITE_SECTOR_0) - 2
+
+
+def test_scripted_exit_writes_back_unsaved_ide_writes():
+    """An exit nobody is asked about writes the Symbiface IDE image's unsaved
+    writes back, as it does a disc's (beads-ssqd). The board works on a copy
+    of the image that only a machine rebuild wrote back, so IPC `quit` and a
+    signal dropped every sector the CPC had written."""
+    print("Running scripted-exit IDE write-back test...")
+    cases = ['quit', 'sigterm'] if os.name == 'posix' else ['quit']
+    for how in cases:
+        with EmulatorRunner() as emu, tempfile.TemporaryDirectory() as td:
+            img = os.path.join(td, 'ide.img')
+            with open(img, 'wb') as f:
+                f.write(bytes(64 * 1024))
+            if not emu.start('-O', 'peripheral.symbiface=1',
+                             '-O', f'peripheral.ide_master={img}'):
+                print(f"FAIL: could not start emulator ({how})")
+                return False
+            proc = emu.process
+            emu.ipc.pause()
+            ok, resp = emu.ipc.send_command(
+                'mem write 0x4000 ' + IDE_WRITE_SECTOR_0.hex().upper())
+            if not ok:
+                print(f"FAIL: {how}: mem write: {resp}")
+                return False
+            ok, resp = emu.ipc.send_command('reg set PC 0x4000')
+            if not ok:
+                print(f"FAIL: {how}: reg set PC: {resp}")
+                return False
+            if not emu.ipc.wait_pc(IDE_WRITE_PARK, 5000):
+                print(f"FAIL: {how}: the IDE write never finished")
+                return False
+            if _read_bytes(img)[:512] != bytes(512):
+                print(f"FAIL: {how}: the write reached the file before the "
+                      "exit; the test proves nothing")
+                return False
+            if how == 'quit':
+                emu.ipc.send_command('quit')
+            else:
+                proc.send_signal(signal.SIGTERM)
+            try:
+                proc.wait(timeout=30)
+            except subprocess.TimeoutExpired:
+                print(f"FAIL: {how}: the emulator did not exit")
+                return False
+            data = _read_bytes(img)
+            if data[:512] != b'\xA5' * 512:
+                print(f"FAIL: {how}: the IDE image's unsaved write was "
+                      f"dropped at exit; sector 0 starts {data[:8].hex()}")
+                return False
+            if len(data) != 64 * 1024 or data[512:] != bytes(len(data) - 512):
+                print(f"FAIL: {how}: the rest of the IDE image changed")
+                return False
+    print("PASS: IPC quit and SIGTERM write the IDE image's unsaved writes "
+          "back")
+    return True
+
+
 def test_profile_load_missing_keeps_running():
     """profile load ERR must restore a running machine (beads-csl7.2).
 
@@ -4709,6 +4792,7 @@ def main():
         test_zipped_disc_from_the_command_line_writes_beside_the_archive,
         test_zipped_disc_unwritable_directory_leaves_the_archive_alone,
         test_scripted_exit_writes_back_unsaved_disc_writes,
+        test_scripted_exit_writes_back_unsaved_ide_writes,
         test_headless_runs_subcycle_engine,
         test_headless_honours_the_speed_limiter,
         test_programmatic_quit_exit_codes,

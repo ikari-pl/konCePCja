@@ -43,7 +43,8 @@ void subcycle_bridge_reset();
 void subcycle_bridge_stop();
 
 /* Exit: write each disc's unsaved writes back to the file it came from, as an
- * eject does (a disc read out of an archive to a DSK beside it). The frame
+ * eject does (a disc read out of an archive to a DSK beside it), and the
+ * Symbiface IDE images' writes back to theirs. The frame
  * runner must be gone or between frames. No-op when the engine is inactive. */
 void subcycle_bridge_write_back_discs();
 
