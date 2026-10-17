@@ -26,6 +26,14 @@ inline bool koncpc_quit_should_prompt(bool headless, bool ask_if_unsaved,
   return !headless && !dialogs_suppressed && ask_if_unsaved && drive_altered;
 }
 
+// Whether an exit writes a disc's unsaved writes back to its file, as an
+// eject does. Every exit nobody was asked about does: a real CPC's writes are
+// on the disc. Only a user who was shown the dialog and answered "Quit
+// anyway?" with yes has chosen to drop them (a "no" never reaches the exit).
+inline bool koncpc_quit_writes_back_discs(bool user_was_asked) {
+  return !user_was_asked;
+}
+
 // A boolean KONCPC_* environment switch: unset, empty, or one of the usual
 // off spellings ("0", "false", "no", "off", any case) is off; anything else is
 // on. Spelling `KONCPC_NO_DIALOGS=false` and getting dialogs suppressed is the

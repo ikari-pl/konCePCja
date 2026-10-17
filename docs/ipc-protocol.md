@@ -92,7 +92,7 @@ See CLAUDE.md § Telnet Console for architecture details and key mappings.
 | `ping` | Returns `OK pong` |
 | `version` | Returns version string |
 | `help` | Lists all commands |
-| `quit [code]` | Exit emulator with given code (default 0, reported modulo 256 — all a process exit status carries, so `quit 256` is 0). Never asks about unsaved disk changes: a scripted quit has nobody to answer a dialog, so the disk is left as it is on the host |
+| `quit [code]` | Exit emulator with given code (default 0, reported modulo 256 — all a process exit status carries, so `quit 256` is 0). Never asks about unsaved disk changes: a scripted quit has nobody to answer a dialog, so a disc's unsaved writes are written back to its own file, as an eject writes them (a disc loaded from an archive goes to a DSK beside it) |
 | `pause` | Pause emulation |
 | `run` | Resume emulation. `ERR 409 pause-lease-held` if a pause lease still owns the machine |
 | `reset` | Hard reset the CPC |

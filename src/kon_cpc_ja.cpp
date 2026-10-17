@@ -3955,7 +3955,7 @@ void loadSnapshot() {
 bool driveAltered() { return driveA.altered || driveB.altered; }
 
 namespace {
-void doCleanUp() {
+void doCleanUp(bool write_back_discs) {
 #ifdef _WIN32
   timeEndPeriod(1);
 #endif
@@ -4027,6 +4027,10 @@ void doCleanUp() {
     g_z80_thread.detach();
   }
 
+  // The machine is stopped for good: the eject below is only queued and is
+  // never applied, so a disc's unsaved writes are written back here or not
+  // at all (beads-lgul).
+  if (write_back_discs) subcycle_bridge_write_back_discs();
   printer_stop();
   emulator_shutdown();
   dsk_eject(&driveA);
@@ -4106,9 +4110,9 @@ void cleanExit(int returnCode, bool askIfUnsaved) {
   }
 
   // Main thread (or early-init pre-capture): safe to prompt and tear down.
-  if (koncpc_quit_should_prompt(g_headless, askIfUnsaved, driveAltered(),
-                                g_no_dialogs) &&
-      !userConfirmsQuitWithoutSaving()) {
+  const bool asked = koncpc_quit_should_prompt(g_headless, askIfUnsaved,
+                                               driveAltered(), g_no_dialogs);
+  if (asked && !userConfirmsQuitWithoutSaving()) {
     return;
   }
   // Persist settings on a clean exit, so a change survives without an
@@ -4119,7 +4123,7 @@ void cleanExit(int returnCode, bool askIfUnsaved) {
   if (returnCode == 0 && !g_headless && g_config_loaded) {
     koncpc_save_configuration_preserving_intent();
   }
-  doCleanUp();
+  doCleanUp(koncpc_quit_writes_back_discs(asked));
   _exit(returnCode);
 }
 
