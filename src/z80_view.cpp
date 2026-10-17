@@ -343,6 +343,9 @@ Z80RunUntilResult run_until_ephemeral(
         return Z80RunUntilResult::OtherBreak;
       }
       z80_remove_ephemeral_breakpoints();
+      // The frame in flight runs on after the pause: a Timeout is a stop,
+      // so answer once it has happened (beads-veb0).
+      cpc_wait_announced_stopped(should_abort);
       return Z80RunUntilResult::Timeout;
     }
     std::this_thread::sleep_for(std::chrono::milliseconds(1));

@@ -508,20 +508,13 @@ constexpr int kWaitDefaultTimeoutMs = 5000;
 // How often a frame-step wait looks at its stop conditions.
 constexpr int kFrameStepPollMs = 10;
 
+bool ipc_server_stopping();
+
 // Pause the machine and return once the stop has happened, not just been
-// asked for. cpc_pause() only stops the machine between frames: in the
-// threaded loop the frame in flight runs to its end first, and a reply sent
-// before then calls a machine paused that is still running (beads-wrkg). The
-// stop is announced when the frame runner parks. Bounded, since a pause lease
-// another actor holds delays the announcement until it lets go.
+// asked for (cpc_wait_announced_stopped(), beads-wrkg).
 void pause_until_announced() {
   cpc_pause();
-  auto const deadline = std::chrono::steady_clock::now() +
-                        std::chrono::milliseconds(cpc_idle_timeout_ms());
-  while (!cpc_announced_stopped() &&
-         std::chrono::steady_clock::now() < deadline) {
-    std::this_thread::sleep_for(std::chrono::microseconds(200));
-  }
+  cpc_wait_announced_stopped(ipc_server_stopping);
 }
 }  // namespace
 
@@ -2023,7 +2016,7 @@ std::string handle_command(const std::string& line) {
     }
 
     if (cmd == "pause") {
-      cpc_pause();
+      pause_until_announced();
       return ok_with_context();
     }
     if (cmd == "run") {
