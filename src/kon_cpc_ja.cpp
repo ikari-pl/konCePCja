@@ -2332,6 +2332,15 @@ bool cpc_run(const CpcRunCause& cause) {
   return true;
 }
 
+void cpc_auto_pause(CpcAutoPauseSignal signal) {
+  if (!CPC.auto_pause) return;
+  if (signal == CpcAutoPauseSignal::Left) {
+    cpc_pause();
+  } else {
+    cpc_run();
+  }
+}
+
 CpcWalkRun cpc_walk_run(uint64_t& epoch) {
   std::scoped_lock const lock(g_pause_mutex);
   if (g_walk_interrupted.load(std::memory_order_relaxed)) {
@@ -5827,9 +5836,7 @@ int koncpc_main(int argc, char** argv) {
           }
           break;
         case SDL_EVENT_WINDOW_FOCUS_GAINED:
-          if (CPC.auto_pause) {
-            cpc_run();
-          }
+          cpc_auto_pause(CpcAutoPauseSignal::Returned);
           // In docked mode, refocus CPC Screen so keyboard routes to emulator
           // Only on app focus gain — not mouse enter, which fires during
           // normal UI interaction and would steal focus from popups/menus.
@@ -5838,16 +5845,12 @@ int koncpc_main(int argc, char** argv) {
           }
           break;
         case SDL_EVENT_WINDOW_MOUSE_ENTER:
-          if (CPC.auto_pause) {
-            cpc_run();
-          }
+          cpc_auto_pause(CpcAutoPauseSignal::Returned);
           break;
         case SDL_EVENT_WINDOW_FOCUS_LOST:
         case SDL_EVENT_WINDOW_MOUSE_LEAVE:
         case SDL_EVENT_WINDOW_MINIMIZED:
-          if (CPC.auto_pause) {
-            cpc_pause();
-          }
+          cpc_auto_pause(CpcAutoPauseSignal::Left);
           break;
 
         case SDL_EVENT_QUIT:
