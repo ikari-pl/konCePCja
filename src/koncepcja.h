@@ -903,6 +903,11 @@ bool cpc_resume_applied(const CpcRunCause& cause = {});
 // when the last holder lets go, unless somebody stops it first. True when
 // the machine is running on return, false when a lease deferred it.
 bool cpc_run(const CpcRunCause& cause = {});
+// system.auto_pause: what the main window tells the machine. Left: the
+// window lost focus or the pointer, or was minimised. Returned: it got focus
+// or the pointer back. No-op while CPC.auto_pause is 0. Main thread only.
+enum class CpcAutoPauseSignal : uint8_t { Left, Returned };
+void cpc_auto_pause(CpcAutoPauseSignal signal);
 // The resume epoch: a number that changes whenever somebody runs a stopped
 // machine. A pause lease that pauses a running machine and puts it back does
 // not change it (the run it interrupted goes on), so the holder of an epoch
