@@ -3863,6 +3863,49 @@ def test_scripted_exit_writes_back_unsaved_disc_writes():
     return True
 
 
+def test_exit_puts_the_zipped_disc_written_back_on_recent():
+    """A GUI exit with code 0 saves the config. A zipped disc's writes go to
+    a DSK beside the archive, and that DSK goes on the Recent list, as on an
+    eject; at exit the write-back ran after the config was saved, so the
+    entry never reached the file (beads-8c1o)."""
+    print("Running exit Recent-list test...")
+    with EmulatorRunner() as emu, tempfile.TemporaryDirectory() as td:
+        if not emu.start():
+            print("FAIL: could not start emulator")
+            return False
+        if not emu.ipc.is_threaded():
+            # Only a GUI exit saves the config: -H never rewrites it.
+            print("SKIP: only a GUI exit saves the config")
+            return True
+        dirty = _dirty_zipped_disc_in_drive_a(emu, td, b'ON-RECENT-AT-EXIT')
+        if dirty is None:
+            return False
+        written = os.path.join(td, 'Game.dsk')
+        if os.path.exists(written):
+            print("FAIL: Game.dsk exists before the exit; the test proves "
+                  "nothing")
+            return False
+        emu.ipc.send_command('quit')
+        try:
+            rc = emu.process.wait(timeout=30)
+        except subprocess.TimeoutExpired:
+            print("FAIL: the emulator did not exit")
+            return False
+        if rc != 0 or not os.path.exists(written):
+            print(f"FAIL: exit {rc}, files {sorted(os.listdir(td))}")
+            return False
+        recent = None
+        for line in Path(emu._cfg_tmp.name).read_text().splitlines():
+            if line.startswith('mru_disk_00='):
+                recent = line.split('=', 1)[1].strip()
+        if recent is None or \
+                os.path.realpath(recent) != os.path.realpath(written):
+            print(f"FAIL: Recent starts with {recent!r}, not {written}")
+            return False
+    print("PASS: the DSK a zipped disc was written to at exit is on Recent")
+    return True
+
+
 # Writes sector 0 of the Symbiface II IDE master (ports &FD08-&FD0F, the ATA
 # register file) full of 0xA5, then parks at IDE_WRITE_PARK.
 IDE_WRITE_SECTOR_0 = bytes([
@@ -4792,6 +4835,7 @@ def main():
         test_zipped_disc_from_the_command_line_writes_beside_the_archive,
         test_zipped_disc_unwritable_directory_leaves_the_archive_alone,
         test_scripted_exit_writes_back_unsaved_disc_writes,
+        test_exit_puts_the_zipped_disc_written_back_on_recent,
         test_scripted_exit_writes_back_unsaved_ide_writes,
         test_headless_runs_subcycle_engine,
         test_headless_honours_the_speed_limiter,
