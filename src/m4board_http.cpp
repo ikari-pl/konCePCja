@@ -1348,7 +1348,7 @@ void M4HttpServer::drain_pending() {
   }
   if (pending_pause_toggle.exchange(false)) {
     if (CPC.paused)
-      cpc_resume();
+      cpc_run();  // not dropped under another actor's lease (beads-jlbg)
     else
       cpc_pause();
     LOG_INFO("M4 HTTP: " << (CPC.paused ? "paused" : "resumed"));

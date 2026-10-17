@@ -1,6 +1,7 @@
 #include "kcpc/kcpc_host.h"
 
 #include <atomic>
+#include <cctype>
 #include <chrono>
 #include <condition_variable>
 #include <cstddef>
@@ -8,16 +9,20 @@
 #include <cstdlib>
 #include <cstring>
 #include <exception>
+#include <filesystem>
 #include <functional>
 #include <mutex>
 #include <optional>
 #include <string>
+#include <system_error>
 #include <thread>
 #include <utility>
 #include <vector>
 
 #include "autotype.h"
 #include "emu_frame.h"
+#include "errors.h"
+#include "host_state.h"
 #include "hw/asic.h"
 #include "hw/crtc.h"
 #include "hw/fdc.h"
@@ -25,7 +30,11 @@
 #include "hw/memory.h"
 #include "hw/probe.h"
 #include "hw/psg.h"
+#include "hw/tape.h"
 #include "hw/z80.h"
+#include "hw_views.h"
+#include "imgui_ui_testable.h"
+#include "ipc_mru.h"
 #include "iui_host.h"
 #include "kcpc/kcpc_gate.h"
 #include "kcpc/kcpc_server.h"
@@ -39,9 +48,12 @@
 #include "subcycle_bridge.h"
 #include "symfile.h"
 #include "z80_view.h"
+#include "zip_archive.h"
 
 extern t_CPC CPC;
 extern t_CRTC CRTC;
+extern t_drive driveA;
+extern t_drive driveB;
 extern byte* memmap_ROM[256];
 
 namespace {
@@ -354,14 +366,36 @@ static_assert(kcpc::kMediaSlots == kMediaSlotCount);
 // A slot got a different medium, or lost it: a load or an eject on whichever
 // thread did it, or the frame runner giving the machine a queued swap. So
 // this only posts; what the slot holds is asked for when the event is sent.
+//
+// A change a request of this port makes happens on that request's thread,
+// under its lease, the machine's half included: the request is named in the
+// event, so that its client is sent the event after the reply.
+thread_local kcpc::Cause t_media_cause;
+
+struct MediaCauseScope {
+  MediaCauseScope(std::uint32_t client, std::uint32_t request) {
+    t_media_cause = kcpc::Cause{client, request};
+  }
+  ~MediaCauseScope() { t_media_cause = kcpc::Cause{}; }
+  MediaCauseScope(const MediaCauseScope&) = delete;
+  MediaCauseScope& operator=(const MediaCauseScope&) = delete;
+};
+
 void on_media_changed(::MediaSlot slot, std::uint64_t generation) {
   kcpc::Event event;
   event.opcode = kcpc::Opcode::kEvtMediaChanged;
   event.frame = g_gate.frame();
   event.slot = static_cast<std::uint8_t>(slot);
   event.generation = generation;
+  event.cause_client = t_media_cause.client;
+  event.cause_request = t_media_cause.request;
   g_kcpc_server.post(event);
 }
+
+// The CONFIG_APPLY in progress, if one is: the rebuild it asked for runs on
+// the main thread, so the request cannot travel in thread-local storage.
+std::atomic<std::uint32_t> g_apply_client{0};
+std::atomic<std::uint32_t> g_apply_request{0};
 
 // The machine as MACHINE_INFO describes it. The caller has made sure nothing
 // is clocking or rebuilding it.
@@ -393,6 +427,8 @@ void on_machine_rebuilt(bool was_paused) {
   stamp.frame = event.frame;
   stamp.paused = was_paused;
   if (!fill_machine_info(event.machine, stamp)) return;
+  event.cause_client = g_apply_client.load(std::memory_order_acquire);
+  event.cause_request = g_apply_request.load(std::memory_order_acquire);
   g_kcpc_server.post(event);
 }
 
@@ -1080,6 +1116,453 @@ Status kcpc_host_mem_write(const kcpc::MemWriteRequest& request,
 
 namespace {
 
+static_assert(static_cast<int>(kcpc::ConfigEffect::kNextFrame) ==
+              static_cast<int>(IpcConfigEffect::NextFrame));
+static_assert(static_cast<int>(kcpc::ConfigEffect::kStaged) ==
+              static_cast<int>(IpcConfigEffect::Staged));
+
+// The extension of `path`, lower case and with its dot, or nothing.
+std::string lower_extension(const std::string& path) {
+  auto const dot = path.find_last_of('.');
+  auto const slash = path.find_last_of("/\\");
+  if (dot == std::string::npos || (slash != std::string::npos && dot < slash)) {
+    return {};
+  }
+  std::string ext = path.substr(dot);
+  for (char& c : ext) {
+    c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+  }
+  return ext;
+}
+
+DRIVE drive_of(kcpc::MediaSlot slot) {
+  switch (slot) {
+    case kcpc::MediaSlot::kDriveA:
+      return DRIVE::DSK_A;
+    case kcpc::MediaSlot::kDriveB:
+      return DRIVE::DSK_B;
+    case kcpc::MediaSlot::kTape:
+      return DRIVE::TAPE;
+    case kcpc::MediaSlot::kCartridge:
+      break;
+  }
+  return DRIVE::CARTRIDGE;
+}
+
+// Whether the file at `path` is of a kind `slot` takes, by its name: for an
+// archive, by the name of a member. `why` says what is wrong otherwise.
+bool fits_slot(kcpc::MediaSlot slot, const std::string& path,
+               std::string& why) {
+  std::string const accepted = drive_extensions(drive_of(slot));
+  std::string const ext = lower_extension(path);
+  if (ext == ".zip") {
+    zip::t_zip_info archive;
+    archive.filename = path;
+    archive.extensions = accepted;
+    if (zip::dir(&archive) != 0 || archive.filesOffsets.empty()) {
+      why = "the archive holds nothing this slot takes (" + accepted + ")";
+      return false;
+    }
+    return true;
+  }
+  if (extension_in_dotted_list(accepted, ext)) return true;
+  why = slot == kcpc::MediaSlot::kDriveB &&
+                extension_in_dotted_list(drive_extensions(DRIVE::DSK_A), ext)
+            ? "a flux image goes in drive A only"
+            : "this slot takes " + accepted;
+  return false;
+}
+
+Status load_status(int rc) {
+  if (rc == 0) return Status::kOk;
+  return rc == ERR_FILE_NOT_FOUND ? Status::kNotFound : Status::kBadPayload;
+}
+
+// A disc into drive `unit`. Under a lease, alone.
+Status insert_disc(std::uint8_t unit, const std::string& path) {
+  t_slot& slot = unit == 0 ? CPC.driveA : CPC.driveB;
+  slot.file = path;
+  slot.zip_index = 0;
+  int const rc = file_load(slot);
+  // The loader queued the machine's half for the next frame boundary. Nothing
+  // is clocking the machine: give it the disc now, so that the reply is sent
+  // with the disc in the drive. The disc that leaves is written back to its
+  // own file there: the bridge remembers which file each drive's disc is.
+  subcycle_bridge_apply_pending_media();
+  if (rc != 0) slot.file.clear();
+  return load_status(rc);
+}
+
+Status insert_tape(const std::string& path) {
+  CPC.tape.file = path;
+  CPC.tape.zip_index = 0;
+  int const rc = file_load(CPC.tape);
+  subcycle_bridge_apply_pending_media();
+  tape_scan_blocks();  // the block table TAPE_CONTROL seeks by
+  if (rc != 0) CPC.tape.file.clear();
+  return load_status(rc);
+}
+
+Status insert_cartridge(const std::string& path) {
+  constexpr unsigned kModel6128Plus = 3;
+  if (CPC.model < kModel6128Plus) return Status::kNotPresent;
+  // The load and the re-attach; a file that is refused changes nothing.
+  return load_status(cpc_cartridge_swap(path));
+}
+
+// The deck, as MEDIA_INFO and TAPE_CONTROL report it. Nothing is clocking
+// the machine.
+void read_tape(const subcycle::Machine& machine, kcpc::TapeState& out) {
+  TapeRegs regs{};
+  tape_peek(machine.tape(), &regs);
+  out.playing = CPC.tape_play_button != 0 ? 1 : 0;
+  out.motor = regs.motor != 0 ? 1 : 0;
+  out.blocks = static_cast<std::uint32_t>(g_host_tape.block_offsets.size());
+  out.block = regs.attached != 0 ? regs.block : 0;
+}
+
+}  // namespace
+
+Status kcpc_host_media_insert(std::uint32_t client, std::uint32_t request,
+                              const kcpc::MediaInsertRequest& insert,
+                              std::uint64_t& generation, std::string& message) {
+  if (!kcpc::media_slot_known(insert.slot) || insert.flags != 0) {
+    return Status::kBadPayload;
+  }
+  if (!ipc_is_safe_path(insert.path)) {
+    message = "a path must not be empty or lead out through '..'";
+    return Status::kBadPayload;
+  }
+  auto const slot = static_cast<kcpc::MediaSlot>(insert.slot);
+  // Absolute, as it goes onto the Recent list and into the events.
+  std::string const path = ipc_mru_canonical_path(insert.path);
+  std::error_code ec;
+  if (!std::filesystem::is_regular_file(path, ec)) return Status::kNotFound;
+  if (!fits_slot(slot, path, message)) return Status::kBadPayload;
+
+  MediaCauseScope const named(client, request);
+  CpcRunCause const cause = cause_of(client, request);
+  Status status = Status::kInternal;
+  bool const ran = alone_under_lease(
+      [&](bool /*was_paused*/) {
+        subcycle::Machine const* machine = subcycle_bridge_machine();
+        if (machine == nullptr) return;
+        switch (slot) {
+          case kcpc::MediaSlot::kDriveA:
+          case kcpc::MediaSlot::kDriveB:
+            status = insert_disc(insert.slot, path);
+            break;
+          case kcpc::MediaSlot::kTape:
+            status = insert_tape(path);
+            break;
+          case kcpc::MediaSlot::kCartridge:
+            status = insert_cartridge(path);
+            break;
+        }
+      },
+      [&](CpcPauseLease& lease) {
+        // A new cartridge starts from a reset, as it does from the menu. Not
+        // inside the change: a reset takes a lease of its own.
+        if (status == Status::kOk && slot == kcpc::MediaSlot::kCartridge) {
+          emulator_reset(cause);
+        }
+        lease.restore_run_state();
+      });
+  if (!ran) return Status::kBusy;
+  generation = media_generation(static_cast<::MediaSlot>(insert.slot));
+  if (status != Status::kOk) return status;
+  switch (slot) {
+    case kcpc::MediaSlot::kDriveA:
+    case kcpc::MediaSlot::kDriveB:
+      ipc_mru_stage(&t_CPC::mru_disks, path);
+      break;
+    case kcpc::MediaSlot::kTape:
+      ipc_mru_stage(&t_CPC::mru_tapes, path);
+      break;
+    case kcpc::MediaSlot::kCartridge:
+      ipc_mru_stage(&t_CPC::mru_carts, path);
+      // What the in-process debugger had decoded is another program's.
+      ui_host().debugger_memory_changed();
+      break;
+  }
+  return Status::kOk;
+}
+
+Status kcpc_host_media_eject(std::uint32_t client, std::uint32_t request,
+                             std::uint8_t slot_number,
+                             std::uint64_t& generation, std::string& message) {
+  if (!kcpc::media_slot_known(slot_number)) return Status::kBadPayload;
+  auto const slot = static_cast<kcpc::MediaSlot>(slot_number);
+  if (slot == kcpc::MediaSlot::kCartridge) {
+    message =
+        "a cartridge is replaced, not ejected: a 6128+ does not run "
+        "without one";
+    return Status::kBadPayload;
+  }
+  MediaCauseScope const named(client, request);
+  Status const status = changed([&](const kcpc::Stamp& /*taken*/) {
+    if (subcycle_bridge_machine() == nullptr) return Status::kInternal;
+    if (slot == kcpc::MediaSlot::kTape) {
+      tape_eject();
+      subcycle_bridge_apply_pending_media();
+      CPC.tape.file.clear();
+      tape_scan_blocks();  // no tape, no blocks
+      return Status::kOk;
+    }
+    bool const drive_a = slot == kcpc::MediaSlot::kDriveA;
+    dsk_eject(drive_a ? &driveA : &driveB);
+    // The machine's half now, before the slot forgets its file: that is
+    // where a disc with unsaved writes is written back to.
+    subcycle_bridge_apply_pending_media();
+    (drive_a ? CPC.driveA : CPC.driveB).file.clear();
+    return Status::kOk;
+  });
+  generation = media_generation(static_cast<::MediaSlot>(slot_number));
+  return status;
+}
+
+Status kcpc_host_media_info(kcpc::MediaInfo& info) {
+  if (!kcpc::media_slot_known(info.slot)) return Status::kBadPayload;
+  auto const slot = static_cast<kcpc::MediaSlot>(info.slot);
+  std::uint8_t flags = 0;
+  kcpc::TapeState tape;
+  Status const status = gated(sizeof(info), [&](const kcpc::Stamp& /*taken*/) {
+    subcycle::Machine const* machine = subcycle_bridge_machine();
+    if (machine == nullptr) return Status::kInternal;
+    if (slot == kcpc::MediaSlot::kTape) {
+      read_tape(*machine, tape);
+      return Status::kOk;
+    }
+    if (slot == kcpc::MediaSlot::kCartridge) return Status::kOk;
+    const Device* fdc = machine->fdc();
+    std::uint8_t const unit = info.slot;
+    if (fdc_media_present_unit(fdc, unit) == 0) return Status::kOk;
+    // What ST3's WP line says: no image the FDC can write to (a flux
+    // dump without an overlay).
+    std::size_t len = 0;
+    if (fdc_media_image_unit(fdc, unit, len) == nullptr) {
+      flags |= kcpc::kMediaFlagWriteProtected;
+    }
+    if (fdc_media_dirty_unit(fdc, unit) != 0) {
+      flags |= kcpc::kMediaFlagUnsaved;
+    }
+    if (unit == 0 && fdc_media_flux_scp(fdc, len) != nullptr) {
+      flags |= kcpc::kMediaFlagFlux;
+    }
+    return Status::kOk;
+  });
+  if (status != Status::kOk) return status;
+  // What the host last put in the slot, as the events say it: a lock, so not
+  // on the frame runner.
+  MediaState state = media_state(static_cast<::MediaSlot>(info.slot));
+  info.present = state.present ? 1 : 0;
+  info.flags = flags;
+  info.generation = state.generation;
+  info.path = std::move(state.path);
+  info.tape = tape;
+  return Status::kOk;
+}
+
+Status kcpc_host_tape_control(const kcpc::TapeControlRequest& control,
+                              kcpc::TapeState& tape) {
+  if (!kcpc::tape_action_known(control.action)) return Status::kBadPayload;
+  return changed([&](const kcpc::Stamp& /*taken*/) {
+    subcycle::Machine* machine = subcycle_bridge_machine();
+    if (machine == nullptr) return Status::kInternal;
+    // A tape somebody loaded a moment ago may still be waiting for a frame
+    // boundary.
+    subcycle_bridge_apply_pending_media();
+    TapeRegs regs{};
+    tape_peek(machine->tape(), &regs);
+    if (regs.attached == 0) return Status::kNotPresent;
+    constexpr byte kPlayPressed = 0x10;
+    switch (static_cast<kcpc::TapeAction>(control.action)) {
+      case kcpc::TapeAction::kStop:
+        CPC.tape_play_button = 0;
+        machine->tape_play_button(false);
+        break;
+      case kcpc::TapeAction::kPlay:
+        // The button the F4 key and the tape window press; the deck follows
+        // it at the start of every frame, and here at once.
+        CPC.tape_play_button = kPlayPressed;
+        machine->tape_play_button(true);
+        break;
+      case kcpc::TapeAction::kRewind:
+        machine->tape_rewind_deck();
+        break;
+      case kcpc::TapeAction::kSeek:
+        if (control.block >= g_host_tape.block_offsets.size()) {
+          return Status::kOutOfRange;
+        }
+        // The deck is live wiring and must not be moved under a running
+        // frame; the tape window defers its seeks to a frame boundary for
+        // that. Nothing is clocking the machine here.
+        machine->tape_seek(control.block);
+        break;
+    }
+    read_tape(*machine, tape);
+    return Status::kOk;
+  });
+}
+
+Status kcpc_host_snapshot_save(const std::string& path, kcpc::Stamp& stamp,
+                               std::string& message) {
+  if (!ipc_is_safe_path(path)) {
+    message = "a path must not be empty or lead out through '..'";
+    return Status::kBadPayload;
+  }
+  std::error_code ec;
+  std::filesystem::path const target = ipc_mru_canonical_path(path);
+  if (std::filesystem::is_directory(target, ec)) {
+    message = "the path is a directory";
+    return Status::kBadPayload;
+  }
+  if (target.has_parent_path() &&
+      !std::filesystem::is_directory(target.parent_path(), ec)) {
+    message = "no such directory";
+    return Status::kNotFound;
+  }
+  return changed([&](const kcpc::Stamp& taken) {
+    if (subcycle_bridge_machine() == nullptr) return Status::kInternal;
+    if (snapshot_save(target.string()) != 0) {
+      message = "the snapshot could not be written";
+      return Status::kInternal;
+    }
+    stamp = taken;
+    return Status::kOk;
+  });
+}
+
+Status kcpc_host_snapshot_load(std::uint32_t client, std::uint32_t request,
+                               const kcpc::SnapshotLoadRequest& load,
+                               kcpc::Stamp& stamp, std::string& message) {
+  if (!ipc_is_safe_path(load.path)) {
+    message = "a path must not be empty or lead out through '..'";
+    return Status::kBadPayload;
+  }
+  std::string const path = ipc_mru_canonical_path(load.path);
+  std::error_code ec;
+  if (!std::filesystem::is_regular_file(path, ec)) return Status::kNotFound;
+  bool const stay_paused = (load.flags & kcpc::kSnapshotFlagStayPaused) != 0;
+  CpcRunCause const cause = cause_of(client, request);
+  Status status = Status::kInternal;
+  bool const ran = alone_under_lease(
+      [&](bool /*was_paused*/) {
+        if (subcycle_bridge_machine() == nullptr) return;
+        int const rc = snapshot_load(path);
+        if (rc == ERR_SNA_SIZE) {
+          message = "the snapshot holds more RAM than this machine has";
+        }
+        status = load_status(rc);
+      },
+      [&](CpcPauseLease& lease) {
+        if (status != Status::kOk) {
+          lease.restore_run_state();
+          return;
+        }
+        // The machine is another program's now. Announced here and not in
+        // the change: the announcement takes the pause mutex, which the
+        // change holds.
+        cpc_announce_reset(cause);
+        if (stay_paused) {
+          lease.release_stopped(cause);
+        } else {
+          lease.restore_run_state();
+        }
+      });
+  if (!ran) return Status::kBusy;
+  if (status != Status::kOk) return status;
+  stamp = announced_stamp();
+  ipc_mru_stage(&t_CPC::mru_snaps, path);
+  ui_host().debugger_memory_changed();
+  return Status::kOk;
+}
+
+Status kcpc_host_config_get(const std::string& key, kcpc::ConfigValue& value) {
+  // The settings a rebuild and a CONFIG_SET rewrite, in one copy taken while
+  // neither can run. The rest of the table is behind locks of its own and is
+  // read on this thread.
+  IpcConfigMachine machine;
+  Status const status =
+      gated(sizeof(machine), [&machine](const kcpc::Stamp& /*taken*/) {
+        machine = ipc_config_machine();
+        return Status::kOk;
+      });
+  if (status != Status::kOk) return status;
+  IpcConfigValue got;
+  switch (ipc_config_get(key, machine, got)) {
+    case IpcConfigStatus::Ok:
+      break;
+    case IpcConfigStatus::NotReady:
+    case IpcConfigStatus::NoWindow:
+      return Status::kNotPresent;
+    case IpcConfigStatus::UnknownKey:
+    case IpcConfigStatus::BadValue:
+      return Status::kNotFound;
+  }
+  value.value = std::move(got.value);
+  value.has_pending = got.has_pending;
+  value.pending = std::move(got.pending);
+  return Status::kOk;
+}
+
+Status kcpc_host_config_set(const std::string& key, const std::string& value,
+                            kcpc::ConfigEffect& effect, std::string& message) {
+  // Under a lease whatever the key: some of them change the machine (the
+  // CRTC type, the Silicon Disc's banking), and all of them are read by
+  // CONFIG_GET through the gate.
+  return changed([&](const kcpc::Stamp& /*taken*/) {
+    IpcConfigEffect how = IpcConfigEffect::Now;
+    std::string note;
+    switch (ipc_config_set(key, value, how, note)) {
+      case IpcConfigStatus::Ok:
+        effect = static_cast<kcpc::ConfigEffect>(how);
+        return Status::kOk;
+      case IpcConfigStatus::NotReady:
+      case IpcConfigStatus::NoWindow:
+        return Status::kNotPresent;
+      case IpcConfigStatus::BadValue:
+        message = std::move(note);
+        return Status::kBadPayload;
+      case IpcConfigStatus::UnknownKey:
+        break;
+    }
+    return Status::kNotFound;
+  });
+}
+
+Status kcpc_host_config_apply(std::uint32_t client, std::uint32_t request,
+                              kcpc::Stamp& stamp, std::string& message) {
+  // No lease here: the main thread takes its own for the rebuild, and a
+  // rebuild is refused while it is not the only one.
+  g_apply_client.store(client, std::memory_order_release);
+  g_apply_request.store(request, std::memory_order_release);
+  int code = 0;
+  IpcRebuildResult const result = ipc_config_apply(code);
+  g_apply_request.store(0, std::memory_order_release);
+  g_apply_client.store(0, std::memory_order_release);
+  switch (result) {
+    case IpcRebuildResult::Ok:
+      stamp = announced_stamp();
+      return Status::kOk;
+    case IpcRebuildResult::NotDrained:
+      message = "the main loop did not take the rebuild";
+      return Status::kBusy;
+    case IpcRebuildResult::StillRunning:
+      message = "the rebuild is still running";
+      return Status::kBusy;
+    case IpcRebuildResult::NotIdle:
+      return Status::kBusy;
+    case IpcRebuildResult::Failed:
+      message = "the machine could not be rebuilt (code " +
+                std::to_string(code) + "); it is left paused";
+      break;
+  }
+  return Status::kInternal;
+}
+
+namespace {
+
 // A number from the environment, or `fallback` when it is unset, not a
 // number or outside [min, max]. For the two limits a test lowers.
 int env_int(const char* name, int fallback, int min, int max) {
@@ -1201,6 +1684,32 @@ void kcpc_host_start(bool enabled) {
                               loaded);
   };
   config.fb_info = &kcpc_host_fb_info;
+  config.media_insert = [](const kcpc::Cause& cause,
+                           const kcpc::MediaInsertRequest& insert,
+                           std::uint64_t& generation, std::string& message) {
+    return kcpc_host_media_insert(cause.client, cause.request, insert,
+                                  generation, message);
+  };
+  config.media_eject = [](const kcpc::Cause& cause, std::uint8_t slot,
+                          std::uint64_t& generation, std::string& message) {
+    return kcpc_host_media_eject(cause.client, cause.request, slot, generation,
+                                 message);
+  };
+  config.media_info = &kcpc_host_media_info;
+  config.tape_control = &kcpc_host_tape_control;
+  config.snapshot_save = &kcpc_host_snapshot_save;
+  config.snapshot_load = [](const kcpc::Cause& cause,
+                            const kcpc::SnapshotLoadRequest& load,
+                            kcpc::Stamp& stamp, std::string& message) {
+    return kcpc_host_snapshot_load(cause.client, cause.request, load, stamp,
+                                   message);
+  };
+  config.config_get = &kcpc_host_config_get;
+  config.config_set = &kcpc_host_config_set;
+  config.config_apply = [](const kcpc::Cause& cause, kcpc::Stamp& stamp,
+                           std::string& message) {
+    return kcpc_host_config_apply(cause.client, cause.request, stamp, message);
+  };
   config.media_state = [](std::uint8_t slot, kcpc::MediaNote& note) {
     if (slot >= kcpc::kMediaSlots) return;
     MediaState state = media_state(static_cast<::MediaSlot>(slot));

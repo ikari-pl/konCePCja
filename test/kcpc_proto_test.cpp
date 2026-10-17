@@ -704,7 +704,6 @@ TEST(KcpcCodec, TheServerAnnouncesRunControlAndEvents) {
   EXPECT_NE(kcpc::kServerCaps & kcpc::kCapRunControl, 0U);
   EXPECT_NE(kcpc::kServerCaps & kcpc::kCapEvents, 0U);
   EXPECT_NE(kcpc::kServerCaps & kcpc::kCapBreakpoints, 0U);
-  EXPECT_EQ(kcpc::kServerCaps & kcpc::kCapMedia, 0U) << "slice 9";
 }
 
 // -- slice 6: input ----------------------------------------------------------
@@ -1115,4 +1114,156 @@ TEST(KcpcCodec, ASymbolAndFbInfoRoundTrip) {
   ASSERT_TRUE(kcpc::read_fb_info(fr, out));
   EXPECT_EQ(out.stride, 2304U);
   EXPECT_TRUE(out.shm_name.empty());
+}
+
+TEST(KcpcCodec, TheServerAnnouncesMediaSnapshotsAndConfiguration) {
+  EXPECT_NE(kcpc::kServerCaps & kcpc::kCapMedia, 0U);
+  EXPECT_NE(kcpc::kServerCaps & kcpc::kCapSnapshot, 0U);
+  EXPECT_NE(kcpc::kServerCaps & kcpc::kCapConfig, 0U);
+  EXPECT_EQ(static_cast<int>(kcpc::Opcode::kMediaInsert), 0x0800);
+  EXPECT_EQ(static_cast<int>(kcpc::Opcode::kTapeControl), 0x0803);
+  EXPECT_EQ(static_cast<int>(kcpc::Opcode::kSnapshotLoad), 0x0901);
+  EXPECT_EQ(static_cast<int>(kcpc::Opcode::kConfigApply), 0x0A02);
+}
+
+TEST(KcpcCodec, MediaRequestsHaveTheLayoutOfSection12) {
+  Writer w;
+  kcpc::write_media_insert_request(
+      w, kcpc::MediaInsertRequest{1, 0, "/d/game.dsk"});
+  const std::vector<std::uint8_t>& b = w.data();
+  ASSERT_EQ(b.size(), 4U + 2U + 11U);
+  EXPECT_EQ(b[0], 1) << "slot";
+  EXPECT_EQ(b[1], 0) << "flags";
+  EXPECT_EQ(b[4], 11) << "the path's length, after two reserved bytes";
+  EXPECT_EQ(b[6], '/');
+  Reader r(b);
+  kcpc::MediaInsertRequest insert;
+  ASSERT_TRUE(kcpc::read_media_insert_request(r, insert));
+  EXPECT_EQ(insert.slot, 1);
+  EXPECT_EQ(insert.path, "/d/game.dsk");
+  // Cut one byte short, it does not parse.
+  Reader cut(b.data(), b.size() - 1);
+  EXPECT_FALSE(kcpc::read_media_insert_request(cut, insert));
+
+  Writer s;
+  kcpc::write_media_slot_request(s, 2);
+  ASSERT_EQ(s.size(), 4U);
+  std::uint8_t slot = 0;
+  Reader sr(s.data());
+  ASSERT_TRUE(kcpc::read_media_slot_request(sr, slot));
+  EXPECT_EQ(slot, 2);
+  Reader none(s.data().data(), 3);
+  EXPECT_FALSE(kcpc::read_media_slot_request(none, slot));
+
+  EXPECT_TRUE(kcpc::media_slot_known(3));
+  EXPECT_FALSE(kcpc::media_slot_known(4));
+  EXPECT_TRUE(kcpc::tape_action_known(3));
+  EXPECT_FALSE(kcpc::tape_action_known(4));
+
+  Writer t;
+  kcpc::write_tape_control_request(t, kcpc::TapeControlRequest{3, 0x01020304});
+  ASSERT_EQ(t.size(), 8U);
+  EXPECT_EQ(t.data()[0], 3);
+  EXPECT_EQ(t.data()[4], 0x04) << "the block, little-endian, at offset 4";
+  EXPECT_EQ(t.data()[7], 0x01);
+  Reader tr(t.data());
+  kcpc::TapeControlRequest control;
+  ASSERT_TRUE(kcpc::read_tape_control_request(tr, control));
+  EXPECT_EQ(control.action, 3);
+  EXPECT_EQ(control.block, 0x01020304U);
+}
+
+TEST(KcpcCodec, MediaInfoEndsWithTheDeckForTheTapeSlotOnly) {
+  kcpc::MediaInfo drive;
+  drive.slot = 0;
+  drive.present = 1;
+  drive.flags = kcpc::kMediaFlagUnsaved | kcpc::kMediaFlagFlux;
+  drive.generation = 0x0102030405060708ULL;
+  drive.path = "a.hfe";
+  drive.tape.blocks = 99;  // not a tape: not sent
+  Writer w;
+  kcpc::write_media_info(w, drive);
+  const std::vector<std::uint8_t>& b = w.data();
+  ASSERT_EQ(b.size(), 4U + 8U + 2U + 5U);
+  EXPECT_EQ(b[1], 1) << "present";
+  EXPECT_EQ(b[2], 0x06) << "unsaved and flux";
+  EXPECT_EQ(b[4], 0x08) << "generation, little-endian";
+  EXPECT_EQ(b[11], 0x01);
+  Reader r(b);
+  kcpc::MediaInfo out;
+  ASSERT_TRUE(kcpc::read_media_info(r, out));
+  EXPECT_EQ(r.remaining(), 0U);
+  EXPECT_EQ(out.generation, drive.generation);
+  EXPECT_EQ(out.path, "a.hfe");
+  EXPECT_EQ(out.tape.blocks, 0U);
+
+  kcpc::MediaInfo deck;
+  deck.slot = static_cast<std::uint8_t>(kcpc::MediaSlot::kTape);
+  deck.present = 1;
+  deck.path = "t.cdt";
+  deck.tape = kcpc::TapeState{1, 1, 7, 12};
+  Writer t;
+  kcpc::write_media_info(t, deck);
+  ASSERT_EQ(t.size(), 4U + 8U + 2U + 5U + 12U);
+  Reader tr(t.data());
+  ASSERT_TRUE(kcpc::read_media_info(tr, out));
+  EXPECT_EQ(tr.remaining(), 0U);
+  EXPECT_EQ(out.tape.playing, 1);
+  EXPECT_EQ(out.tape.motor, 1);
+  EXPECT_EQ(out.tape.block, 7U);
+  EXPECT_EQ(out.tape.blocks, 12U);
+  // A tape reply without its deck is too short.
+  Reader cut(t.data().data(), t.size() - 12);
+  EXPECT_FALSE(kcpc::read_media_info(cut, out));
+}
+
+TEST(KcpcCodec, SnapshotAndConfigurationPayloadsRoundTrip) {
+  Writer w;
+  kcpc::write_snapshot_load_request(
+      w, kcpc::SnapshotLoadRequest{kcpc::kSnapshotFlagStayPaused, "s.sna"});
+  ASSERT_EQ(w.size(), 4U + 2U + 5U);
+  EXPECT_EQ(w.data()[0], 1) << "stay paused";
+  Reader r(w.data());
+  kcpc::SnapshotLoadRequest load;
+  ASSERT_TRUE(kcpc::read_snapshot_load_request(r, load));
+  EXPECT_EQ(load.flags, kcpc::kSnapshotFlagStayPaused);
+  EXPECT_EQ(load.path, "s.sna");
+
+  Writer s;
+  kcpc::write_config_set_request(s, kcpc::ConfigSetRequest{"model", "3"});
+  ASSERT_EQ(s.size(), 2U + 5U + 2U + 1U);
+  Reader sr(s.data());
+  kcpc::ConfigSetRequest set;
+  ASSERT_TRUE(kcpc::read_config_set_request(sr, set));
+  EXPECT_EQ(set.key, "model");
+  EXPECT_EQ(set.value, "3");
+  Reader key_only(s.data().data(), 7);
+  EXPECT_FALSE(kcpc::read_config_set_request(key_only, set));
+
+  kcpc::ConfigValue staged;
+  staged.value = "2";
+  staged.has_pending = true;
+  staged.pending = "3";
+  Writer v;
+  kcpc::write_config_value(v, staged);
+  ASSERT_EQ(v.size(), 4U + 3U + 3U);
+  EXPECT_EQ(v.data()[0], kcpc::kConfigFlagPending);
+  Reader vr(v.data());
+  kcpc::ConfigValue out;
+  ASSERT_TRUE(kcpc::read_config_value(vr, out));
+  EXPECT_TRUE(out.has_pending);
+  EXPECT_EQ(out.value, "2");
+  EXPECT_EQ(out.pending, "3");
+
+  // Nothing staged: the flag is clear and `pending` is sent empty, whatever
+  // the struct holds.
+  staged.has_pending = false;
+  Writer n;
+  kcpc::write_config_value(n, staged);
+  ASSERT_EQ(n.size(), 4U + 3U + 2U);
+  EXPECT_EQ(n.data()[0], 0);
+  Reader nr(n.data());
+  ASSERT_TRUE(kcpc::read_config_value(nr, out));
+  EXPECT_FALSE(out.has_pending);
+  EXPECT_TRUE(out.pending.empty());
 }

@@ -171,6 +171,9 @@ bool is_safe_path(const std::string& path_str) {
 }
 }  // namespace
 
+// NOLINTNEXTLINE(misc-use-internal-linkage): the KCPC binary server calls it
+bool ipc_is_safe_path(const std::string& path) { return is_safe_path(path); }
+
 // Build a compact debug context string for IPC response trailers.
 // All fields are O(1) struct reads — safe for every response.
 namespace {
@@ -532,10 +535,11 @@ static void ipc_drain_rebuild() {
 }
 
 // Hand a machine rebuild to the main thread and wait for the drain.
-// Never call koncpc_rebuild_machine() from the IPC server thread (see
-// IpcRebuildPending). Returns an empty string on success, otherwise a full
-// `ERR …\n` response ready to send to the client.
-static std::string ipc_request_rebuild_and_wait() {
+// Never call koncpc_rebuild_machine() from a server thread (see
+// IpcRebuildPending).
+// NOLINTNEXTLINE(misc-use-internal-linkage): the KCPC binary server calls it
+IpcRebuildResult ipc_config_apply(int& code) {
+  code = 0;
   std::unique_lock<std::mutex> lock(g_rebuild_pending.mutex);
   g_rebuild_pending.done = false;
   g_rebuild_pending.requested = true;
@@ -548,24 +552,274 @@ static std::string ipc_request_rebuild_and_wait() {
       // Fall through to the result below.
     } else if (g_rebuild_pending.requested) {
       g_rebuild_pending.requested = false;
-      return "ERR 504 rebuild-not-drained (main loop did not run)\n";
+      return IpcRebuildResult::NotDrained;
     } else {
       // Drain claimed it; wait a bit more for completion rather than
       // reporting "main loop did not run" while a rebuild is in flight.
       if (!g_rebuild_pending.cv.wait_for(lock, std::chrono::seconds(30), [] {
             return g_rebuild_pending.done;
           })) {
-        return "ERR 504 rebuild-still-running\n";
+        return IpcRebuildResult::StillRunning;
       }
     }
   }
-  int const err = g_rebuild_pending.result;
+  code = g_rebuild_pending.result;
   // Refused before anything was torn down: same condition, same answer as
   // every other lease holder.
-  if (err == ERR_Z80_NOT_IDLE) return err_with_context(409, "z80-not-idle");
-  if (err != 0)
-    return "ERR 500 rebuild-failed code=" + std::to_string(err) + "\n";
+  if (code == ERR_Z80_NOT_IDLE) return IpcRebuildResult::NotIdle;
+  return code != 0 ? IpcRebuildResult::Failed : IpcRebuildResult::Ok;
+}
+
+// The text IPC's answer to a rebuild: an empty string on success, otherwise
+// a full `ERR …\n` response ready to send to the client.
+static std::string ipc_request_rebuild_and_wait() {
+  int code = 0;
+  switch (ipc_config_apply(code)) {
+    case IpcRebuildResult::Ok:
+      break;
+    case IpcRebuildResult::NotDrained:
+      return "ERR 504 rebuild-not-drained (main loop did not run)\n";
+    case IpcRebuildResult::StillRunning:
+      return "ERR 504 rebuild-still-running\n";
+    case IpcRebuildResult::NotIdle:
+      return err_with_context(409, "z80-not-idle");
+    case IpcRebuildResult::Failed:
+      return "ERR 500 rebuild-failed code=" + std::to_string(code) + "\n";
+  }
   return {};
+}
+
+// The configuration keys: one table for the text IPC and the binary server.
+// NOLINTNEXTLINE(misc-use-internal-linkage): the KCPC binary server calls it
+IpcConfigMachine ipc_config_machine() {
+  IpcConfigMachine m;
+  m.model = CPC.model;
+  m.crtc_type = CRTC.crtc_type;
+  m.ram_size = CPC.ram_size;
+  m.silicon_disc = g_silicon_disc.enabled;
+  m.m4board = g_m4board.enabled;
+  m.m4_rom_slot = g_m4board.rom_slot;
+  m.m4_sd_path_len =
+      std::min(g_m4board.sd_root_path.size(), m.m4_sd_path.size());
+  std::memcpy(m.m4_sd_path.data(), g_m4board.sd_root_path.data(),
+              m.m4_sd_path_len);
+  return m;
+}
+
+// NOLINTNEXTLINE(misc-use-internal-linkage): the KCPC binary server calls it
+IpcConfigStatus ipc_config_get(const std::string& key,
+                               const IpcConfigMachine& machine,
+                               IpcConfigValue& out) {
+  out = IpcConfigValue{};
+  if (key == "model") {
+    // The live board's model, plus the staged one when they differ, so a
+    // client can see that a rebuild is still owed.
+    out.value = std::to_string(machine.model);
+    const int staged = g_pending_model.load();
+    if (staged >= 0 && static_cast<unsigned int>(staged) != machine.model) {
+      out.has_pending = true;
+      out.pending = std::to_string(staged);
+    }
+    return IpcConfigStatus::Ok;
+  }
+  if (key == "crtc_type") {
+    out.value = std::to_string(machine.crtc_type);
+    return IpcConfigStatus::Ok;
+  }
+  if (key == "crtc_info") {
+    char buf[128];
+    snprintf(buf, sizeof(buf), "type=%d chip=%s manufacturer=%s",
+             machine.crtc_type, crtc_type_chip_name(machine.crtc_type),
+             crtc_type_manufacturer(machine.crtc_type));
+    out.value = buf;
+    return IpcConfigStatus::Ok;
+  }
+  if (key == "ram_size") {
+    out.value = std::to_string(machine.ram_size);
+    return IpcConfigStatus::Ok;
+  }
+  if (key == "silicon_disc") {
+    out.value = machine.silicon_disc ? "1" : "0";
+    return IpcConfigStatus::Ok;
+  }
+  if (key == "m4board") {
+    out.value = machine.m4board ? "1" : "0";
+    return IpcConfigStatus::Ok;
+  }
+  if (key == "m4_sd_path") {
+    out.value.assign(machine.m4_sd_path.data(), machine.m4_sd_path_len);
+    return IpcConfigStatus::Ok;
+  }
+  if (key == "m4_rom_slot") {
+    out.value = std::to_string(machine.m4_rom_slot);
+    return IpcConfigStatus::Ok;
+  }
+  if (key == "kbd_layout") {
+    // The live map, plus the staged one while a `set` awaits the drain.
+    std::scoped_lock const lock(g_ipc_keymap.mutex);
+    if (g_ipc_keymap.live.empty()) return IpcConfigStatus::NotReady;
+    out.value = g_ipc_keymap.live;
+    if (g_ipc_keymap.name) {
+      out.has_pending = true;
+      out.pending = *g_ipc_keymap.name;
+    }
+    return IpcConfigStatus::Ok;
+  }
+  if (key == "kbd_layouts") {
+    std::string resources_path;
+    {
+      std::scoped_lock const lock(g_ipc_keymap.mutex);
+      if (g_ipc_keymap.live.empty()) return IpcConfigStatus::NotReady;
+      resources_path = g_ipc_keymap.resources_path;
+    }
+    for (const auto& f : InputMapper::host_layout_files(resources_path)) {
+      if (!out.value.empty()) out.value += "\n";
+      out.value += f;
+    }
+    return IpcConfigStatus::Ok;
+  }
+  if (key == "fullscreen") {
+    std::scoped_lock const lock(g_ipc_window.mutex);
+    if (!g_ipc_window.known) return IpcConfigStatus::NoWindow;
+    out.value = g_ipc_window.is_fullscreen ? "1" : "0";
+    if (g_ipc_window.fullscreen) {
+      out.has_pending = true;
+      out.pending = std::to_string(*g_ipc_window.fullscreen);
+    }
+    return IpcConfigStatus::Ok;
+  }
+  if (key == "window") {
+    std::scoped_lock const lock(g_ipc_window.mutex);
+    if (!g_ipc_window.known) return IpcConfigStatus::NoWindow;
+    out.value = "w=" + std::to_string(g_ipc_window.w) +
+                " h=" + std::to_string(g_ipc_window.h) +
+                " scale=" + std::to_string(g_ipc_window.scale) +
+                " fullscreen=" + (g_ipc_window.is_fullscreen ? "1" : "0");
+    return IpcConfigStatus::Ok;
+  }
+  if (key == "file") {
+    std::scoped_lock const lock(g_ipc_config_file.mutex);
+    if (g_ipc_config_file.path.empty()) return IpcConfigStatus::NotReady;
+    out.value = g_ipc_config_file.path;
+    return IpcConfigStatus::Ok;
+  }
+  return IpcConfigStatus::UnknownKey;
+}
+
+namespace {
+// A number for a configuration key. False for text that is not one.
+bool config_number(const std::string& text, int& out) {
+  try {
+    out = parse_int(text);
+    return true;
+  } catch (const std::invalid_argument&) {
+    return false;
+  } catch (const std::out_of_range&) {
+    return false;
+  }
+}
+}  // namespace
+
+// NOLINTNEXTLINE(misc-use-internal-linkage): the KCPC binary server calls it
+IpcConfigStatus ipc_config_set(const std::string& key, const std::string& value,
+                               IpcConfigEffect& effect, std::string& note) {
+  effect = IpcConfigEffect::Now;
+  note.clear();
+  if (key == "model") {
+    int model = 0;
+    if (!config_number(value, model) || model < 0 || model > 3) {
+      note = "model must be 0-3";
+      return IpcConfigStatus::BadValue;
+    }
+    g_pending_model.store(model);  // staged; `config apply` commits it
+    effect = IpcConfigEffect::Staged;
+    note = "apply required";
+    return IpcConfigStatus::Ok;
+  }
+  if (key == "crtc_type") {
+    int t = 0;
+    if (!config_number(value, t) || t < 0 || t > 3) {
+      note = "crtc_type must be 0-3";
+      return IpcConfigStatus::BadValue;
+    }
+    CRTC.crtc_type = static_cast<unsigned char>(t);
+    if (subcycle::Machine* m = subcycle_bridge_machine())
+      m->set_crtc_type(static_cast<uint8_t>(t));
+    return IpcConfigStatus::Ok;
+  }
+  if (key == "ram_size") {
+    int sz = 0;
+    if (!config_number(value, sz) ||
+        !is_valid_ram_size(static_cast<unsigned int>(sz))) {
+      note = "invalid ram_size";
+      return IpcConfigStatus::BadValue;
+    }
+    CPC.ram_size = static_cast<unsigned int>(sz);
+    effect = IpcConfigEffect::Staged;
+    note = "reset required";
+    return IpcConfigStatus::Ok;
+  }
+  if (key == "silicon_disc") {
+    int v = 0;
+    if (!config_number(value, v)) {
+      note = "bad-value";
+      return IpcConfigStatus::BadValue;
+    }
+    g_silicon_disc.enabled = (v != 0);
+    if (g_silicon_disc.enabled && !g_silicon_disc.data) {
+      silicon_disc_init(g_silicon_disc);
+    }
+    ga_memory_manager();
+    return IpcConfigStatus::Ok;
+  }
+  if (key == "m4board") {
+    int v = 0;
+    if (!config_number(value, v)) {
+      note = "bad-value";
+      return IpcConfigStatus::BadValue;
+    }
+    g_m4board.enabled = (v != 0);
+    effect = IpcConfigEffect::Staged;
+    note = "reset required";
+    return IpcConfigStatus::Ok;
+  }
+  if (key == "m4_sd_path") {
+    g_m4board.sd_root_path = value;
+    return IpcConfigStatus::Ok;
+  }
+  if (key == "kbd_layout") {
+    std::string resources_path;
+    {
+      std::scoped_lock const lock(g_ipc_keymap.mutex);
+      if (g_ipc_keymap.live.empty()) return IpcConfigStatus::NotReady;
+      resources_path = g_ipc_keymap.resources_path;
+    }
+    const auto files = InputMapper::host_layout_files(resources_path);
+    if (std::find(files.begin(), files.end(), value) == files.end()) {
+      note = "unknown-kbd-layout (see config get kbd_layouts)";
+      return IpcConfigStatus::BadValue;
+    }
+    {
+      std::scoped_lock const lock(g_ipc_keymap.mutex);
+      g_ipc_keymap.name = value;
+    }
+    effect = IpcConfigEffect::NextFrame;
+    note = "applied on next frame";
+    return IpcConfigStatus::Ok;
+  }
+  if (key == "fullscreen") {
+    if (value != "0" && value != "1") {
+      note = "fullscreen must be 0 or 1";
+      return IpcConfigStatus::BadValue;
+    }
+    std::scoped_lock const lock(g_ipc_window.mutex);
+    if (!g_ipc_window.known) return IpcConfigStatus::NoWindow;
+    g_ipc_window.fullscreen = value == "1" ? 1 : 0;
+    effect = IpcConfigEffect::NextFrame;
+    note = "applied on next frame";
+    return IpcConfigStatus::Ok;
+  }
+  return IpcConfigStatus::UnknownKey;
 }
 
 void ipc_publish_device_gates(bool mouse_fitted, bool gun_fitted) {
@@ -2149,21 +2403,22 @@ std::string handle_command(const std::string& line) {
         return "ERR 503 no-window\n";
 #else
         const std::string& path = parts[2];
-        // Force z80_execute to return so the main loop can render a frame
-        bool const was_paused = CPC.paused;
+        // Force z80_execute to return so the main loop can render a frame.
+        // Under a lease: the machine is borrowed, not stopped, and goes back
+        // to what it was even with another actor's lease overlapping.
         z80_stop_requested.store(true, std::memory_order_relaxed);
-        if (!was_paused) cpc_pause();
+        CpcPauseLease lease(CpcPauseLeaseMode::PauseOnly);
         video_request_window_screenshot(path);
         // Wait for the main loop to render a frame and capture (up to 5
         // seconds)
         for (int i = 0; i < 500; i++) {
           std::this_thread::sleep_for(std::chrono::milliseconds(10));
           if (access(path.c_str(), F_OK) == 0) {
-            if (!was_paused) cpc_resume();
+            lease.restore_run_state();
             return "OK\n";
           }
         }
-        if (!was_paused) cpc_resume();
+        lease.restore_run_state();
         return "ERR 504 timeout\n";
 #endif
       }
@@ -5155,169 +5410,49 @@ std::string handle_command(const std::string& line) {
         return "OK\n";
       }
       if (parts[1] == "get" && parts.size() >= 3) {
-        if (parts[2] == "model") {
-          // The live board's model, plus the staged one when they differ, so a
-          // client can see that a rebuild is still owed.
-          const int staged = g_pending_model.load();
-          if (staged >= 0 && static_cast<unsigned int>(staged) != CPC.model) {
-            return "OK " + std::to_string(CPC.model) +
-                   " pending=" + std::to_string(staged) + "\n";
-          }
-          return "OK " + std::to_string(CPC.model) + "\n";
-        }
-        if (parts[2] == "crtc_type") {
-          return "OK " + std::to_string(CRTC.crtc_type) + "\n";
-        }
-        if (parts[2] == "crtc_info") {
-          char buf[128];
-          snprintf(buf, sizeof(buf), "OK type=%d chip=%s manufacturer=%s",
-                   CRTC.crtc_type, crtc_type_chip_name(CRTC.crtc_type),
-                   crtc_type_manufacturer(CRTC.crtc_type));
-          return std::string(buf) + "\n";
-        }
-        if (parts[2] == "ram_size") {
-          return "OK " + std::to_string(CPC.ram_size) + "\n";
-        }
-        if (parts[2] == "silicon_disc") {
-          return std::string("OK ") + (g_silicon_disc.enabled ? "1" : "0") +
-                 "\n";
-        }
-        if (parts[2] == "m4board") {
-          return std::string("OK ") + (g_m4board.enabled ? "1" : "0") + "\n";
-        }
-        if (parts[2] == "m4_sd_path") {
-          return "OK " + g_m4board.sd_root_path + "\n";
-        }
-        if (parts[2] == "m4_rom_slot") {
-          return "OK " + std::to_string(g_m4board.rom_slot) + "\n";
-        }
-        if (parts[2] == "kbd_layout") {
-          // The live map, plus the staged one while a `set` awaits the drain.
-          std::scoped_lock const lock(g_ipc_keymap.mutex);
-          if (g_ipc_keymap.live.empty()) return "ERR 503 not-ready\n";
-          std::string resp = "OK " + g_ipc_keymap.live;
-          if (g_ipc_keymap.name) resp += " pending=" + *g_ipc_keymap.name;
-          return resp + "\n";
+        IpcConfigValue got;
+        switch (ipc_config_get(parts[2], ipc_config_machine(), got)) {
+          case IpcConfigStatus::Ok:
+            break;
+          case IpcConfigStatus::NotReady:
+            return "ERR 503 not-ready\n";
+          case IpcConfigStatus::NoWindow:
+            return "ERR 503 no-window\n";
+          case IpcConfigStatus::UnknownKey:
+          case IpcConfigStatus::BadValue:
+            return "ERR 400 unknown-config-key\n";
         }
         if (parts[2] == "kbd_layouts") {
-          std::string resources_path;
-          {
-            std::scoped_lock const lock(g_ipc_keymap.mutex);
-            if (g_ipc_keymap.live.empty()) return "ERR 503 not-ready\n";
-            resources_path = g_ipc_keymap.resources_path;
-          }
-          std::string resp = "OK\n";
-          for (const auto& f : InputMapper::host_layout_files(resources_path))
-            resp += f + "\n";
-          return resp;
+          // One file per line, after the OK.
+          return got.value.empty() ? "OK\n" : "OK\n" + got.value + "\n";
         }
-        if (parts[2] == "fullscreen") {
-          std::scoped_lock const lock(g_ipc_window.mutex);
-          if (!g_ipc_window.known) return "ERR 503 no-window\n";
-          std::string resp =
-              "OK " + std::string(g_ipc_window.is_fullscreen ? "1" : "0");
-          if (g_ipc_window.fullscreen) {
-            resp += " pending=" + std::to_string(*g_ipc_window.fullscreen);
-          }
-          return resp + "\n";
-        }
-        if (parts[2] == "window") {
-          std::scoped_lock const lock(g_ipc_window.mutex);
-          if (!g_ipc_window.known) return "ERR 503 no-window\n";
-          return "OK w=" + std::to_string(g_ipc_window.w) +
-                 " h=" + std::to_string(g_ipc_window.h) +
-                 " scale=" + std::to_string(g_ipc_window.scale) +
-                 " fullscreen=" + (g_ipc_window.is_fullscreen ? "1" : "0") +
-                 "\n";
-        }
-        if (parts[2] == "file") {
-          std::scoped_lock const lock(g_ipc_config_file.mutex);
-          if (g_ipc_config_file.path.empty()) return "ERR 503 not-ready\n";
-          return "OK " + g_ipc_config_file.path + "\n";
-        }
-        return "ERR 400 unknown-config-key\n";
+        std::string resp = "OK " + got.value;
+        if (got.has_pending) resp += " pending=" + got.pending;
+        return resp + "\n";
       }
       if (parts[1] == "set" && parts.size() >= 4) {
-        if (parts[2] == "model") {
-          int const model = parse_int(parts[3]);
-          if (model < 0 || model > 3) return "ERR 400 model must be 0-3\n";
-          g_pending_model.store(model);  // staged; `config apply` commits it
-          return "OK (apply required)\n";
-        }
-        if (parts[2] == "crtc_type") {
-          int const t = parse_int(parts[3]);
-          if (t < 0 || t > 3) return "ERR 400 crtc_type must be 0-3\n";
-          CRTC.crtc_type = static_cast<unsigned char>(t);
-          if (subcycle::Machine* m = subcycle_bridge_machine())
-            m->set_crtc_type(static_cast<uint8_t>(t));
-          return "OK\n";
-        }
-        if (parts[2] == "ram_size") {
-          int const sz = parse_int(parts[3]);
-          if (!is_valid_ram_size(static_cast<unsigned int>(sz))) {
-            return "ERR 400 invalid ram_size\n";
-          }
-          CPC.ram_size = static_cast<unsigned int>(sz);
-          return "OK (reset required)\n";
-        }
-        if (parts[2] == "silicon_disc") {
-          int v;
-          try {
-            v = parse_int(parts[3]);
-          } catch (const std::exception&) {
-            return "ERR 400 bad-value\n";
-          }
-          g_silicon_disc.enabled = (v != 0);
-          if (g_silicon_disc.enabled && !g_silicon_disc.data) {
-            silicon_disc_init(g_silicon_disc);
-          }
-          ga_memory_manager();
-          return "OK\n";
-        }
-        if (parts[2] == "m4board") {
-          int v;
-          try {
-            v = parse_int(parts[3]);
-          } catch (const std::exception&) {
-            return "ERR 400 bad-value\n";
-          }
-          g_m4board.enabled = (v != 0);
-          return "OK (reset required)\n";
-        }
+        std::string value = parts[3];
         if (parts[2] == "m4_sd_path") {
-          // Collect rest of line after "config set m4_sd_path "
+          // The rest of the line: a path may hold blanks.
           size_t const pos = line.find("m4_sd_path ");
           if (pos == std::string::npos) return "ERR 400 bad-args\n";
-          g_m4board.sd_root_path = line.substr(pos + 11);
-          return "OK\n";
+          value = line.substr(pos + 11);
         }
-        if (parts[2] == "kbd_layout") {
-          std::string resources_path;
-          {
-            std::scoped_lock const lock(g_ipc_keymap.mutex);
-            if (g_ipc_keymap.live.empty()) return "ERR 503 not-ready\n";
-            resources_path = g_ipc_keymap.resources_path;
-          }
-          const auto files = InputMapper::host_layout_files(resources_path);
-          if (std::find(files.begin(), files.end(), parts[3]) == files.end()) {
-            return "ERR 400 unknown-kbd-layout (see config get kbd_layouts)\n";
-          }
-          {
-            std::scoped_lock const lock(g_ipc_keymap.mutex);
-            g_ipc_keymap.name = parts[3];
-          }
-          return "OK (applied on next frame)\n";
+        IpcConfigEffect effect = IpcConfigEffect::Now;
+        std::string note;
+        switch (ipc_config_set(parts[2], value, effect, note)) {
+          case IpcConfigStatus::Ok:
+            break;
+          case IpcConfigStatus::NotReady:
+            return "ERR 503 not-ready\n";
+          case IpcConfigStatus::NoWindow:
+            return "ERR 503 no-window\n";
+          case IpcConfigStatus::BadValue:
+            return "ERR 400 " + note + "\n";
+          case IpcConfigStatus::UnknownKey:
+            return "ERR 400 unknown-config-key\n";
         }
-        if (parts[2] == "fullscreen") {
-          if (parts[3] != "0" && parts[3] != "1") {
-            return "ERR 400 fullscreen must be 0 or 1\n";
-          }
-          std::scoped_lock const lock(g_ipc_window.mutex);
-          if (!g_ipc_window.known) return "ERR 503 no-window\n";
-          g_ipc_window.fullscreen = parts[3] == "1" ? 1 : 0;
-          return "OK (applied on next frame)\n";
-        }
-        return "ERR 400 unknown-config-key\n";
+        return note.empty() ? "OK\n" : "OK (" + note + ")\n";
       }
       return "ERR 400 bad-config-cmd (get|set|apply)\n";
     }

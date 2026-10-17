@@ -51,6 +51,9 @@ kcpc::MachineInfo fake_machine() {
 // The groups of slice 7, which a fixture without them does not announce.
 constexpr std::uint64_t kDevtoolsCaps =
     kcpc::kCapChips | kcpc::kCapSymbols | kcpc::kCapFbInfo;
+// And those of slice 9.
+constexpr std::uint64_t kMediaCaps =
+    kcpc::kCapMedia | kcpc::kCapSnapshot | kcpc::kCapConfig;
 
 kcpc::ServerConfig test_config() {
   kcpc::ServerConfig c;
@@ -1206,7 +1209,7 @@ TEST_F(KcpcControlTest, HelloGrantsControlToTheFirstWhoAsks) {
   EXPECT_EQ(observer_hello.role, kcpc::Role::kObserver);
   EXPECT_EQ(observer_hello.caps, kcpc::kServerCaps & ~kcpc::kCapRunControl &
                                      ~kcpc::kCapBreakpoints & ~kcpc::kCapInput &
-                                     ~kDevtoolsCaps)
+                                     ~kDevtoolsCaps & ~kMediaCaps)
       << "everything but run control, breakpoints, input and the DevTools "
          "data, which this machine does not offer";
   EXPECT_NE(observer_hello.caps & kcpc::kCapMachineWrite, 0U);
@@ -1726,7 +1729,7 @@ TEST_F(KcpcEventsTest, HelloAnnouncesRunControlAndEvents) {
   kcpc::HelloReply hello;
   auto client = join(kcpc::Role::kObserver, hello);
   EXPECT_EQ(hello.caps, kcpc::kServerCaps & ~kcpc::kCapBreakpoints &
-                            ~kcpc::kCapInput & ~kDevtoolsCaps);
+                            ~kcpc::kCapInput & ~kDevtoolsCaps & ~kMediaCaps);
   EXPECT_NE(hello.caps & kcpc::kCapRunControl, 0U);
   EXPECT_NE(hello.caps & kcpc::kCapEvents, 0U);
 }
@@ -1870,11 +1873,12 @@ TEST_F(KcpcEventsTest, AnEventFollowsTheResponseToTheRequestThatCausedIt) {
   start_with_run_control();
   kcpc::HelloReply hello;
   auto controller = join(kcpc::Role::kController, hello);
+  // Before anyone else joins: it is sent to every client connected by then.
+  Frame frame;
+  expect_event(*controller, Opcode::kEvtControlChanged, frame);
   auto watcher = join(kcpc::Role::kObserver, hello);
   subscribe(*controller, 2, kcpc::kEventClassRun);
   subscribe(*watcher, 2, kcpc::kEventClassRun);
-  Frame frame;
-  expect_event(*controller, Opcode::kEvtControlChanged, frame);
 
   run_.post_from_request = true;
   ASSERT_TRUE(controller->request(Opcode::kPause, 3));
@@ -2074,9 +2078,10 @@ TEST_F(KcpcEventsTest, TheEndOfAStepReachesItsClientWhateverItSubscribedTo) {
   kcpc::HelloReply stepper_hello;
   kcpc::HelloReply other_hello;
   auto stepper = join(kcpc::Role::kController, stepper_hello);
-  auto other = join(kcpc::Role::kObserver, other_hello);
+  // Before anyone else joins: it is sent to every client connected by then.
   Frame frame;
   expect_event(*stepper, Opcode::kEvtControlChanged, frame);
+  auto other = join(kcpc::Role::kObserver, other_hello);
 
   kcpc::Event done = stopped_event(400);
   done.reason = static_cast<std::uint8_t>(kcpc::StopReason::kStepDone);
@@ -2330,7 +2335,8 @@ TEST_F(KcpcBreakpointsTest, HelloAnnouncesBreakpoints) {
   start_with_breakpoints();
   kcpc::HelloReply hello;
   auto client = join(kcpc::Role::kObserver, hello);
-  EXPECT_EQ(hello.caps, kcpc::kServerCaps & ~kcpc::kCapInput & ~kDevtoolsCaps);
+  EXPECT_EQ(hello.caps, kcpc::kServerCaps & ~kcpc::kCapInput & ~kDevtoolsCaps &
+                            ~kMediaCaps);
   EXPECT_NE(hello.caps & kcpc::kCapBreakpoints, 0U);
 }
 
@@ -2485,13 +2491,14 @@ TEST_F(KcpcBreakpointsTest, AnEditIsPushedAfterItsReplyAndToDebugSubscribers) {
   start_with_breakpoints();
   kcpc::HelloReply hello;
   auto controller = join(kcpc::Role::kController, hello);
+  // Before anyone else joins: it is sent to every client connected by then.
+  Frame frame;
+  expect_event(*controller, Opcode::kEvtControlChanged, frame);
   auto watcher = join(kcpc::Role::kObserver, hello);
   auto deaf = join(kcpc::Role::kObserver, hello);
   subscribe(*controller, 2, kcpc::kEventClassDebug);
   subscribe(*watcher, 2, kcpc::kEventClassDebug);
   subscribe(*deaf, 2, kcpc::kEventClassRun);
-  Frame frame;
-  expect_event(*controller, Opcode::kEvtControlChanged, frame);
 
   ASSERT_TRUE(
       controller->request(Opcode::kBpAdd, 3, bp_payload(exec_bp(0x4000))));
@@ -2724,7 +2731,7 @@ TEST_F(KcpcInputTest, HelloAnnouncesInput) {
   start_with_input();
   kcpc::HelloReply hello;
   auto client = join(kcpc::Role::kObserver, hello);
-  EXPECT_EQ(hello.caps, kcpc::kServerCaps & ~kDevtoolsCaps);
+  EXPECT_EQ(hello.caps, kcpc::kServerCaps & ~kDevtoolsCaps & ~kMediaCaps);
   EXPECT_NE(hello.caps & kcpc::kCapInput, 0U);
 }
 
@@ -3142,7 +3149,7 @@ TEST_F(KcpcDevtoolsTest, HelloAnnouncesChipsSymbolsAndTheFrame) {
   start_with_devtools();
   kcpc::HelloReply hello;
   auto client = join(kcpc::Role::kObserver, hello);
-  EXPECT_EQ(hello.caps, kcpc::kServerCaps);
+  EXPECT_EQ(hello.caps, kcpc::kServerCaps & ~kMediaCaps);
   EXPECT_EQ(hello.caps & kDevtoolsCaps, kDevtoolsCaps);
 }
 
@@ -3328,13 +3335,14 @@ TEST_F(KcpcDevtoolsTest, ASymbolEditIsPushedAfterItsReplyToDebugSubscribers) {
   start_with_devtools();
   kcpc::HelloReply hello;
   auto controller = join(kcpc::Role::kController, hello);
+  // Before anyone else joins: it is sent to every client connected by then.
+  Frame frame;
+  expect_event(*controller, Opcode::kEvtControlChanged, frame);
   auto watcher = join(kcpc::Role::kObserver, hello);
   auto deaf = join(kcpc::Role::kObserver, hello);
   subscribe(*controller, 2, kcpc::kEventClassDebug);
   subscribe(*watcher, 2, kcpc::kEventClassDebug);
   subscribe(*deaf, 2, kcpc::kEventClassRun | kcpc::kEventClassMedia);
-  Frame frame;
-  expect_event(*controller, Opcode::kEvtControlChanged, frame);
 
   ASSERT_TRUE(
       controller->request(Opcode::kSymAdd, 3, symbol_payload(0x4000, "start")));
@@ -3453,4 +3461,518 @@ TEST_F(KcpcDevtoolsTest, ARebuiltMachineIsSentAsItsMachineInfo) {
   EXPECT_TRUE(info.stamp.paused);
   settle(*deaf, 3);
   EXPECT_TRUE(deaf->events.empty()) << "it did not subscribe to MACHINE";
+}
+
+// -- slice 9: media, snapshots, configuration -------------------------------
+
+namespace {
+
+std::vector<std::uint8_t> insert_payload(std::uint8_t slot,
+                                         const std::string& path,
+                                         std::uint8_t flags = 0) {
+  kcpc::Writer w;
+  kcpc::write_media_insert_request(w,
+                                   kcpc::MediaInsertRequest{slot, flags, path});
+  return w.take();
+}
+
+std::vector<std::uint8_t> slot_payload(std::uint8_t slot) {
+  kcpc::Writer w;
+  kcpc::write_media_slot_request(w, slot);
+  return w.take();
+}
+
+std::vector<std::uint8_t> tape_payload(std::uint8_t action,
+                                       std::uint32_t block = 0) {
+  kcpc::Writer w;
+  kcpc::write_tape_control_request(w, kcpc::TapeControlRequest{action, block});
+  return w.take();
+}
+
+std::vector<std::uint8_t> snapshot_load_payload(const std::string& path,
+                                                std::uint8_t flags = 0) {
+  kcpc::Writer w;
+  kcpc::write_snapshot_load_request(w, kcpc::SnapshotLoadRequest{flags, path});
+  return w.take();
+}
+
+std::vector<std::uint8_t> config_set_payload(const std::string& key,
+                                             const std::string& value) {
+  kcpc::Writer w;
+  kcpc::write_config_set_request(w, kcpc::ConfigSetRequest{key, value});
+  return w.take();
+}
+
+// A machine with two drives, a deck, snapshots and one setting. A change of
+// a slot and a rebuild post their events named after the request, as the
+// real machine's side does.
+struct FakeMedia {
+  void attach(kcpc::ServerConfig& c, kcpc::Server& server) {
+    c.media_insert = [this, &server](const kcpc::Cause& cause,
+                                     const kcpc::MediaInsertRequest& insert,
+                                     std::uint64_t& generation,
+                                     std::string& message) {
+      std::scoped_lock const lock(mutex);
+      calls += 1;
+      if (insert.path == "missing.dsk") return Status::kNotFound;
+      if (insert.path == "junk.dsk") {
+        message = "this slot takes .dsk.ipf.raw";
+        return Status::kBadPayload;
+      }
+      path[insert.slot] = insert.path;
+      generation = changed(server, insert.slot, cause);
+      return Status::kOk;
+    };
+    c.media_eject = [this, &server](const kcpc::Cause& cause, std::uint8_t slot,
+                                    std::uint64_t& generation,
+                                    std::string& /*message*/) {
+      std::scoped_lock const lock(mutex);
+      calls += 1;
+      path[slot].clear();
+      generation = changed(server, slot, cause);
+      return Status::kOk;
+    };
+    c.media_info = [this](kcpc::MediaInfo& info) {
+      std::scoped_lock const lock(mutex);
+      info.present = path[info.slot].empty() ? 0 : 1;
+      info.flags = kcpc::kMediaFlagUnsaved;
+      info.generation = generations[info.slot];
+      info.path = path[info.slot];
+      info.tape = tape;
+      // The server keeps the slot that was asked for.
+      info.slot = 0xEE;
+      return Status::kOk;
+    };
+    c.tape_control = [this](const kcpc::TapeControlRequest& control,
+                            kcpc::TapeState& out) {
+      std::scoped_lock const lock(mutex);
+      calls += 1;
+      if (path[2].empty()) return Status::kNotPresent;
+      if (control.action ==
+          static_cast<std::uint8_t>(kcpc::TapeAction::kSeek)) {
+        if (control.block >= tape.blocks) return Status::kOutOfRange;
+        tape.block = control.block;
+      }
+      tape.playing =
+          control.action == static_cast<std::uint8_t>(kcpc::TapeAction::kPlay);
+      out = tape;
+      return Status::kOk;
+    };
+    c.snapshot_save = [this](const std::string& file, kcpc::Stamp& stamp,
+                             std::string& message) {
+      std::scoped_lock const lock(mutex);
+      calls += 1;
+      if (file == "/nowhere/state.sna") {
+        message = "no such directory";
+        return Status::kNotFound;
+      }
+      saved = file;
+      stamp.frame = 500;
+      stamp.paused = true;
+      return Status::kOk;
+    };
+    c.snapshot_load = [this, &server](const kcpc::Cause& cause,
+                                      const kcpc::SnapshotLoadRequest& load,
+                                      kcpc::Stamp& stamp,
+                                      std::string& /*message*/) {
+      std::scoped_lock const lock(mutex);
+      calls += 1;
+      if (load.path != "state.sna") return Status::kBadPayload;
+      loaded_flags = load.flags;
+      stamp.frame = 501;
+      stamp.paused = (load.flags & kcpc::kSnapshotFlagStayPaused) != 0;
+      kcpc::Event event;
+      event.opcode = Opcode::kEvtReset;
+      event.frame = 501;
+      event.cause_client = cause.client;
+      event.cause_request = cause.request;
+      server.post(event);
+      return Status::kOk;
+    };
+    c.config_get = [this](const std::string& key, kcpc::ConfigValue& value) {
+      std::scoped_lock const lock(mutex);
+      if (key == "fullscreen") return Status::kNotPresent;
+      if (key != "model") return Status::kNotFound;
+      value.value = std::to_string(model);
+      value.has_pending = staged != model;
+      value.pending = std::to_string(staged);
+      return Status::kOk;
+    };
+    c.config_set = [this](const std::string& key, const std::string& value,
+                          kcpc::ConfigEffect& effect, std::string& message) {
+      std::scoped_lock const lock(mutex);
+      calls += 1;
+      if (key != "model") return Status::kNotFound;
+      if (value.size() != 1 || value[0] < '0' || value[0] > '3') {
+        message = "model must be 0-3";
+        return Status::kBadPayload;
+      }
+      staged = value[0] - '0';
+      effect = kcpc::ConfigEffect::kStaged;
+      return Status::kOk;
+    };
+    c.config_apply = [this, &server](const kcpc::Cause& cause,
+                                     kcpc::Stamp& stamp, std::string& message) {
+      std::scoped_lock const lock(mutex);
+      calls += 1;
+      if (apply_status != Status::kOk) {
+        message = "the machine could not be rebuilt (code 7)";
+        return apply_status;
+      }
+      model = staged;
+      kcpc::Event event;
+      event.opcode = Opcode::kEvtMachineChanged;
+      event.machine.model = static_cast<std::uint8_t>(model);
+      event.cause_client = cause.client;
+      event.cause_request = cause.request;
+      server.post(event);
+      stamp.frame = 900;
+      return Status::kOk;
+    };
+  }
+
+  // Under `mutex`.
+  std::uint64_t changed(kcpc::Server& server, std::uint8_t slot,
+                        const kcpc::Cause& cause) {
+    generations[slot] += 1;
+    kcpc::Event event;
+    event.opcode = Opcode::kEvtMediaChanged;
+    event.slot = slot;
+    event.generation = generations[slot];
+    event.cause_client = cause.client;
+    event.cause_request = cause.request;
+    server.post(event);
+    return generations[slot];
+  }
+
+  std::mutex mutex;
+  int calls = 0;  // requests that reached a callback that changes something
+  std::string path[kcpc::kMediaSlots];
+  std::uint64_t generations[kcpc::kMediaSlots] = {20, 30, 40, 50};
+  kcpc::TapeState tape{0, 1, 0, 3};
+  std::string saved;
+  std::uint8_t loaded_flags = 0xFF;
+  int model = 2;
+  int staged = 2;
+  Status apply_status = Status::kOk;
+};
+
+class KcpcMediaTest : public KcpcDevtoolsTest {
+ protected:
+  void start_with_media() {
+    kcpc::ServerConfig config = test_config();
+    reads_.attach(config);
+    writes_.attach(config);
+    run_.attach(config, server_);
+    bps_.attach(config, server_);
+    input_.attach(config);
+    devtools_.attach(config, server_);
+    media_.attach(config, server_);
+    start(config);
+  }
+
+  FakeMedia media_;
+};
+
+}  // namespace
+
+TEST_F(KcpcMediaTest, HelloAnnouncesMediaSnapshotsAndConfiguration) {
+  start_with_media();
+  kcpc::HelloReply hello;
+  auto client = join(kcpc::Role::kObserver, hello);
+  EXPECT_EQ(hello.caps, kcpc::kServerCaps);
+  EXPECT_EQ(hello.caps & kMediaCaps, kMediaCaps);
+}
+
+TEST_F(KcpcMediaTest, WithoutTheGroupsTheirOpcodesDoNotExist) {
+  start_with_devtools();
+  kcpc::HelloReply hello;
+  auto controller = join(kcpc::Role::kController, hello);
+  EXPECT_EQ(hello.caps & kMediaCaps, 0U);
+  Frame frame;
+  std::uint32_t id = 2;
+  for (Opcode const opcode :
+       {Opcode::kMediaInsert, Opcode::kMediaEject, Opcode::kMediaInfo,
+        Opcode::kTapeControl, Opcode::kSnapshotSave, Opcode::kSnapshotLoad,
+        Opcode::kConfigGet, Opcode::kConfigSet, Opcode::kConfigApply}) {
+    exchange(*controller, opcode, id++, slot_payload(0), frame);
+    EXPECT_EQ(frame.status(), Status::kUnknownOpcode);
+  }
+}
+
+TEST_F(KcpcMediaTest, OnlyTheControllerChangesAndAnyoneAsks) {
+  start_with_media();
+  kcpc::HelloReply hello;
+  auto controller = join(kcpc::Role::kController, hello);
+  auto observer = join(kcpc::Role::kObserver, hello);
+  Frame frame;
+
+  std::uint32_t id = 2;
+  for (Opcode const opcode :
+       {Opcode::kMediaInsert, Opcode::kMediaEject, Opcode::kTapeControl,
+        Opcode::kSnapshotSave, Opcode::kSnapshotLoad, Opcode::kConfigSet,
+        Opcode::kConfigApply}) {
+    exchange(*observer, opcode, id++, insert_payload(0, "game.dsk"), frame);
+    EXPECT_EQ(frame.status(), Status::kNotController);
+    exchange(*observer, opcode, id++, {}, frame);
+    EXPECT_EQ(frame.status(), Status::kNotController) << "malformed, too";
+  }
+  EXPECT_EQ(media_.calls, 0) << "nothing reached the machine";
+
+  exchange(*controller, Opcode::kMediaInsert, 2, insert_payload(1, "game.dsk"),
+           frame);
+  ASSERT_EQ(frame.status(), Status::kOk);
+  ASSERT_EQ(frame.payload.size(), 4U + 8U);
+  EXPECT_EQ(reply_generation(frame), 31U);
+
+  // MEDIA_INFO and CONFIG_GET are an observer's too.
+  exchange(*observer, Opcode::kMediaInfo, id++, slot_payload(1), frame);
+  ASSERT_EQ(frame.status(), Status::kOk);
+  kcpc::Reader r(frame.payload);
+  r.skip(4);
+  kcpc::MediaInfo info;
+  ASSERT_TRUE(kcpc::read_media_info(r, info));
+  EXPECT_EQ(r.remaining(), 0U) << "a drive has no tape fields";
+  EXPECT_EQ(info.slot, 1) << "the slot that was asked for";
+  EXPECT_EQ(info.present, 1);
+  EXPECT_EQ(info.flags, kcpc::kMediaFlagUnsaved);
+  EXPECT_EQ(info.generation, 31U);
+  EXPECT_EQ(info.path, "game.dsk");
+
+  exchange(*observer, Opcode::kMediaInfo, id++, slot_payload(2), frame);
+  ASSERT_EQ(frame.status(), Status::kOk);
+  kcpc::Reader t(frame.payload);
+  t.skip(4);
+  ASSERT_TRUE(kcpc::read_media_info(t, info));
+  EXPECT_EQ(t.remaining(), 0U);
+  EXPECT_EQ(info.present, 0);
+  EXPECT_EQ(info.tape.motor, 1) << "the tape slot ends with the deck";
+  EXPECT_EQ(info.tape.blocks, 3U);
+
+  exchange(*observer, Opcode::kConfigGet, id++, text_payload("model"), frame);
+  ASSERT_EQ(frame.status(), Status::kOk);
+
+  exchange(*controller, Opcode::kMediaEject, 3, slot_payload(1), frame);
+  ASSERT_EQ(frame.status(), Status::kOk);
+  EXPECT_EQ(reply_generation(frame), 32U);
+}
+
+TEST_F(KcpcMediaTest, AMediaRequestIsCheckedBeforeTheMachineIsAsked) {
+  start_with_media();
+  kcpc::HelloReply hello;
+  auto controller = join(kcpc::Role::kController, hello);
+  Frame frame;
+  std::uint32_t id = 2;
+  auto refused = [&](Opcode opcode, const std::vector<std::uint8_t>& payload,
+                     const char* what) {
+    exchange(*controller, opcode, id++, payload, frame);
+    EXPECT_EQ(frame.status(), Status::kBadPayload) << what;
+    EXPECT_FALSE(frame.message().empty()) << what;
+  };
+  refused(Opcode::kMediaInsert, insert_payload(4, "game.dsk"), "slot 4");
+  refused(Opcode::kMediaInsert, insert_payload(0, "game.dsk", 1),
+          "a reserved flag");
+  refused(Opcode::kMediaInsert, insert_payload(0, ""), "no path");
+  refused(Opcode::kMediaInsert, {0, 0}, "too short");
+  refused(Opcode::kMediaEject, slot_payload(4), "slot 4");
+  refused(Opcode::kMediaEject, {0}, "too short");
+  refused(Opcode::kMediaInfo, slot_payload(9), "slot 9");
+  refused(Opcode::kMediaInfo, {}, "too short");
+  refused(Opcode::kTapeControl, tape_payload(4), "an unknown action");
+  refused(Opcode::kTapeControl, {1, 0, 0, 0}, "too short");
+  refused(Opcode::kSnapshotSave, text_payload(""), "no path");
+  refused(Opcode::kSnapshotSave, {}, "too short");
+  refused(Opcode::kSnapshotLoad, snapshot_load_payload(""), "no path");
+  refused(Opcode::kSnapshotLoad, {0}, "too short");
+  refused(Opcode::kConfigGet, {}, "too short");
+  refused(Opcode::kConfigSet, text_payload("model"), "no value field");
+  EXPECT_EQ(media_.calls, 0) << "none of them reached the machine";
+
+  // What the machine's side refuses keeps its status and its words.
+  exchange(*controller, Opcode::kMediaInsert, id++,
+           insert_payload(0, "missing.dsk"), frame);
+  EXPECT_EQ(frame.status(), Status::kNotFound);
+  EXPECT_NE(frame.message().find("file"), std::string::npos);
+  exchange(*controller, Opcode::kMediaInsert, id++,
+           insert_payload(0, "junk.dsk"), frame);
+  EXPECT_EQ(frame.status(), Status::kBadPayload);
+  EXPECT_EQ(frame.message(), "this slot takes .dsk.ipf.raw");
+}
+
+TEST_F(KcpcMediaTest, AMediaChangeFollowsItsReplyAndReachesSubscribers) {
+  start_with_media();
+  kcpc::HelloReply hello;
+  auto controller = join(kcpc::Role::kController, hello);
+  // Before anyone else joins: it is sent to every client connected by then.
+  Frame frame;
+  expect_event(*controller, Opcode::kEvtControlChanged, frame);
+  auto watcher = join(kcpc::Role::kObserver, hello);
+  auto deaf = join(kcpc::Role::kObserver, hello);
+  subscribe(*controller, 2, kcpc::kEventClassMedia);
+  subscribe(*watcher, 2, kcpc::kEventClassMedia);
+  subscribe(*deaf, 2, kcpc::kEventClassRun);
+
+  ASSERT_TRUE(controller->request(Opcode::kMediaInsert, 3,
+                                  insert_payload(0, "game.dsk")));
+  ASSERT_TRUE(controller->receive_any(frame));
+  EXPECT_EQ(frame.header.kind, static_cast<std::uint8_t>(kcpc::Kind::kResponse))
+      << "the event overtook the response";
+  ASSERT_EQ(frame.status(), Status::kOk);
+  for (TestClient* client : {controller.get(), watcher.get()}) {
+    expect_event(*client, Opcode::kEvtMediaChanged, frame);
+    kcpc::Reader r(frame.payload);
+    std::uint8_t slot = 9;
+    std::uint64_t generation = 0;
+    r.u8(slot);
+    r.skip(3);
+    ASSERT_TRUE(r.u64(generation));
+    EXPECT_EQ(slot, 0);
+    EXPECT_EQ(generation, 21U);
+  }
+  settle(*deaf, 3);
+  EXPECT_TRUE(deaf->events.empty()) << "it did not subscribe to MEDIA";
+}
+
+TEST_F(KcpcMediaTest, TapeControlRepliesWithTheDeck) {
+  start_with_media();
+  kcpc::HelloReply hello;
+  auto controller = join(kcpc::Role::kController, hello);
+  Frame frame;
+  exchange(*controller, Opcode::kTapeControl, 2,
+           tape_payload(static_cast<std::uint8_t>(kcpc::TapeAction::kPlay)),
+           frame);
+  EXPECT_EQ(frame.status(), Status::kNotPresent);
+  EXPECT_NE(frame.message().find("tape"), std::string::npos);
+
+  exchange(*controller, Opcode::kMediaInsert, 3, insert_payload(2, "side.cdt"),
+           frame);
+  ASSERT_EQ(frame.status(), Status::kOk);
+  exchange(*controller, Opcode::kTapeControl, 4,
+           tape_payload(static_cast<std::uint8_t>(kcpc::TapeAction::kSeek), 2),
+           frame);
+  ASSERT_EQ(frame.status(), Status::kOk);
+  ASSERT_EQ(frame.payload.size(), 4U + 12U);
+  kcpc::Reader r(frame.payload);
+  r.skip(4);
+  kcpc::TapeState tape;
+  ASSERT_TRUE(kcpc::read_tape_state(r, tape));
+  EXPECT_EQ(tape.playing, 0);
+  EXPECT_EQ(tape.motor, 1);
+  EXPECT_EQ(tape.block, 2U);
+  EXPECT_EQ(tape.blocks, 3U);
+
+  exchange(*controller, Opcode::kTapeControl, 5,
+           tape_payload(static_cast<std::uint8_t>(kcpc::TapeAction::kSeek), 3),
+           frame);
+  EXPECT_EQ(frame.status(), Status::kOutOfRange);
+}
+
+TEST_F(KcpcMediaTest, SnapshotsReplyWithAStampAndALoadIsAnnounced) {
+  start_with_media();
+  kcpc::HelloReply hello;
+  auto controller = join(kcpc::Role::kController, hello);
+  subscribe(*controller, 2, kcpc::kEventClassRun);
+  Frame frame;
+  expect_event(*controller, Opcode::kEvtControlChanged, frame);
+
+  exchange(*controller, Opcode::kSnapshotSave, 3, text_payload("state.sna"),
+           frame);
+  ASSERT_EQ(frame.status(), Status::kOk);
+  ASSERT_EQ(frame.payload.size(), 4U + 12U);
+  EXPECT_EQ(media_.saved, "state.sna");
+  kcpc::Reader r(frame.payload);
+  r.skip(4);
+  kcpc::Stamp stamp;
+  ASSERT_TRUE(kcpc::read_stamp(r, stamp));
+  EXPECT_EQ(stamp.frame, 500U);
+  EXPECT_TRUE(stamp.paused);
+
+  exchange(*controller, Opcode::kSnapshotSave, 4,
+           text_payload("/nowhere/state.sna"), frame);
+  EXPECT_EQ(frame.status(), Status::kNotFound);
+  EXPECT_EQ(frame.message(), "no such directory");
+
+  ASSERT_TRUE(controller->request(
+      Opcode::kSnapshotLoad, 5,
+      snapshot_load_payload("state.sna", kcpc::kSnapshotFlagStayPaused)));
+  ASSERT_TRUE(controller->receive_any(frame));
+  EXPECT_EQ(frame.header.kind, static_cast<std::uint8_t>(kcpc::Kind::kResponse))
+      << "the reset overtook the response";
+  ASSERT_EQ(frame.status(), Status::kOk);
+  EXPECT_EQ(media_.loaded_flags, kcpc::kSnapshotFlagStayPaused);
+  expect_event(*controller, Opcode::kEvtReset, frame);
+
+  exchange(*controller, Opcode::kSnapshotLoad, 6,
+           snapshot_load_payload("notes.txt"), frame);
+  EXPECT_EQ(frame.status(), Status::kBadPayload);
+  EXPECT_NE(frame.message().find("SNA"), std::string::npos);
+}
+
+TEST_F(KcpcMediaTest, ConfigurationIsStagedAndApplied) {
+  start_with_media();
+  kcpc::HelloReply hello;
+  auto controller = join(kcpc::Role::kController, hello);
+  // Before anyone else joins: it is sent to every client connected by then.
+  Frame frame;
+  expect_event(*controller, Opcode::kEvtControlChanged, frame);
+  auto watcher = join(kcpc::Role::kObserver, hello);
+  subscribe(*controller, 2, kcpc::kEventClassMachine);
+  subscribe(*watcher, 2, kcpc::kEventClassMachine);
+
+  auto get = [&](TestClient& client, std::uint32_t id) {
+    exchange(client, Opcode::kConfigGet, id, text_payload("model"), frame);
+    EXPECT_EQ(frame.status(), Status::kOk);
+    kcpc::Reader r(frame.payload);
+    r.skip(4);
+    kcpc::ConfigValue value;
+    EXPECT_TRUE(kcpc::read_config_value(r, value));
+    EXPECT_EQ(r.remaining(), 0U);
+    return value;
+  };
+  kcpc::ConfigValue value = get(*watcher, 3);
+  EXPECT_EQ(value.value, "2");
+  EXPECT_FALSE(value.has_pending);
+  EXPECT_TRUE(value.pending.empty()) << "empty unless one is staged";
+
+  exchange(*controller, Opcode::kConfigSet, 3, config_set_payload("model", "3"),
+           frame);
+  ASSERT_EQ(frame.status(), Status::kOk);
+  ASSERT_EQ(frame.payload.size(), 4U + 4U);
+  EXPECT_EQ(frame.payload[4],
+            static_cast<std::uint8_t>(kcpc::ConfigEffect::kStaged));
+  value = get(*watcher, 4);
+  EXPECT_EQ(value.value, "2");
+  EXPECT_TRUE(value.has_pending);
+  EXPECT_EQ(value.pending, "3");
+
+  exchange(*controller, Opcode::kConfigSet, 4, config_set_payload("model", "9"),
+           frame);
+  EXPECT_EQ(frame.status(), Status::kBadPayload);
+  EXPECT_EQ(frame.message(), "model must be 0-3");
+  exchange(*controller, Opcode::kConfigSet, 5,
+           config_set_payload("colour", "1"), frame);
+  EXPECT_EQ(frame.status(), Status::kNotFound);
+  exchange(*watcher, Opcode::kConfigGet, 5, text_payload("colour"), frame);
+  EXPECT_EQ(frame.status(), Status::kNotFound);
+  exchange(*watcher, Opcode::kConfigGet, 6, text_payload("fullscreen"), frame);
+  EXPECT_EQ(frame.status(), Status::kNotPresent);
+
+  ASSERT_TRUE(controller->request(Opcode::kConfigApply, 6, {}));
+  ASSERT_TRUE(controller->receive_any(frame));
+  EXPECT_EQ(frame.header.kind, static_cast<std::uint8_t>(kcpc::Kind::kResponse))
+      << "the event overtook the response";
+  ASSERT_EQ(frame.status(), Status::kOk);
+  ASSERT_EQ(frame.payload.size(), 4U + 12U) << "a stamp";
+  for (TestClient* client : {controller.get(), watcher.get()}) {
+    expect_event(*client, Opcode::kEvtMachineChanged, frame);
+    EXPECT_EQ(frame.payload[0], 3) << "the model of the rebuilt machine";
+  }
+  value = get(*watcher, 7);
+  EXPECT_EQ(value.value, "3");
+  EXPECT_FALSE(value.has_pending);
+
+  media_.apply_status = Status::kInternal;
+  exchange(*controller, Opcode::kConfigApply, 7, {}, frame);
+  EXPECT_EQ(frame.status(), Status::kInternal);
+  EXPECT_EQ(frame.message(), "the machine could not be rebuilt (code 7)");
 }
