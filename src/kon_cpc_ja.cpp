@@ -1837,6 +1837,18 @@ bool g_lease_chain_was_paused = false;
 // for somebody having stopped and restarted the machine (beads-pja3).
 bool g_lease_chain_run_requested = false;
 uint64_t cpc_resume_unlocked(bool new_epoch = true);
+// Counts the stops somebody asked for (cpc_stop_requested_locked()), as
+// g_resume_epoch counts the runs. Written and read under g_pause_mutex.
+uint64_t g_stop_epoch = 0;
+// The pause system.auto_pause applied (cpc_auto_pause()): the epochs it left
+// behind. It still holds while neither has moved: nobody has stopped or run
+// the machine since.
+struct AutoPauseClaim {
+  bool held = false;
+  uint64_t stop_epoch = 0;
+  uint64_t resume_epoch = 0;
+};
+AutoPauseClaim g_auto_pause_claim;
 
 // The announced run state (koncepcja.h). Everything here is written under
 // g_pause_mutex; the atomics are there for the lock-free readers.
@@ -1900,6 +1912,7 @@ namespace {
 // Any other stop inside a walk is remembered as what ended it, unless it is
 // part of the step (the lease a step request lets go of before its walk).
 void cpc_stop_requested_locked(const CpcRunCause& cause, bool by_walk = false) {
+  ++g_stop_epoch;
   if (g_pause_lease_count > 0) g_lease_chain_was_paused = true;
   g_lease_chain_run_requested = false;
   g_stop_note = cause;
@@ -2175,12 +2188,18 @@ uint64_t cpc_resume_epoch() {
   return g_resume_epoch.load(std::memory_order_acquire);
 }
 
-void cpc_pause(const CpcRunCause& cause) {
-  std::scoped_lock const lock(g_pause_mutex);
+namespace {
+void cpc_pause_requested_locked(const CpcRunCause& cause) {
   cpc_stop_requested_locked(cause);
   cpc_interrupt_walk_locked(cause);
   cpc_pause_locked();
   cpc_reconcile_run_state_locked();
+}
+}  // namespace
+
+void cpc_pause(const CpcRunCause& cause) {
+  std::scoped_lock const lock(g_pause_mutex);
+  cpc_pause_requested_locked(cause);
 }
 
 void cpc_walk_begin(const CpcRunCause& step) {
@@ -2318,8 +2337,8 @@ bool cpc_resume_applied(const CpcRunCause& cause) {
   return true;
 }
 
-bool cpc_run(const CpcRunCause& cause) {
-  std::scoped_lock const lock(g_pause_mutex);
+namespace {
+bool cpc_run_locked(const CpcRunCause& cause) {
   cpc_run_requested_locked(cause);
   if (g_pause_lease_count > 0) {
     // As release_running(): the last holder's restore_run_state() runs it.
@@ -2331,14 +2350,36 @@ bool cpc_run(const CpcRunCause& cause) {
   cpc_reconcile_run_state_locked();
   return true;
 }
+}  // namespace
 
+bool cpc_run(const CpcRunCause& cause) {
+  std::scoped_lock const lock(g_pause_mutex);
+  return cpc_run_locked(cause);
+}
+
+// Getting the window back runs the machine only when losing it was what
+// stopped it, and nothing has stopped or run it since: a breakpoint, the
+// user's Pause or a KCPC PAUSE stands (beads-z6yz).
 void cpc_auto_pause(CpcAutoPauseSignal signal) {
   if (!CPC.auto_pause) return;
-  if (signal == CpcAutoPauseSignal::Left) {
-    cpc_pause();
-  } else {
-    cpc_run();
+  std::scoped_lock const lock(g_pause_mutex);
+  bool const ours = g_auto_pause_claim.held &&
+                    g_auto_pause_claim.stop_epoch == g_stop_epoch &&
+                    g_auto_pause_claim.resume_epoch == g_resume_epoch;
+  if (signal == CpcAutoPauseSignal::Returned) {
+    g_auto_pause_claim.held = false;
+    if (ours) cpc_run_locked({});
+    return;
   }
+  // FOCUS_LOST and MOUSE_LEAVE come in pairs: the second finds its own stop.
+  if (ours) return;
+  g_auto_pause_claim.held = false;
+  // Under leases CPC.paused is theirs; the chain knows whether it is a stop.
+  bool const stopped =
+      g_pause_lease_count > 0 ? g_lease_chain_was_paused : CPC.paused;
+  if (stopped) return;
+  cpc_pause_requested_locked({});
+  g_auto_pause_claim = {true, g_stop_epoch, g_resume_epoch};
 }
 
 CpcWalkRun cpc_walk_run(uint64_t& epoch) {
