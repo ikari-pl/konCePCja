@@ -1020,8 +1020,7 @@ the one the rebuild puts back. Sent after every rebuild that worked:
 `CONFIG_APPLY`, the text IPC's `config apply` and `profile load`, the GUI's
 settings. A client should
 re-read everything it shows. (`effective_tier` is the tier the new machine
-starts in; the first frame may choose another, and `MACHINE_INFO` then says
-so.)
+starts in, chosen by the run-tier policy before its first frame.)
 
 **`EVT_CONTROL_CHANGED` (`0x8009`)** — `u32 controller` (the new
 controller's `client_id`, or 0 for none), `u32 previous` (the `client_id`
@@ -1054,9 +1053,10 @@ every slot with nothing fitted, without setting a bit; bit 0 is set only when
 an expansion ROM has been fitted over it. A stock 6128 reports `0x00000080`:
 AMSDOS in slot 7.
 
-`effective_tier` is the tier the machine is running in now. It can differ
-from the `effective_tier` of the startup manifest, which is printed before
-the first frame has chosen the tier.
+`effective_tier` is the tier the machine is running in now. At startup it
+equals the `effective_tier` of the startup manifest, which is printed once
+the machine is built and in the tier its first frame runs; it changes later
+when the policy does, or when Auto sees a breakpoint come or go.
 
 `ram_bytes` is what the machine has fitted, which is the size of the memory
 space `PHYS_RAM` ([section 11](#11-memory)). It is the configured RAM size

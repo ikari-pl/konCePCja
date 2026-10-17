@@ -338,6 +338,40 @@ void log_flux_writability(Bridge& b) {
                         : "read-only (non-standard flux; not synthesizable)"));
 }
 
+// Auto's input: a breakpoint, watchpoint or I/O breakpoint is set, or an
+// autotype WAITBREAK is armed.
+bool debug_lists_engaged(bool waitbreak_armed) {
+  return waitbreak_armed || !z80_list_breakpoints_ref().empty() ||
+         !z80_list_watchpoints_ref().empty() ||
+         !z80_list_io_breakpoints_ref().empty();
+}
+
+// Request the tier the run-tier policy chooses. Every frame applies it on
+// entry, and subcycle_bridge_start() once, so a machine that has just been
+// built is already in it (the startup manifest reports it, beads-m9dq).
+void apply_tier_policy(Bridge& b) {
+  if (b.tier_env_pinned) return;  // env pins the tier for bench/harness runs
+  using RT = subcycle::Machine::RunTier;
+  RT want = RT::Fast;
+  switch (b.tier_policy) {
+    case BridgeTierPolicy::Auto:
+      want = b.debug_engaged ? RT::Wake : RT::Fast;
+      break;
+    case BridgeTierPolicy::Fast:
+      want = RT::Fast;
+      break;
+    case BridgeTierPolicy::Wake:
+      want = RT::Wake;
+      break;
+    case BridgeTierPolicy::Soldered:
+      want = RT::Soldered;
+      break;
+    case BridgeTierPolicy::Faithful:
+      want = RT::Faithful;
+      break;
+  }
+  if (b.machine.run_tier() != want) b.machine.set_run_tier(want);
+}
 }  // namespace
 
 bool subcycle_bridge_start() {
@@ -555,6 +589,12 @@ bool subcycle_bridge_start() {
         },
         reinterpret_cast<void*>(bdos_hook));
   }
+
+  // The first frame's tier, now: the composition as plugged above, and the
+  // policy with the breakpoints already loaded.
+  b.machine.recompose_active();
+  b.debug_engaged = debug_lists_engaged(b.waitbreak_armed);
+  apply_tier_policy(b);
 
   b.pacer.unpaced();
   b.sleep_ticks = 0;
@@ -1046,9 +1086,7 @@ void subcycle_bridge_sync_probe() {
       b.event_watch.data(), static_cast<int>(b.event_watch.size()));
   for (int i = 0; i < b.event_watch_count; ++i)
     probe_add_watch(pr, b.event_watch[i], 1, /*on_read=*/0, /*on_write=*/1);
-  b.debug_engaged = waitbreak_armed || !z80_list_breakpoints_ref().empty() ||
-                    !z80_list_watchpoints_ref().empty() ||
-                    !z80_list_io_breakpoints_ref().empty();
+  b.debug_engaged = debug_lists_engaged(waitbreak_armed);
 }
 
 void subcycle_bridge_request_tape_seek(uint32_t block_ordinal) {
@@ -2009,28 +2047,7 @@ const std::vector<int16_t>& subcycle_bridge_frame(const uint8_t rows[16],
   // input for free — they all end in the app's published matrix.
   for (uint8_t row = 0; row < 16; ++row) b.machine.set_key_row(row, rows[row]);
 
-  if (!b.tier_env_pinned) {  // env pins the tier for bench/harness runs
-    using RT = subcycle::Machine::RunTier;
-    RT want = RT::Fast;
-    switch (b.tier_policy) {
-      case BridgeTierPolicy::Auto:
-        want = b.debug_engaged ? RT::Wake : RT::Fast;
-        break;
-      case BridgeTierPolicy::Fast:
-        want = RT::Fast;
-        break;
-      case BridgeTierPolicy::Wake:
-        want = RT::Wake;
-        break;
-      case BridgeTierPolicy::Soldered:
-        want = RT::Soldered;
-        break;
-      case BridgeTierPolicy::Faithful:
-        want = RT::Faithful;
-        break;
-    }
-    if (b.machine.run_tier() != want) b.machine.set_run_tier(want);
-  }
+  apply_tier_policy(b);
 
   // The probe stops run_frame EARLY on every candidate hit, and machine.h's
   // contract is "ack + run again to continue the frame". That continuation was

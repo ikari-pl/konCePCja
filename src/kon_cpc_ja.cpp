@@ -5210,41 +5210,6 @@ int koncpc_main(int argc, char** argv) {
   // first HELLO describes a real one.
   kcpc_host_start(CPC.binary_port_enabled);
 
-  // Machine-consumable startup manifest. Emitted here because this is the first
-  // point at which every server has bound, so the ports it reports are the ones
-  // actually in use — each server probes forward when its default is taken, so
-  // a harness must never assume 6543/6544/8080.
-  {
-    StartupManifest manifest;
-#ifdef KONCPC_VERSION_STRING
-    manifest.version = KONCPC_VERSION_STRING;
-#endif
-#ifdef HASH
-    manifest.build = HASH;
-#endif
-    manifest.pid = startup_manifest_self_pid();
-    manifest.headless = g_headless;
-    constexpr int kPortWaitMs = 2000;
-    manifest.ipc_port =
-        startup_manifest_await_port([] { return g_ipc->port(); }, kPortWaitMs);
-    manifest.telnet_port = startup_manifest_await_port(
-        [] { return g_telnet.port(); }, kPortWaitMs);
-    // Bound synchronously by kcpc_host_start(); 0 when the server is off.
-    manifest.binary_port = kcpc_host_port();
-    if (g_m4_http.is_running()) {
-      manifest.m4_http_port = startup_manifest_await_port(
-          [] { return g_m4_http.port(); }, kPortWaitMs);
-      manifest.m4_bind_ip = g_m4_http.bind_ip();
-    }
-    manifest.model = CPC.model;
-    manifest.ram_size_kb = CPC.ram_size;
-    manifest.run_tier =
-        subcycle_bridge_tier_policy_name(subcycle_bridge_tier_policy());
-    manifest.effective_tier = subcycle_bridge_effective_tier_name();
-    manifest.config_file = config_file;
-    startup_manifest_emit(manifest);
-  }
-
   // Fill the autotype queue with the autocmd if provided.  A single
   // scan-synced path drives all keyboard injection:
   // - ~KEY~ syntax (tilde-delimited) is parsed by enqueue() (~ENTER~, ~PAUSE
@@ -5313,6 +5278,42 @@ int koncpc_main(int argc, char** argv) {
   // launched with the device enabled (beads-0n59, same class as beads-i834).
   ipc_publish_device_gates(g_amx_mouse.enabled || g_symbiface.enabled,
                            static_cast<bool>(CPC.phazer_emulation));
+
+  // Machine-consumable startup manifest. Emitted here because every server has
+  // bound by now, so the ports it reports are the ones actually in use — each
+  // server probes forward when its default is taken, so a harness must never
+  // assume 6543/6544/8080 — and the machine is built and in the tier its
+  // first frame runs, which effective_tier reports (beads-m9dq).
+  {
+    StartupManifest manifest;
+#ifdef KONCPC_VERSION_STRING
+    manifest.version = KONCPC_VERSION_STRING;
+#endif
+#ifdef HASH
+    manifest.build = HASH;
+#endif
+    manifest.pid = startup_manifest_self_pid();
+    manifest.headless = g_headless;
+    constexpr int kPortWaitMs = 2000;
+    manifest.ipc_port =
+        startup_manifest_await_port([] { return g_ipc->port(); }, kPortWaitMs);
+    manifest.telnet_port = startup_manifest_await_port(
+        [] { return g_telnet.port(); }, kPortWaitMs);
+    // Bound synchronously by kcpc_host_start(); 0 when the server is off.
+    manifest.binary_port = kcpc_host_port();
+    if (g_m4_http.is_running()) {
+      manifest.m4_http_port = startup_manifest_await_port(
+          [] { return g_m4_http.port(); }, kPortWaitMs);
+      manifest.m4_bind_ip = g_m4_http.bind_ip();
+    }
+    manifest.model = CPC.model;
+    manifest.ram_size_kb = CPC.ram_size;
+    manifest.run_tier =
+        subcycle_bridge_tier_policy_name(subcycle_bridge_tier_policy());
+    manifest.effective_tier = subcycle_bridge_effective_tier_name();
+    manifest.config_file = config_file;
+    startup_manifest_emit(manifest);
+  }
 
 #ifdef KONCPC_SDL
   if (!g_headless) {
