@@ -20,6 +20,7 @@
 extern t_CPC CPC;
 extern t_drive driveA;
 extern t_drive driveB;
+extern std::vector<byte> pbTapeImage;
 
 namespace {
 
@@ -398,14 +399,61 @@ TEST_F(MediaNotesTest, ATapeIsAnnouncedOnceAnInsertAndOnceAnEject) {
   EXPECT_TRUE(state.path.empty());
   EXPECT_EQ(state.generation, before + 2);
 
-  // Something that is no tape: the deck ends up empty, and says so.
-  f = fopen(cdt.c_str(), "wb");
+  // Something that is no tape changes nothing: the deck keeps its tape, and
+  // nothing is announced (beads-ow6r).
+  ASSERT_EQ(0, file_load(slot));
+  ASSERT_EQ(g_seen.size(), 3U);
+  std::vector<byte> const held = pbTapeImage;
+  MediaState const before_refusal = media_state(MediaSlot::Tape);
+  std::string const bad = (dir_ / "bad.cdt").string();
+  f = fopen(bad.c_str(), "wb");
   ASSERT_NE(f, nullptr);
   ASSERT_EQ(fputs("no tape, this", f) >= 0, true);
   ASSERT_EQ(fclose(f), 0);
+  slot.file = bad;
   EXPECT_NE(0, file_load(slot));
-  ASSERT_EQ(g_seen.size(), 3U);
-  EXPECT_FALSE(media_state(MediaSlot::Tape).present);
+  EXPECT_EQ(g_seen.size(), 3U) << "a refused file was announced";
+  state = media_state(MediaSlot::Tape);
+  EXPECT_TRUE(state.present) << "a refused file emptied the deck";
+  EXPECT_EQ(state.path, before_refusal.path);
+  EXPECT_EQ(state.generation, before_refusal.generation);
+  EXPECT_EQ(pbTapeImage, held) << "the host's copy of the tape changed";
+  // A CDT whose block runs past the end of the file is refused the same way.
+  f = fopen(bad.c_str(), "wb");
+  ASSERT_NE(f, nullptr);
+  const unsigned char cut[] = {'Z', 'X',  'T', 'a', 'p',  'e',
+                               '!', 0x1A, 1,   13,  0x10, 0xE8};
+  ASSERT_EQ(fwrite(cut, sizeof(cut), 1, f), 1U);
+  ASSERT_EQ(fclose(f), 0);
+  EXPECT_NE(0, file_load(slot));
+  EXPECT_EQ(g_seen.size(), 3U);
+  EXPECT_TRUE(media_state(MediaSlot::Tape).present);
+  EXPECT_EQ(pbTapeImage, held);
+}
+
+TEST_F(MediaNotesTest, TapeInsertKeepsTheSlotsFileWhenItRefuses) {
+  std::string const cdt = (dir_ / "tape.cdt").string();
+  FILE* f = fopen(cdt.c_str(), "wb");
+  ASSERT_NE(f, nullptr);
+  const unsigned char bytes[] = {'Z',  'X', 'T', 'a',  'p',  'e', '!',
+                                 0x1A, 1,   13,  0x20, 0xE8, 0x03};
+  ASSERT_EQ(fwrite(bytes, sizeof(bytes), 1, f), 1U);
+  ASSERT_EQ(fclose(f), 0);
+  t_slot slot{};
+  slot.drive = DRIVE::TAPE;
+  ASSERT_EQ(0, tape_deck_insert(slot, cdt));
+  EXPECT_EQ(slot.file, cdt);
+  std::string const bad = (dir_ / "bad.voc").string();
+  f = fopen(bad.c_str(), "wb");
+  ASSERT_NE(f, nullptr);
+  ASSERT_EQ(fputs("Creative but no voice in it", f) >= 0, true);
+  ASSERT_EQ(fclose(f), 0);
+  slot.zip_index = 3;
+  EXPECT_NE(0, tape_deck_insert(slot, bad));
+  EXPECT_EQ(slot.file, cdt) << "the slot names a file it does not hold";
+  EXPECT_EQ(slot.zip_index, 3U);
+  EXPECT_TRUE(media_state(MediaSlot::Tape).present);
+  EXPECT_FALSE(pbTapeImage.empty());
 }
 
 TEST_F(MediaNotesTest, ASnapshotIsNotAMedium) {

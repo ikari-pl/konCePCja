@@ -99,12 +99,17 @@ int cartridge_load(FILE* file);
 // Smart load: DSK, SNA, CDT, VOC, CPR, or a zip containing one of these.
 // slot.drive must match the type of file being loaded. A disc that is refused
 // (no such file, not an image, no flux in it) changes neither drive: the host's
-// view and the machine keep the disc they had, and nothing is announced.
+// view and the machine keep the disc they had, and nothing is announced. A
+// tape that is refused leaves the deck the same way.
 int file_load(t_slot& slot);
 // Loads `path` into the drive `slot` is (CPC.driveA or CPC.driveB). A file
 // that is refused changes nothing, the slot's file included: it still names
 // the disc in the drive. Every way to put a disc in goes through here.
 int disc_insert(t_slot& slot, const std::string& path);
+// The same for the tape deck (`slot` is CPC.tape): a file that is refused
+// changes nothing, the slot's file included. Every way to put a tape in goes
+// through here.
+int tape_deck_insert(t_slot& slot, const std::string& path);
 
 /* SNA <-> the sub-cycle machine (Wave 1); the plain snapshot_load/save route
  * here automatically when the engine is active. Exposed for tests. */

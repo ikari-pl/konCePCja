@@ -338,8 +338,7 @@ void process_pending_dialog() {
       CPC.current_snap_path = dir;
       break;
     case FileDialogAction::LoadTape:
-      CPC.tape.file = path;
-      if (file_load(CPC.tape) == 0) {
+      if (tape_deck_insert(CPC.tape, path) == 0) {
         imgui_toast_success("Tape loaded: " + fname);
         mru_push(CPC.mru_tapes, path);
         tape_scan_blocks();
@@ -349,8 +348,7 @@ void process_pending_dialog() {
       CPC.current_tape_path = dir;
       break;
     case FileDialogAction::LoadTape_LED:
-      CPC.tape.file = path;
-      if (file_load(CPC.tape) == 0) {
+      if (tape_deck_insert(CPC.tape, path) == 0) {
         imgui_toast_success("Tape loaded: " + fname);
         mru_push(CPC.mru_tapes, path);
         tape_scan_blocks();
@@ -1716,9 +1714,8 @@ void imgui_render_menubar() {
         }
       });
       render_mru_section("Tapes", CPC.mru_tapes, [](const std::string& p) {
-        CPC.tape.file = p;
         auto f = std::filesystem::path(p).filename().string();
-        if (file_load(CPC.tape) == 0) {
+        if (tape_deck_insert(CPC.tape, p) == 0) {
           imgui_toast_success("Tape: " + f);
           tape_scan_blocks();
           mru_push(CPC.mru_tapes, p);

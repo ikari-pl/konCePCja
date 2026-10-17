@@ -3439,7 +3439,8 @@ def test_fdc_chip_and_media_events() -> None:
     """Acceptance 4, first half: the text IPC's `load game.dsk` pushes
     EVT_MEDIA_CHANGED for slot 0 with a new generation, and CHIP_GET FDC
     shows the disc; ejecting it, and loading and ejecting a tape, are pushed
-    too. A client that did not subscribe to MEDIA is sent none of it."""
+    too; a file that is no tape changes nothing. A client that did not
+    subscribe to MEDIA is sent none of it."""
     with Core() as core, observer(core, 'media', kc.CLASS_MEDIA) as c, \
             observer(core, 'deaf', kc.CLASS_RUN) as deaf:
         tmp = Path(os.path.realpath(core.tmpdir))
@@ -3496,11 +3497,20 @@ def test_fdc_chip_and_media_events() -> None:
         event = media_event(kc.SLOT_TAPE, False)
         assert event.generation > inserted and event.path == '', event
 
-        # A file that is no tape leaves the deck empty, and says so.
-        tape.write_bytes(b'not a tape at all')
-        assert core.ipc(f'load {tape}').startswith('ERR')
-        event = media_event(kc.SLOT_TAPE, False)
-        assert event.generation > inserted, event
+        # A file that is no tape changes nothing: the deck keeps its tape,
+        # and no event says otherwise (beads-ow6r).
+        assert core.ipc(f'load {tape}').startswith('OK')
+        event = media_event(kc.SLOT_TAPE, True)
+        inserted = event.generation
+        junk = tmp / 'junk.cdt'
+        junk.write_bytes(b'not a tape at all')
+        assert core.ipc(f'load {junk}').startswith('ERR')
+        c.ping()
+        assert not pending(c, kc.EVT_MEDIA_CHANGED), c.events
+        info = c.media_info(kc.SLOT_TAPE)
+        assert info.present and Path(info.path) == tape, info
+        assert info.generation == inserted, (info, inserted)
+        assert info.tape.blocks == 1, info
 
         # Nothing of this reached the client that asked for RUN events only.
         deaf.ping()
@@ -3731,6 +3741,25 @@ def test_media_requests_are_checked() -> None:
         assert not c.media_info(kc.SLOT_DRIVE_A).present
         assert c.media_eject(kc.SLOT_DRIVE_B) > info.generation
         info = c.media_info(kc.SLOT_DRIVE_B)
+
+        # The deck is the same: a file that is no tape leaves the tape there
+        # (beads-ow6r).
+        cut = tmp / 'cut.cdt'
+        cut.write_bytes(b'ZXTape!\x1a\x01\x0d' + b'\x10\xe8')
+        voc = tmp / 'junk.voc'
+        voc.write_bytes(b'Creative but no voice in it')
+        loaded = c.media_insert(kc.SLOT_TAPE, str(tape))
+        refused(kc.BAD_PAYLOAD, 'a CDT cut short', c.media_insert,
+                kc.SLOT_TAPE, str(cut))
+        refused(kc.BAD_PAYLOAD, 'a VOC with no voice', c.media_insert,
+                kc.SLOT_TAPE, str(voc))
+        refused(kc.NOT_FOUND, 'a tape that is not there', c.media_insert,
+                kc.SLOT_TAPE, str(tmp / 'nowhere.cdt'))
+        deck = c.media_info(kc.SLOT_TAPE)
+        assert deck.present and Path(deck.path) == tape, deck
+        assert deck.generation == loaded, (deck, loaded)
+        assert deck.tape.blocks == 1, deck
+        assert c.media_eject(kc.SLOT_TAPE) > loaded
 
         # Ejecting an empty slot succeeds.
         assert c.media_eject(kc.SLOT_DRIVE_B) > info.generation

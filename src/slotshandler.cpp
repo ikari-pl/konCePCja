@@ -722,6 +722,16 @@ void tape_eject_quiet() {
   pbTapeImageEnd = nullptr;
   subcycle_bridge_eject_tape();  // the deck side (frame-boundary deferred)
 }
+
+// Puts a block stream that was read and checked into the deck, in place of
+// the tape there. Nothing touches the deck before this: a file that is
+// refused leaves it as it was (beads-ow6r).
+int tape_take(std::vector<byte>&& image) {
+  tape_eject_quiet();
+  pbTapeImage = std::move(image);
+  pbTapeImageEnd = pbTapeImage.data() + pbTapeImage.size();
+  return 0;
+}
 }  // namespace
 
 void tape_eject() {
@@ -953,7 +963,6 @@ int snapshot_load(const std::string& filename) {
 }
 
 int tape_insert(FILE* pfile) {
-  tape_eject_quiet();
   byte header[10];
   if (fread(header, sizeof(header), 1, pfile) != 1) {
     LOG_ERROR("Error loading tape: couldn't read header");
@@ -1011,37 +1020,32 @@ int tape_insert_cdt(FILE* pfile) {
     LOG_ERROR("Invalid CDT file size");
     return ERR_TAP_INVALID;
   }
-  pbTapeImage.resize(lFileSize);
-  if (fread(pbTapeImage.data(), lFileSize, 1, pfile) != 1) {
+  std::vector<byte> image(static_cast<size_t>(lFileSize));
+  if (fread(image.data(), lFileSize, 1, pfile) != 1) {
     LOG_ERROR("Couldn't read CDT file");
-    tape_eject_quiet();
     return ERR_TAP_INVALID;
   }
-  pbTapeImageEnd = pbTapeImage.data() + lFileSize;
   // Validate: the deck's own block sizing must land exactly on end-of-file.
   {
     const uint32_t len = static_cast<uint32_t>(lFileSize);
     uint32_t pos = 0;
     while (pos < len) {
-      const uint32_t sz = tape_cdt_block_len(pbTapeImage.data(), len, pos);
+      const uint32_t sz = tape_cdt_block_len(image.data(), len, pos);
       if (sz == 0 || sz > len - pos) {
-        LOG_ERROR("CDT block 0x"
-                  << std::hex << static_cast<int>(pbTapeImage[pos]) << std::dec
-                  << " extends past end of file");
-        tape_eject_quiet();
+        LOG_ERROR("CDT block 0x" << std::hex << static_cast<int>(image[pos])
+                                 << std::dec << " extends past end of file");
         return ERR_TAP_INVALID;
       }
       pos += sz;
     }
   }
-  return 0;
+  return tape_take(std::move(image));
 }
 
 int tape_insert_voc(FILE* pfile) {
   // .voc rides the clean VOC->TZX converter (voc_import.cpp); the host keeps
   // the converted block stream so the tape UI table matches what the deck
   // plays (file_load runs the same conversion for the deck).
-  tape_eject_quiet();
   const long lFileSize = file_size(fileno(pfile));
   if (lFileSize <= 0) {
     LOG_ERROR("Reading VOC file: empty file");
@@ -1057,9 +1061,8 @@ int tape_insert_voc(FILE* pfile) {
     LOG_ERROR("Reading VOC file: invalid VOC file");
     return ERR_TAP_BAD_VOC;
   }
-  pbTapeImage.assign(tzx.begin() + 10, tzx.end());  // strip the TZX header
-  pbTapeImageEnd = pbTapeImage.data() + pbTapeImage.size();
-  return 0;
+  // Strip the TZX header.
+  return tape_take(std::vector<byte>(tzx.begin() + 10, tzx.end()));
 }
 
 void cartridge_load() {
@@ -1163,7 +1166,9 @@ int disc_image_check(DRIVE drive, const std::string& extension, bool from_file,
 
 }  // namespace
 
-int disc_insert(t_slot& slot, const std::string& path) {
+namespace {
+// Loads `path` into `slot`, which names it only if it is taken.
+int slot_insert(t_slot& slot, const std::string& path) {
   std::string const was_file = slot.file;
   unsigned int const was_zip_index = slot.zip_index;
   slot.file = path;
@@ -1174,6 +1179,15 @@ int disc_insert(t_slot& slot, const std::string& path) {
     slot.zip_index = was_zip_index;
   }
   return rc;
+}
+}  // namespace
+
+int disc_insert(t_slot& slot, const std::string& path) {
+  return slot_insert(slot, path);
+}
+
+int tape_deck_insert(t_slot& slot, const std::string& path) {
+  return slot_insert(slot, path);
 }
 
 int file_load(t_slot& slot) {
@@ -1259,6 +1273,12 @@ int file_load(t_slot& slot) {
     int ret = file ? loader.load_from_file(file)
                    : loader.load_from_filename(slot.file);
     if (file) fclose(file);
+    // The tape loaders read and check the whole file before they touch the
+    // deck: a tape that is refused leaves the one there, and is no change.
+    if (ret != 0 && slot.drive == DRIVE::TAPE) {
+      LOG_ERROR("Refused " << slot.file << ": the deck keeps its tape");
+      return ret;
+    }
     // Whatever the outcome, the drive no longer holds what it held: a zip
     // member parsed from a FILE* and the flux formats never pass dsk_eject.
     // The bump must land AFTER the swap is queued below, next to the queue

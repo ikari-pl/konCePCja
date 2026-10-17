@@ -1195,12 +1195,10 @@ Status insert_disc(std::uint8_t unit, const std::string& path) {
 }
 
 Status insert_tape(const std::string& path) {
-  CPC.tape.file = path;
-  CPC.tape.zip_index = 0;
-  int const rc = file_load(CPC.tape);
+  // A file that is refused changes nothing, the slot's file included.
+  int const rc = tape_deck_insert(CPC.tape, path);
   subcycle_bridge_apply_pending_media();
   tape_scan_blocks();  // the block table TAPE_CONTROL seeks by
-  if (rc != 0) CPC.tape.file.clear();
   return load_status(rc);
 }
 
