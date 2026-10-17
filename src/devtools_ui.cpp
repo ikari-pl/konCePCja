@@ -74,7 +74,7 @@ constexpr ImVec4 kLinkColor(0.4f, 0.8f, 1.0f, 1.0f);
 // floating window can tell at a glance if the machine is live. (beads-rj4)
 namespace {
 void render_run_state_chip() {
-  if (!g_emu_paused.load()) {
+  if (!dbg_machine_stopped()) {
     ImGui::TextColored(ImVec4(0.3f, 0.85f, 0.3f, 1.0f), "RUNNING");
   } else {
     ImGui::TextColored(ImVec4(0.95f, 0.75f, 0.2f, 1.0f), "PAUSED");
@@ -570,7 +570,7 @@ void DevToolsUI::refresh_breakpoint_snapshots() {
 // while stepping (beads-4i4). Same helpers and the same enable rule as the
 // DevTools toolbar, so the two groups cannot drift apart.
 void DevToolsUI::render_disasm_step_controls() {
-  bool const paused = g_emu_paused.load(std::memory_order_relaxed);
+  bool const paused = dbg_machine_stopped();
   bool const walking = dbg_step_walk_running();
   dbg_step_walk_poll_outcome();
   DebugStepControls const ctl = debug_step_controls(paused, walking, true);

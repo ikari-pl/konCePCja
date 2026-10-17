@@ -351,17 +351,28 @@ bool disasm_menubar_has_item(HeadlessImGui& gui, DevToolsUI& dt,
   return false;
 }
 
-// Pins g_emu_paused for the test and puts it back.
+// Stops or runs the machine for the test and puts it back. Through
+// cpc_pause() / cpc_resume(), not g_emu_paused: the buttons follow the
+// announced run state, which a bare flag does not change (beads-wwz8).
 class PausedFlag {
  public:
-  explicit PausedFlag(bool paused) : saved_(g_emu_paused.load()) {
-    g_emu_paused.store(paused);
+  explicit PausedFlag(bool paused) : saved_(cpc_announced_stopped()) {
+    set(paused);
   }
   PausedFlag(const PausedFlag&) = delete;
   PausedFlag& operator=(const PausedFlag&) = delete;
   PausedFlag(PausedFlag&&) = delete;
   PausedFlag& operator=(PausedFlag&&) = delete;
-  ~PausedFlag() { g_emu_paused.store(saved_); }
+  ~PausedFlag() { set(saved_); }
+
+ private:
+  static void set(bool paused) {
+    if (paused) {
+      cpc_pause();
+    } else {
+      cpc_resume();
+    }
+  }
 
  private:
   bool saved_;
