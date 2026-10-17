@@ -1907,6 +1907,20 @@ bool cpc_wait_until_idle(int timeout_ms) {
   return true;
 }
 
+// External API: the text IPC's replies and the walks of z80_view.cpp wait
+// here before saying the machine has stopped.
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+bool cpc_wait_announced_stopped(const std::function<bool()>& should_abort) {
+  auto const deadline = std::chrono::steady_clock::now() +
+                        std::chrono::milliseconds(cpc_idle_timeout_ms());
+  while (!cpc_announced_stopped()) {
+    if (should_abort && should_abort()) return false;
+    if (std::chrono::steady_clock::now() >= deadline) return false;
+    std::this_thread::sleep_for(std::chrono::microseconds(200));
+  }
+  return true;
+}
+
 namespace {
 // A stop somebody asked for, as opposed to the pause a lease applies for the
 // length of its own operation.

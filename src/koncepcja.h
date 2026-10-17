@@ -923,6 +923,15 @@ bool cpc_pause_if_epoch(uint64_t expected_epoch);
 // that never goes idle must not take the IPC server or the UI down with it.
 // -1 (the default) means cpc_idle_timeout_ms().
 bool cpc_wait_until_idle(int timeout_ms = -1);
+// Wait until a stop asked for has happened: cpc_announced_stopped(). A pause
+// only stops the machine between frames, so in the threaded loop the frame
+// in flight runs on after the request, and a reply sent then calls a running
+// machine stopped (beads-wrkg, beads-veb0). The stop is announced when the
+// frame runner parks. Bounded by cpc_idle_timeout_ms(), since a pause lease
+// another actor holds delays the announcement until it lets go, and ended at
+// once when `should_abort` says so (a server shutting down). False if it
+// ended before the stop was announced.
+bool cpc_wait_announced_stopped(const std::function<bool()>& should_abort = {});
 // Atomically commits a staged engine breakpoint only if no later resume has
 // invalidated it. Publishes the hit after the paused state is visible.
 //
