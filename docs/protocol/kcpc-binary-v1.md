@@ -1669,9 +1669,8 @@ as `EVT_MEDIA_CHANGED`. A number above 3 is `BAD_PAYLOAD`.
     before either is touched (`disc_insert()`, `src/slotshandler.h`); the
     text IPC's `load`, the menus and drag and drop go the same way. A
     cartridge is the same: a file that is no cartridge leaves the one that
-    was there, and no reset happens. **The tape deck is the exception**: a
-    file that is no tape empties it, host and machine alike, and the event
-    says so (keeping the tape that was there is beads-ow6r).
+    was there, and no reset happens. So is the tape deck: a file that is no
+    tape leaves the tape that was there (`tape_deck_insert()`).
   - **The outgoing disc keeps its writes.** A disc that was written to is
     written back to its own file when the new one takes its place.
   - There is no write-protect flag. The FDC has no switch for it: a medium
@@ -1708,8 +1707,8 @@ as `EVT_MEDIA_CHANGED`. A number above 3 is `BAD_PAYLOAD`.
   `MEDIA_INFO`.
 
 Every successful insert and eject, from this port or any other source,
-produces `EVT_MEDIA_CHANGED`; so does a tape load that failed and left the
-deck empty. A refused disc or cartridge produces none: nothing changed. The events of a request name it and follow its reply.
+produces `EVT_MEDIA_CHANGED`. A refused disc, tape or cartridge produces
+none: nothing changed. The events of a request name it and follow its reply.
 
 ### Snapshots
 
@@ -2259,9 +2258,10 @@ Recorded so a reviewer can disagree with one without reading the rest.
     drive empty, on this port and on every other; the text IPC's test said
     the opposite and checked neither. The image is now tried on copies
     first, and the slot keeps naming the disc it holds (`disc_insert()`),
-    as `cpc_cartridge_swap()` already did for a cartridge. A tape still
-    empties the deck: both halves of it agree, so it is a follow-up, not a
-    defect of this protocol (beads-ow6r).
+    as `cpc_cartridge_swap()` already did for a cartridge. A tape did not
+    yet: it emptied the deck, host and machine alike, and said so. It is now
+    read and checked whole before the deck is touched, and the slot keeps
+    naming it the same way (`tape_deck_insert()`, beads-ow6r).
 58. **`SYM_LOAD` takes the `..` rule** (slice 8). It was the one path from
     a client that did not; it now answers `BAD_PAYLOAD`, with the message
     `MEDIA_INSERT` gives, through a message of its own on the callback.
