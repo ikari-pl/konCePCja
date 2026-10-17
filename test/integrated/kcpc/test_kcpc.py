@@ -1112,7 +1112,7 @@ class Controller(KcpcClient):
             # Not when the test closed it already, or failed in the block.
             if exc_type is None and self.sock.fileno() != -1:
                 self.release_control()
-        except (KcpcClosed, BrokenPipeError, ConnectionResetError):
+        except (KcpcClosed, ConnectionError):
             pass  # the core ended the connection, and freed control first
         finally:
             self.close()
