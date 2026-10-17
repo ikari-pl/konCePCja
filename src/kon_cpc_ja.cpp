@@ -46,6 +46,7 @@
 #include "data_areas.h"
 #include "drive_sounds.h"
 #include "emu_frame.h"
+#include "fifo_mutex.h"
 #include "host_clock.h"
 #include "host_state.h"  // g_host_tape / g_host_status / frame metrics
 #include "host_surface.h"
@@ -1811,7 +1812,9 @@ void cpc_set_idle_timeout_ms(int timeout_ms) {
 }
 
 namespace {
-std::mutex g_pause_mutex;
+// FIFO, not std::mutex: the frame runner takes it again microseconds after
+// every frame, and an unfair mutex let it starve a pauser (beads-m1lz).
+FifoMutex g_pause_mutex;
 // Written under g_pause_mutex. Atomic for cpc_resume_epoch(), which the step
 // walks poll beside a running machine and which must not wait for the mutex
 // the frame runner holds for the whole of every frame.

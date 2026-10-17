@@ -8,6 +8,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdio>
@@ -275,6 +276,63 @@ TEST_F(EmuFramePacingTest, PacedFramesReportTheirSleep) {
       << "an unpaced frame never sleeps";
 }
 
+namespace {
+// The -H loop's frame runner on a thread of its own, turning frames back to
+// back, with a watchdog: past the deadline it stops the runner, which frees
+// whatever was waiting on it (a lease starved of g_pause_mutex never returns
+// on its own), so a test that would hang fails instead.
+class BackToBackRunner {
+ public:
+  explicit BackToBackRunner(std::chrono::seconds budget)
+      : runner_([this] {
+          while (!stop_.load()) {
+            if (emu_headless_turn())
+              turns_.fetch_add(1);
+            else
+              std::this_thread::yield();
+          }
+        }),
+        watchdog_([this, budget] {
+          auto const deadline = std::chrono::steady_clock::now() + budget;
+          while (!done_.load() && std::chrono::steady_clock::now() < deadline)
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+          if (!done_.load()) {
+            timed_out_.store(true);
+            stop_.store(true);
+          }
+        }) {}
+  ~BackToBackRunner() { finish(); }
+  BackToBackRunner(const BackToBackRunner&) = delete;
+  BackToBackRunner& operator=(const BackToBackRunner&) = delete;
+
+  // Lets the runner get back into its stride: n more frames. False once the
+  // watchdog has fired.
+  bool wait_turns(unsigned n) {
+    unsigned const before = turns_.load();
+    while (turns_.load() < before + n) {
+      if (timed_out_.load()) return false;
+      std::this_thread::yield();
+    }
+    return true;
+  }
+  bool timed_out() const { return timed_out_.load(); }
+  void finish() {
+    done_.store(true);
+    if (watchdog_.joinable()) watchdog_.join();
+    stop_.store(true);
+    if (runner_.joinable()) runner_.join();
+  }
+
+ private:
+  std::atomic<bool> stop_{false};
+  std::atomic<bool> done_{false};
+  std::atomic<bool> timed_out_{false};
+  std::atomic<unsigned> turns_{0};
+  std::thread runner_;
+  std::thread watchdog_;
+};
+}  // namespace
+
 // beads-b0bj: under -H the main thread runs the frames, and it never marked
 // itself busy, so a pause lease taken on another thread (IPC reset, snapshot
 // load, disk swap...) reported the machine idle at once and mutated it under
@@ -282,25 +340,10 @@ TEST_F(EmuFramePacingTest, PacedFramesReportTheirSleep) {
 TEST_F(EmuFramePacingTest, HeadlessTurnHoldsOffAPauseLease) {
   bool const was_paused = g_emu_paused.load();
   cpc_resume();
-  std::atomic<bool> stop{false};
-  std::atomic<unsigned> turns{0};
-  std::thread runner([&] {
-    while (!stop.load()) {
-      if (emu_headless_turn())
-        turns.fetch_add(1);
-      else
-        std::this_thread::yield();
-    }
-  });
+  BackToBackRunner runner(std::chrono::seconds(60));
   int overlaps = 0;
   for (int i = 0; i < 50; ++i) {
-    // Let the runner get back into its stride before each lease.
-    unsigned const before = turns.load();
-    auto const deadline =
-        std::chrono::steady_clock::now() + std::chrono::seconds(2);
-    while (turns.load() < before + 2 &&
-           std::chrono::steady_clock::now() < deadline)
-      std::this_thread::yield();
+    if (!runner.wait_turns(2)) break;
     CpcPauseLease lease;
     if (!lease.idle()) {
       ADD_FAILURE() << "lease never went idle";
@@ -314,10 +357,41 @@ TEST_F(EmuFramePacingTest, HeadlessTurnHoldsOffAPauseLease) {
     if (dwFrameCountOverall != frames) ++overlaps;
     lease.restore_run_state();
   }
-  stop.store(true);
-  runner.join();
+  runner.finish();
   if (was_paused) cpc_pause();
+  EXPECT_FALSE(runner.timed_out())
+      << "no progress for 60 s: a lease or the runner never got its turn";
   EXPECT_EQ(0, overlaps) << "frames completed while a pause lease was held";
+}
+
+// beads-m1lz: the runner holds g_pause_mutex for every machine frame and
+// lets go of it for only a few microseconds before the next one. A
+// std::mutex lets the thread that just unlocked take it straight back, so a
+// lease waiting on another thread starved: the test above hung on a 2-core
+// MSVC runner until CI cancelled it, and took up to 0.9 s per lease on an
+// M-series Mac. A pauser must get the mutex within a frame or two.
+TEST_F(EmuFramePacingTest, ALeaseBesideBackToBackFramesIsGrantedPromptly) {
+  bool const was_paused = g_emu_paused.load();
+  cpc_resume();
+  BackToBackRunner runner(std::chrono::seconds(20));
+  double worst_ms = 0;
+  for (int i = 0; i < 50; ++i) {
+    if (!runner.wait_turns(2)) break;
+    auto const t0 = std::chrono::steady_clock::now();
+    CpcPauseLease lease(CpcPauseLeaseMode::PauseOnly);
+    double const ms = std::chrono::duration<double, std::milli>(
+                          std::chrono::steady_clock::now() - t0)
+                          .count();
+    worst_ms = std::max(worst_ms, ms);
+    lease.restore_run_state();
+  }
+  runner.finish();
+  if (was_paused) cpc_pause();
+  EXPECT_FALSE(runner.timed_out())
+      << "no progress for 20 s: a lease or the runner never got its turn";
+  // A frame here is well under a millisecond, and a waiter queues behind at
+  // most the one in flight. Generous for a descheduled CI runner.
+  EXPECT_LT(worst_ms, 250.0) << "slowest lease acquire beside the runner";
 }
 
 // The handshake itself, without a machine. Each test leaves the run state it
