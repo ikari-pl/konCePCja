@@ -488,6 +488,42 @@ class Server::Connection {
         if (!config_.fb_info) break;
         handle_fb_info(header);
         return true;
+      case Opcode::kMediaInsert:
+        if (!media()) break;
+        if (controller_only(header)) handle_media_insert(header, payload);
+        return true;
+      case Opcode::kMediaEject:
+        if (!media()) break;
+        if (controller_only(header)) handle_media_eject(header, payload);
+        return true;
+      case Opcode::kMediaInfo:
+        if (!media()) break;
+        handle_media_info(header, payload);
+        return true;
+      case Opcode::kTapeControl:
+        if (!media()) break;
+        if (controller_only(header)) handle_tape_control(header, payload);
+        return true;
+      case Opcode::kSnapshotSave:
+        if (!snapshots()) break;
+        if (controller_only(header)) handle_snapshot_save(header, payload);
+        return true;
+      case Opcode::kSnapshotLoad:
+        if (!snapshots()) break;
+        if (controller_only(header)) handle_snapshot_load(header, payload);
+        return true;
+      case Opcode::kConfigGet:
+        if (!configuration()) break;
+        handle_config_get(header, payload);
+        return true;
+      case Opcode::kConfigSet:
+        if (!configuration()) break;
+        if (controller_only(header)) handle_config_set(header, payload);
+        return true;
+      case Opcode::kConfigApply:
+        if (!configuration()) break;
+        if (controller_only(header)) handle_config_apply(header);
+        return true;
       case Opcode::kControl:
         if (!machine_writes()) break;
         handle_control(header, payload);
@@ -884,6 +920,306 @@ class Server::Connection {
     respond(header, w.take());
   }
 
+  // CAP_MEDIA, CAP_SNAPSHOT, CAP_CONFIG: each group is there whole or not at
+  // all, and each needs the control role.
+  bool media() const {
+    return machine_writes() && config_.media_insert && config_.media_eject &&
+           config_.media_info && config_.tape_control;
+  }
+  bool snapshots() const {
+    return machine_writes() && config_.snapshot_save && config_.snapshot_load;
+  }
+  bool configuration() const {
+    return machine_writes() && config_.config_get && config_.config_set &&
+           config_.config_apply;
+  }
+
+  // Refuses with what the machine's side said, or with `fallback` when it
+  // said nothing.
+  void respond_refusal(const FrameHeader& header, Status status,
+                       const std::string& said, const char* fallback) {
+    respond_error(header, status, !said.empty() ? said : std::string(fallback));
+  }
+
+  static const char* media_refusal(Status status) {
+    switch (status) {
+      case Status::kNotFound:
+        return "the file could not be opened";
+      case Status::kBadPayload:
+        return "the file does not fit the slot, or it is not a valid image";
+      case Status::kNotPresent:
+        return "this machine has no such slot: a cartridge needs a 6128+";
+      case Status::kOutOfRange:
+        return "the tape has no such block";
+      case Status::kBusy:
+        return "the machine did not go idle in time, or was held by another "
+               "pause lease";
+      case Status::kShuttingDown:
+        return "the core is shutting down";
+      default:
+        return "the core could not serve the request";
+    }
+  }
+
+  void handle_media_insert(const FrameHeader& header,
+                           const std::vector<std::uint8_t>& payload) {
+    Reader r(payload);
+    MediaInsertRequest request;
+    if (!read_media_insert_request(r, request)) {
+      respond_error(header, Status::kBadPayload,
+                    "MEDIA_INSERT payload too short");
+      return;
+    }
+    if (!media_slot_known(request.slot)) {
+      respond_error(header, Status::kBadPayload, "unknown media slot");
+      return;
+    }
+    if (request.flags != 0) {
+      respond_error(header, Status::kBadPayload,
+                    "MEDIA_INSERT flags are reserved and must be 0");
+      return;
+    }
+    if (request.path.empty()) {
+      respond_error(header, Status::kBadPayload, "MEDIA_INSERT needs a path");
+      return;
+    }
+    std::uint64_t generation = 0;
+    std::string said;
+    Status const status = config_.media_insert(Cause{client_id_, header.id},
+                                               request, generation, said);
+    if (status != Status::kOk) {
+      respond_refusal(header, status, said, media_refusal(status));
+      return;
+    }
+    respond_generation(header, generation);
+  }
+
+  void handle_media_eject(const FrameHeader& header,
+                          const std::vector<std::uint8_t>& payload) {
+    Reader r(payload);
+    std::uint8_t slot = 0;
+    if (!read_media_slot_request(r, slot)) {
+      respond_error(header, Status::kBadPayload,
+                    "MEDIA_EJECT payload too short");
+      return;
+    }
+    if (!media_slot_known(slot)) {
+      respond_error(header, Status::kBadPayload, "unknown media slot");
+      return;
+    }
+    std::uint64_t generation = 0;
+    std::string said;
+    Status const status = config_.media_eject(Cause{client_id_, header.id},
+                                              slot, generation, said);
+    if (status != Status::kOk) {
+      respond_refusal(header, status, said, media_refusal(status));
+      return;
+    }
+    respond_generation(header, generation);
+  }
+
+  void handle_media_info(const FrameHeader& header,
+                         const std::vector<std::uint8_t>& payload) {
+    Reader r(payload);
+    MediaInfo info;
+    if (!read_media_slot_request(r, info.slot)) {
+      respond_error(header, Status::kBadPayload,
+                    "MEDIA_INFO payload too short");
+      return;
+    }
+    if (!media_slot_known(info.slot)) {
+      respond_error(header, Status::kBadPayload, "unknown media slot");
+      return;
+    }
+    std::uint8_t const slot = info.slot;
+    Status const status = config_.media_info(info);
+    if (status != Status::kOk) {
+      respond_error(header, status, media_refusal(status));
+      return;
+    }
+    info.slot = slot;
+    Writer w;
+    write_status(w, Status::kOk);
+    write_media_info(w, info);
+    respond(header, w.take());
+  }
+
+  void handle_tape_control(const FrameHeader& header,
+                           const std::vector<std::uint8_t>& payload) {
+    Reader r(payload);
+    TapeControlRequest request;
+    if (!read_tape_control_request(r, request)) {
+      respond_error(header, Status::kBadPayload,
+                    "TAPE_CONTROL payload too short");
+      return;
+    }
+    if (!tape_action_known(request.action)) {
+      respond_error(header, Status::kBadPayload, "unknown tape action");
+      return;
+    }
+    TapeState tape;
+    Status const status = config_.tape_control(request, tape);
+    if (status != Status::kOk) {
+      respond_error(header, status,
+                    status == Status::kNotPresent
+                        ? "there is no tape in the deck"
+                        : media_refusal(status));
+      return;
+    }
+    Writer w;
+    write_status(w, Status::kOk);
+    write_tape_state(w, tape);
+    respond(header, w.take());
+  }
+
+  static const char* snapshot_refusal(Status status) {
+    switch (status) {
+      case Status::kNotFound:
+        return "no such file or directory";
+      case Status::kBadPayload:
+        return "not a valid SNA file for this machine";
+      case Status::kInternal:
+        return "the snapshot could not be written";
+      default:
+        return media_refusal(status);
+    }
+  }
+
+  void respond_stamp(const FrameHeader& header, const Stamp& stamp) {
+    Writer w;
+    write_status(w, Status::kOk);
+    write_stamp(w, stamp);
+    respond(header, w.take());
+  }
+
+  void handle_snapshot_save(const FrameHeader& header,
+                            const std::vector<std::uint8_t>& payload) {
+    Reader r(payload);
+    std::string path;
+    if (!r.str(path)) {
+      respond_error(header, Status::kBadPayload,
+                    "SNAPSHOT_SAVE payload too short");
+      return;
+    }
+    if (path.empty()) {
+      respond_error(header, Status::kBadPayload, "SNAPSHOT_SAVE needs a path");
+      return;
+    }
+    Stamp stamp;
+    std::string said;
+    Status const status = config_.snapshot_save(path, stamp, said);
+    if (status != Status::kOk) {
+      respond_refusal(header, status, said, snapshot_refusal(status));
+      return;
+    }
+    respond_stamp(header, stamp);
+  }
+
+  void handle_snapshot_load(const FrameHeader& header,
+                            const std::vector<std::uint8_t>& payload) {
+    Reader r(payload);
+    SnapshotLoadRequest request;
+    if (!read_snapshot_load_request(r, request)) {
+      respond_error(header, Status::kBadPayload,
+                    "SNAPSHOT_LOAD payload too short");
+      return;
+    }
+    if (request.path.empty()) {
+      respond_error(header, Status::kBadPayload, "SNAPSHOT_LOAD needs a path");
+      return;
+    }
+    Stamp stamp;
+    std::string said;
+    Status const status = config_.snapshot_load(Cause{client_id_, header.id},
+                                                request, stamp, said);
+    if (status != Status::kOk) {
+      respond_refusal(header, status, said, snapshot_refusal(status));
+      return;
+    }
+    respond_stamp(header, stamp);
+  }
+
+  static const char* config_refusal(Status status) {
+    switch (status) {
+      case Status::kNotFound:
+        return "no such configuration key";
+      case Status::kNotPresent:
+        return "this run has nothing behind that key (a window, a host "
+               "keyboard)";
+      case Status::kBadPayload:
+        return "the key does not take that value";
+      case Status::kInternal:
+        return "the machine could not be rebuilt";
+      case Status::kBusy:
+        return "the machine did not go idle in time, or the main loop did "
+               "not take the rebuild";
+      default:
+        return media_refusal(status);
+    }
+  }
+
+  void handle_config_get(const FrameHeader& header,
+                         const std::vector<std::uint8_t>& payload) {
+    Reader r(payload);
+    std::string key;
+    if (!r.str(key)) {
+      respond_error(header, Status::kBadPayload,
+                    "CONFIG_GET payload too short");
+      return;
+    }
+    ConfigValue value;
+    Status const status = config_.config_get(key, value);
+    if (status != Status::kOk) {
+      respond_error(header, status, config_refusal(status));
+      return;
+    }
+    Writer w;
+    write_status(w, Status::kOk);
+    write_config_value(w, value);
+    if (w.size() > max_frame_) {
+      respond_error(header, Status::kTooLarge,
+                    "the value would exceed this connection's frame limit");
+      return;
+    }
+    respond(header, w.take());
+  }
+
+  void handle_config_set(const FrameHeader& header,
+                         const std::vector<std::uint8_t>& payload) {
+    Reader r(payload);
+    ConfigSetRequest request;
+    if (!read_config_set_request(r, request)) {
+      respond_error(header, Status::kBadPayload,
+                    "CONFIG_SET payload too short");
+      return;
+    }
+    ConfigEffect effect = ConfigEffect::kNow;
+    std::string said;
+    Status const status =
+        config_.config_set(request.key, request.value, effect, said);
+    if (status != Status::kOk) {
+      respond_refusal(header, status, said, config_refusal(status));
+      return;
+    }
+    Writer w;
+    write_status(w, Status::kOk);
+    w.u8(static_cast<std::uint8_t>(effect));
+    w.zeros(3);
+    respond(header, w.take());
+  }
+
+  void handle_config_apply(const FrameHeader& header) {
+    Stamp stamp;
+    std::string said;
+    Status const status =
+        config_.config_apply(Cause{client_id_, header.id}, stamp, said);
+    if (status != Status::kOk) {
+      respond_refusal(header, status, said, config_refusal(status));
+      return;
+    }
+    respond_stamp(header, stamp);
+  }
+
   // CAP_INPUT: the group is there whole or not at all. It needs the control
   // role, which comes with the machine writes.
   bool input() const {
@@ -1234,6 +1570,9 @@ class Server::Connection {
     if (chips()) reply.caps |= kCapChips;
     if (symbols()) reply.caps |= kCapSymbols;
     if (config_.fb_info) reply.caps |= kCapFbInfo;
+    if (media()) reply.caps |= kCapMedia;
+    if (snapshots()) reply.caps |= kCapSnapshot;
+    if (configuration()) reply.caps |= kCapConfig;
     reply.max_frame = request.max_frame == 0
                           ? kMaxServerFrame
                           : std::min(request.max_frame, kMaxServerFrame);

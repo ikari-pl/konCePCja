@@ -12,7 +12,10 @@
 // INPUT_STATE, with the keys a controller holds released when it loses
 // control (slice 6), and the DevTools data: CHIP_GET, SYM_LIST, SYM_ADD,
 // SYM_DEL, SYM_LOAD, FB_INFO and the events for a change of medium, of the
-// symbols and of the machine (slice 7). At most one client is the controller.
+// symbols and of the machine (slice 7), and media, snapshots and
+// configuration: MEDIA_INSERT, MEDIA_EJECT, MEDIA_INFO, TAPE_CONTROL,
+// SNAPSHOT_SAVE, SNAPSHOT_LOAD, CONFIG_GET, CONFIG_SET, CONFIG_APPLY
+// (slice 9). At most one client is the controller.
 //
 // The server knows nothing about the emulator. What it reports about the
 // machine comes through the callbacks of ServerConfig, so the same class runs
@@ -159,6 +162,51 @@ using SymLoadFn =
 // FB_INFO: the machine's canonical frame. Constant for the life of the core.
 using FbInfoFn = std::function<Status(FbInfo&)>;
 
+// Media (section 12). Each is called on a reader thread. The server has
+// checked the slot, the flags and that there is a path; what the file is, and
+// whether it fits the slot, is the machine's side to judge. A refusal may say
+// why in `message`. Every change of a slot, from any source, is posted by the
+// machine's side as EVT_MEDIA_CHANGED, with `cause` for one a request made.
+//
+// kNotFound when the file is missing, kBadPayload when its type does not fit
+// the slot or the image is malformed, kNotPresent for a cartridge on a
+// machine without a cartridge port. `generation` is the slot's afterwards.
+using MediaInsertFn =
+    std::function<Status(const Cause&, const MediaInsertRequest&,
+                         std::uint64_t& generation, std::string& message)>;
+using MediaEjectFn =
+    std::function<Status(const Cause&, std::uint8_t slot,
+                         std::uint64_t& generation, std::string& message)>;
+// What info.slot holds. Like the machine reads, it must not pause anything.
+using MediaInfoFn = std::function<Status(MediaInfo&)>;
+// The server has checked the action. kNotPresent with no tape in the deck,
+// kOutOfRange for a seek past the last block.
+using TapeControlFn =
+    std::function<Status(const TapeControlRequest&, TapeState&)>;
+
+// Snapshots (section 12): SNA files on the core's machine. kNotFound for a
+// missing file or directory, kBadPayload for a file that is no SNA or does
+// not fit the machine.
+using SnapshotSaveFn = std::function<Status(const std::string& path, Stamp&,
+                                            std::string& message)>;
+// The load is announced by the machine's side as EVT_RESET, with `cause`.
+using SnapshotLoadFn = std::function<Status(
+    const Cause&, const SnapshotLoadRequest&, Stamp&, std::string& message)>;
+
+// Configuration (section 12): the keys and values of the text IPC's `config`.
+// kNotFound for a key that does not exist, kNotPresent for one that needs
+// something this run does not have (a window under -H), kBadPayload for a
+// value the key rejects.
+using ConfigGetFn = std::function<Status(const std::string& key, ConfigValue&)>;
+using ConfigSetFn =
+    std::function<Status(const std::string& key, const std::string& value,
+                         ConfigEffect&, std::string& message)>;
+// Rebuilds the machine with the staged settings and returns when that is
+// done: the one request that may take longer than a pause lease. The rebuild
+// is posted by the machine's side as EVT_MACHINE_CHANGED, with `cause`.
+using ConfigApplyFn =
+    std::function<Status(const Cause&, Stamp&, std::string& message)>;
+
 // What `slot` (a MediaSlot) holds now. Called on the fan-out thread for each
 // EVT_MEDIA_CHANGED before it is sent; it may take a lock, and must not wait
 // for the machine.
@@ -227,6 +275,20 @@ struct ServerConfig {
   SymLoadFn sym_load;
   // CAP_FB_INFO.
   FbInfoFn fb_info;
+  // The CAP_MEDIA group: MEDIA_INSERT, MEDIA_EJECT, MEDIA_INFO and
+  // TAPE_CONTROL exist, and HELLO announces the capability, only when all
+  // four are set and there is a control role (CAP_MACHINE_WRITE).
+  MediaInsertFn media_insert;
+  MediaEjectFn media_eject;
+  MediaInfoFn media_info;
+  TapeControlFn tape_control;
+  // The CAP_SNAPSHOT group, on the same terms.
+  SnapshotSaveFn snapshot_save;
+  SnapshotLoadFn snapshot_load;
+  // The CAP_CONFIG group, on the same terms.
+  ConfigGetFn config_get;
+  ConfigSetFn config_set;
+  ConfigApplyFn config_apply;
   // Fills in EVT_MEDIA_CHANGED. Without it the event says "nothing in the
   // slot" and no path.
   MediaStateFn media_state;

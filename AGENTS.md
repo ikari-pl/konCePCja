@@ -407,7 +407,9 @@ position; row 9 is joystick 0), `KEYS_RELEASE`, `TEXT` (the AutoTypeQueue)
 and `MOUSE`, with `INPUT_STATE` for anyone, and what the DevTools show:
 `CHIP_GET` (CRTC, Gate Array, PSG, FDC, ASIC), the memory space `ASIC_PAGE`,
 the symbols (`SYM_LIST` for anyone; `SYM_ADD`, `SYM_DEL`, `SYM_LOAD`) and
-`FB_INFO`. A client
+`FB_INFO`, and media, snapshots and configuration: `MEDIA_INSERT`,
+`MEDIA_EJECT`, `TAPE_CONTROL`, `SNAPSHOT_SAVE`, `SNAPSHOT_LOAD`,
+`CONFIG_SET`, `CONFIG_APPLY` (`MEDIA_INFO` and `CONFIG_GET` for anyone). A client
 that sends `SUBSCRIBE` is pushed events (`EVT_STOPPED`, `EVT_RESUMED`,
 `EVT_RESET`, `EVT_FRAME`, `EVT_BREAKPOINTS_CHANGED`, `EVT_SYMBOLS_CHANGED`,
 `EVT_MEDIA_CHANGED`, `EVT_MACHINE_CHANGED`, ...), whoever caused
@@ -519,6 +521,24 @@ binary_port_enabled=1      # 0 = do not open the port (manifest: `binary: null`)
   fan-out thread. `media_changed()` is called on the frame runner too (the
   machine taking a queued disc), so its hook must only post. A new way to
   load or eject must do both, or frontends keep showing the old medium.
+- Media requests of this port (`kcpc_host_media_insert()` and the others in
+  `src/kcpc/kcpc_host.cpp`) run the loaders of `slotshandler.h` under a
+  lease, alone, and then call `subcycle_bridge_apply_pending_media()`: the
+  machine has the medium when the reply is sent, and every event of the
+  request is posted on the request's thread, named after it
+  (`MediaCauseScope`). A cartridge goes in through `cpc_cartridge_swap()`
+  (`src/koncepcja.h`), never `file_load()` alone: the board reads the image
+  through a raw pointer and has to be pointed at the new one.
+- The configuration keys are one table, `ipc_config_get()` /
+  `ipc_config_set()` / `ipc_config_apply()` in `src/koncepcja_ipc_server.h`,
+  which the text IPC's `config` only formats. Add a key there and both
+  servers have it. `ipc_config_machine()` is the part a socket thread must
+  read through the gate.
+- **Nothing that takes the pause mutex goes inside `alone_under_lease()`'s
+  work** (`cpc_announce_reset()`, `emulator_reset()`, a lease): the work
+  runs under that mutex. Such calls go in the `let_go` callback, where the
+  lease is still held and the mutex is not (the reset after a cartridge
+  insert, the `EVT_RESET` of a snapshot load).
 - `koncpc_rebuild_machine()` calls the one hook
   (`cpc_set_machine_rebuilt_hook()`) while it still holds its pause lease;
   the hook reads the new machine directly and must not take a lease.
@@ -806,6 +826,11 @@ host_chords=1     # Cmd/Ctrl+K/O/S drive the host UI (palette, Load Disk A,
   (`src/koncepcja.h`), never `file_load(CPC.cartridge)`: the load frees the
   image the board reads through a raw pointer. A caller that holds the
   machine itself uses `cpc_cartridge_swap()`.
+- A disc's unsaved writes go back to the file the bridge was told it came
+  from (`subcycle_bridge_insert_media()`'s `path`). A loader that reads a
+  disc out of an archive must pass the entry's name too (`archive_entry`):
+  such a disc is written as `<entry>.dsk` beside the archive, never into it
+  (`dsk_beside_archive()` in `src/subcycle_bridge.cpp`, beads-lels).
 - ImGui state is in global `imgui_state` struct
 
 ## Code Review Themes

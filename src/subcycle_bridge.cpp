@@ -14,6 +14,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
+#include <filesystem>
 #include <fstream>
 #include <mutex>
 #include <string>
@@ -36,6 +37,7 @@
 #include "hw/printer.h"  // printer_drain_events -> the pfoPrinter capture
 #include "hw/psg.h"
 #include "hw_views.h"  // TAPE_LEVEL_HIGH/LOW for the mirrored scope level
+#include "ipc_mru.h"   // ipc_mru_stage: a DSK written beside an archive
 #include "koncepcja.h"
 #include "koncepcja_ipc_server.h"  // pc= / mem= events armed on the probe
 #include "log.h"
@@ -116,6 +118,9 @@ struct Bridge {
   // back to. Not CPC.driveA/B.file: a load names the NEW file there before
   // the swap is applied (or fails), while the drive still holds the old disc.
   std::string media_path[2];
+  // The entry of media_path the disc is, when that file is an archive
+  // (empty for a plain image): where its writes go, see dsk_beside_archive().
+  std::string media_entry[2];
   std::vector<uint8_t> mf2rom;        // Multiface II 8K ROM (optional)
   std::atomic<bool> mf2_stop{false};  // deferred STOP (UI -> Z80 thread)
   // Disposition of a probe hit already judged inside subcycle_bridge_frame's
@@ -202,7 +207,8 @@ struct Bridge {
   // applies them at its next frame boundary.
   std::mutex swap_mutex;
   std::vector<uint8_t> swap_bytes;
-  std::string swap_path;  // the file swap_bytes came from (-> media_path)
+  std::string swap_path;   // the file swap_bytes came from (-> media_path)
+  std::string swap_entry;  // its entry in that file (-> media_entry)
   std::atomic<PendingMedia> swap_kind{PendingMedia::kNone};
   std::atomic<uint8_t> swap_unit{0};
 };
@@ -251,8 +257,10 @@ bool is_flux_ext(const std::string& ext) {
 // entry (the same classification the legacy slot loader applies) and `ext`
 // is rewritten to the inner entry's extension so the flux/DSK dispatch sees
 // the real container — the raw archive bytes would just fail insert_disk.
-std::vector<uint8_t> read_media_file(const std::string& path,
-                                     std::string& ext) {
+// `entry` is that entry's name, empty for a file that is no archive.
+std::vector<uint8_t> read_media_file(const std::string& path, std::string& ext,
+                                     std::string& entry) {
+  entry.clear();
   ext = lower_ext(path);
   if (ext != ".zip") return read_file(path);
 
@@ -278,6 +286,7 @@ std::vector<uint8_t> read_media_file(const std::string& path,
     out.insert(out.end(), buf, buf + n);
   fclose(f);
   ext = lower_ext(zi.filesOffsets[0].first);
+  entry = zi.filesOffsets[0].first;
   LOG_INFO("subcycle engine: " << path << " -> " << zi.filesOffsets[0].first
                                << " (" << out.size() << " bytes)");
   return out;
@@ -464,6 +473,8 @@ bool subcycle_bridge_start() {
 
   b.media_path[0].clear();
   b.media_path[1].clear();
+  b.media_entry[0].clear();
+  b.media_entry[1].clear();
   if (!CPC.driveA.file.empty()) {
     // Every flux container (.ipf/.raw/.scp/.hfe/.a2r) goes through the unified
     // content-sniffing dispatcher (flux::to_scp) into an in-memory SCP capture
@@ -472,7 +483,8 @@ bool subcycle_bridge_start() {
     // CAPS-encoder IPF, to_scp mirrors the legacy driveA the slot loader
     // already ipf_load-ed (loadSlots ran before subcycle_bridge_start).
     std::string ext;  // the INNER extension when the slot file is a .zip
-    std::vector<uint8_t> raw = read_media_file(CPC.driveA.file, ext);
+    std::string entry;
+    std::vector<uint8_t> raw = read_media_file(CPC.driveA.file, ext, entry);
     const bool flux = is_flux_ext(ext);
     if (flux) {
       b.media = flux::to_scp(raw.data(), raw.size(), ext);
@@ -485,6 +497,7 @@ bool subcycle_bridge_start() {
               : b.machine.insert_disk(b.media.data(), b.media.size()));
     if (ok) {
       b.media_path[0] = CPC.driveA.file;
+      b.media_entry[0] = entry;
       LOG_INFO("subcycle engine: drive A <- " << CPC.driveA.file);
       log_flux_writability(b);  // self-gating: silent unless drive A is flux
     } else {
@@ -499,10 +512,12 @@ bool subcycle_bridge_start() {
   // follow-up (PendingMedia carries no unit yet — beads-xsdc).
   if (!CPC.driveB.file.empty() && !ends_with(CPC.driveB.file, ".scp")) {
     std::string ext_b;
-    b.media_b = read_media_file(CPC.driveB.file, ext_b);
+    std::string entry_b;
+    b.media_b = read_media_file(CPC.driveB.file, ext_b, entry_b);
     if (!b.media_b.empty() &&
         b.machine.insert_disk(b.media_b.data(), b.media_b.size(), 1)) {
       b.media_path[1] = CPC.driveB.file;
+      b.media_entry[1] = entry_b;
       LOG_INFO("subcycle engine: drive B <- " << CPC.driveB.file);
     } else {
       LOG_ERROR("subcycle engine: cannot attach " << CPC.driveB.file
@@ -1437,7 +1452,11 @@ void subcycle_bridge_reset() {
 
 namespace {
 // defined with the media swap machinery
-void flush_dirty_media_unit(Bridge& b, uint8_t unit);
+enum class DiscFate : uint8_t {
+  kLeaves,  // swapped out or ejected
+  kStays,   // the machine is rebuilt around it and reads its file again
+};
+void flush_dirty_media_unit(Bridge& b, uint8_t unit, DiscFate fate);
 void flush_sf2_ide(Bridge& b);
 }  // namespace
 
@@ -1462,8 +1481,9 @@ void flush_sf2_ide(Bridge& b) {
 
 void subcycle_bridge_stop() {
   Bridge& b = g_bridge;
-  flush_dirty_media_unit(b, 0);  // shutdown: both discs keep their writes
-  flush_dirty_media_unit(b, 1);
+  // shutdown: both discs keep their writes
+  flush_dirty_media_unit(b, 0, DiscFate::kStays);
+  flush_dirty_media_unit(b, 1, DiscFate::kStays);
   flush_sf2_ide(b);  // and the IDE images keep theirs
   if (g_silicon_disc.enabled && g_silicon_disc.data != nullptr)
     b.machine.silicon_disc_save(g_silicon_disc.data, SILICON_DISC_SIZE);
@@ -1509,12 +1529,14 @@ void subcycle_bridge_stop() {
 // NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other
 // translation units/tests; internal linkage would break the link
 void subcycle_bridge_insert_media(std::vector<uint8_t> bytes, bool flux,
-                                  uint8_t unit, std::string path) {
+                                  uint8_t unit, std::string path,
+                                  std::string archive_entry) {
   Bridge& b = g_bridge;
   if (!b.active || bytes.empty()) return;
   std::scoped_lock const lock(b.swap_mutex);
   b.swap_bytes = std::move(bytes);
   b.swap_path = std::move(path);
+  b.swap_entry = std::move(archive_entry);
   b.swap_unit.store(unit & 1, std::memory_order_release);
   b.swap_kind.store(flux ? PendingMedia::kFlux : PendingMedia::kDisk,
                     std::memory_order_release);
@@ -1609,6 +1631,7 @@ void subcycle_bridge_eject_media(uint8_t unit) {
   std::scoped_lock const lock(b.swap_mutex);
   b.swap_bytes.clear();
   b.swap_path.clear();
+  b.swap_entry.clear();
   b.swap_unit.store(unit & 1, std::memory_order_release);
   b.swap_kind.store(PendingMedia::kEject, std::memory_order_release);
 }
@@ -1657,6 +1680,7 @@ bool subcycle_bridge_push_drive_view(uint8_t unit) {
     b.swap_kind.store(PendingMedia::kNone, std::memory_order_release);
     b.swap_bytes.clear();
     b.swap_path.clear();
+    b.swap_entry.clear();
   }
 
   size_t cur_len = 0;
@@ -1714,17 +1738,50 @@ namespace {
 // place; when it diverged, write it back to its file — a real CPC's writes
 // land on the real disc. Called before the buffer is replaced or dropped.
 
+// Where the writes to a disc read out of an archive go: a DSK named after
+// the entry, in the archive's directory. The archive is never written; it
+// holds other entries, and a raw image under its name is no archive at all
+// (beads-lels). A file already there is somebody's disc, possibly this
+// entry's writes from an earlier session, so the first free name of
+// NAME.dsk, NAME-2.dsk, NAME-3.dsk ... is taken. Empty: none is free.
+std::string dsk_beside_archive(const std::string& archive,
+                               const std::string& entry) {
+  namespace fs = std::filesystem;
+  // The entry's own name only: an archive's directories (with either
+  // separator) and any ".." in them say nothing about where to write.
+  const size_t slash = entry.find_last_of("/\\");
+  std::string stem =
+      fs::path(slash == std::string::npos ? entry : entry.substr(slash + 1))
+          .stem()
+          .string();
+  if (stem.empty() || stem == "." || stem == "..")
+    stem = fs::path(archive).stem().string();
+  const fs::path dir = fs::path(archive).parent_path();
+  constexpr int kMaxNames = 999;
+  for (int n = 1; n <= kMaxNames; ++n) {
+    const fs::path candidate =
+        dir /
+        (n == 1 ? stem + ".dsk" : stem + "-" + std::to_string(n) + ".dsk");
+    std::error_code ec;
+    if (!fs::exists(fs::symlink_status(candidate, ec)))
+      return candidate.string();
+  }
+  return {};
+}
+
 // Shared write-back core for drive A and drive B.
-void flush_dirty_media_unit(Bridge& b, uint8_t unit) {
+void flush_dirty_media_unit(Bridge& b, uint8_t unit, DiscFate fate) {
+  unit &= 1;
   std::vector<uint8_t>& buf = unit == 0 ? b.media : b.media_b;
   // The disc's own file, not CPC.driveA/B.file: by the time a load's swap
   // is applied that names the incoming disc, and this one's bytes would be
   // written over it (beads-11us).
-  const std::string& path = b.media_path[unit & 1];
+  const std::string& source = b.media_path[unit];
+  const bool archived = !b.media_entry[unit].empty();
   bool& altered = unit == 0 ? driveA.altered : driveB.altered;
   const char* label = unit == 0 ? "drive A" : "drive B";
   if (fdc_media_dirty_unit(b.machine.fdc(), unit) == 0) return;
-  if (buf.empty() || path.empty()) return;
+  if (buf.empty() || source.empty()) return;
   // A dirty writable-flux disc (drive A) must be re-encoded to a flux container
   // (scp_from_disk over the dirty map) before write-back — the format-picker UI
   // is Stage 4. `buf` here is the pristine SCP, so writing it back would
@@ -1737,6 +1794,14 @@ void flush_dirty_media_unit(Bridge& b, uint8_t unit) {
           "(Stage 4) — writes are live in the overlay");
       return;
     }
+  }
+  const std::string path =
+      archived ? dsk_beside_archive(source, b.media_entry[unit]) : source;
+  if (path.empty()) {
+    LOG_ERROR("subcycle engine: no free name beside "
+              << source << " for the written " << label
+              << " DSK; its writes are not saved");
+    return;
   }
   FILE* f = fopen(path.c_str(), "wb");
   if (f == nullptr) {
@@ -1753,6 +1818,23 @@ void flush_dirty_media_unit(Bridge& b, uint8_t unit) {
   fdc_media_mark_clean_unit(b.machine.fdc(), unit);
   altered = false;
   LOG_INFO("subcycle engine: " << label << " DSK written back to " << path);
+  if (!archived) return;
+  LOG_INFO("subcycle engine: " << source << " is an archive and was not "
+                               << "written; its disc now lives in " << path);
+  // Any thread may stage; the main thread puts it on the Recent list.
+  ipc_mru_stage(&t_CPC::mru_disks, path);
+  if (fate != DiscFate::kStays) return;
+  // The disc stays in the drive and the rebuilt machine reads the drive's
+  // file again: from the archive that would be the disc without its writes.
+  std::string& slot_file = unit == 0 ? CPC.driveA.file : CPC.driveB.file;
+  const bool slot_names_it = slot_file == source;
+  b.media_path[unit] = path;  // `source` is this string: last use is above
+  b.media_entry[unit].clear();
+  if (!slot_names_it) return;
+  slot_file = path;
+  const MediaSlot slot = unit == 0 ? MediaSlot::DriveA : MediaSlot::DriveB;
+  media_note(slot, true, path);
+  media_changed(slot);
 }
 
 void apply_pending_media(Bridge& b) {
@@ -1773,10 +1855,13 @@ void apply_pending_media(Bridge& b) {
         b.swap_bytes.clear();
         break;
       }
-      flush_dirty_media_unit(b, unit);  // the outgoing disc keeps its writes
+      // the outgoing disc keeps its writes
+      flush_dirty_media_unit(b, unit, DiscFate::kLeaves);
       buf = std::move(b.swap_bytes);
       b.media_path[unit] = std::move(b.swap_path);
+      b.media_entry[unit] = std::move(b.swap_entry);
       b.swap_path.clear();
+      b.swap_entry.clear();
       const bool ok = (kind == PendingMedia::kFlux)
                           ? b.machine.insert_flux(buf.data(), buf.size())
                           : b.machine.insert_disk(buf.data(), buf.size(), unit);
@@ -1789,6 +1874,7 @@ void apply_pending_media(Bridge& b) {
                   << drive << " hot-swap rejected (bad image)");
         b.machine.eject_disk(unit);
         b.media_path[unit].clear();
+        b.media_entry[unit].clear();
       }
       // The host announced the load when it queued it; this is the moment the
       // FDC actually holds the new disc. A listing pulled in between saw the
@@ -1797,9 +1883,11 @@ void apply_pending_media(Bridge& b) {
       break;
     }
     case PendingMedia::kEject:
-      flush_dirty_media_unit(b, unit);  // the outgoing disc keeps its writes
+      // the outgoing disc keeps its writes
+      flush_dirty_media_unit(b, unit, DiscFate::kLeaves);
       b.machine.eject_disk(unit);
       b.media_path[unit].clear();
+      b.media_entry[unit].clear();
       dsk_media_changed(unit);
       LOG_INFO("subcycle engine: drive " << drive << " ejected");
       break;

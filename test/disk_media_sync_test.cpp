@@ -3,8 +3,13 @@
 
 #include <gtest/gtest.h>
 
+#include <chrono>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <string>
+#include <system_error>
 #include <vector>
 
 #include "disk_file_editor.h"
@@ -12,6 +17,7 @@
 #include "flux_encode_util.h"  // fluxtest::build_standard_dsk
 #include "hw/fdc.h"
 #include "hw/flux_synth.h"  // fluxsynth::amsdos_content / scp_from_sectors
+#include "ipc_mru.h"
 #include "koncepcja.h"
 #include "m4board.h"
 #include "silicon_disc.h"
@@ -292,6 +298,128 @@ TEST_F(FluxPushGuardTest, DifferentSizeHostDiscIsRefusedAndKeepsTheScp) {
   EXPECT_FALSE(subcycle_bridge_push_drive_view(0));
   EXPECT_EQ(scp_before, scp()) << "the push replaced the flux backing";
   EXPECT_EQ(overlay_before, overlay_size()) << "the overlay was replaced";
+}
+
+// beads-lels: a disc read out of an archive is written back as a DSK beside
+// the archive, never into it. The e2e suite covers the loaders; these cover
+// what it cannot see: the Recent list, the announcement, and an entry name
+// that tries to choose the directory.
+class ZippedDiscWriteBackTest : public FluxPushGuardTest {
+ protected:
+  void SetUp() override {
+    FluxPushGuardTest::SetUp();
+    saved_mru_disks_ = CPC.mru_disks;
+    ipc_mru_apply_staged(false);  // start from an empty queue
+    dir_ = std::filesystem::temp_directory_path() /
+           ("koncpc_zipped_disc_" +
+            std::to_string(
+                std::chrono::steady_clock::now().time_since_epoch().count()));
+    std::filesystem::create_directories(dir_ / "inner");
+    // The bridge is handed the disc's bytes and never opens the archive, so
+    // any bytes will do for it: what matters is that they are still there.
+    archive_ = (dir_ / "inner" / "pack.zip").string();
+    write_file(archive_, kArchiveBytes);
+
+    std::vector<std::vector<fluxtest::SectorSpec>> tracks(2);
+    for (int t = 0; t < 2; ++t) {
+      for (int r = 0; r < 9; ++r) {
+        fluxtest::SectorSpec sec;
+        sec.chrn[0] = static_cast<uint8_t>(t);
+        sec.chrn[2] = static_cast<uint8_t>(0xC1 + r);
+        sec.payload = fluxtest::make_payload(t, r, 512);
+        tracks[t].push_back(sec);
+      }
+    }
+    disc_ = fluxtest::build_standard_dsk(tracks);
+  }
+
+  void TearDown() override {
+    FluxPushGuardTest::TearDown();
+    ipc_mru_apply_staged(false);
+    CPC.mru_disks = saved_mru_disks_;
+    std::error_code ec;
+    std::filesystem::remove_all(dir_, ec);
+  }
+
+  // What a loader does: name the file in the slot, hand over the bytes.
+  void load_from_archive(const std::string& entry) {
+    CPC.driveA.file = archive_;
+    subcycle_bridge_insert_media(disc_, /*flux=*/false, 0, archive_, entry);
+    subcycle_bridge_apply_pending_media();
+  }
+
+  static void write_file(const std::string& path, const std::string& bytes) {
+    std::ofstream out(path, std::ios::binary);
+    out << bytes;
+  }
+  static std::string read_file(const std::filesystem::path& path) {
+    std::ifstream in(path, std::ios::binary);
+    return {std::istreambuf_iterator<char>(in),
+            std::istreambuf_iterator<char>()};
+  }
+
+  static constexpr const char* kArchiveBytes = "PK: the archive, untouched";
+  std::filesystem::path dir_;
+  std::string archive_;
+  std::vector<uint8_t> disc_;
+  std::vector<std::string> saved_mru_disks_;
+};
+
+TEST_F(ZippedDiscWriteBackTest, LeavingDiscIsWrittenBesideTheArchive) {
+  ASSERT_TRUE(started_) << "bridge did not start from rom/";
+  // The entry's directories, and the ".." in them, must not pick the place.
+  load_from_archive("..\\..\\elsewhere/../Side A.DSK");
+  fdc_media_mark_dirty_unit(subcycle_bridge_fdc(), 0);
+
+  // The same archive loaded again: the written disc leaves the drive and the
+  // unwritten one comes back, so the slot keeps naming the archive.
+  load_from_archive("..\\..\\elsewhere/../Side A.DSK");
+
+  EXPECT_EQ(kArchiveBytes, read_file(archive_));
+  const std::filesystem::path beside = dir_ / "inner" / "Side A.dsk";
+  EXPECT_EQ(std::string(disc_.begin(), disc_.end()), read_file(beside));
+  EXPECT_EQ(std::filesystem::path(archive_),
+            std::filesystem::path(CPC.driveA.file));
+  size_t files = 0;
+  for (const auto& entry :
+       std::filesystem::recursive_directory_iterator(dir_)) {
+    if (entry.is_regular_file()) ++files;
+  }
+  EXPECT_EQ(2u, files) << "something was written outside inner/";
+
+  ipc_mru_apply_staged(false);
+  ASSERT_FALSE(CPC.mru_disks.empty());
+  EXPECT_EQ(std::filesystem::path(ipc_mru_canonical_path(beside.string())),
+            std::filesystem::path(CPC.mru_disks.front()));
+}
+
+TEST_F(ZippedDiscWriteBackTest, StayingDiscPointsTheDriveAtTheDsk) {
+  ASSERT_TRUE(started_) << "bridge did not start from rom/";
+  load_from_archive("Game.dsk");
+  fdc_media_mark_dirty_unit(subcycle_bridge_fdc(), 0);
+  const uint64_t generation = media_generation(MediaSlot::DriveA);
+
+  subcycle_bridge_stop();  // a machine rebuild: start() reads the slot again
+  started_ = false;
+
+  EXPECT_EQ(kArchiveBytes, read_file(archive_));
+  const std::filesystem::path beside = dir_ / "inner" / "Game.dsk";
+  EXPECT_EQ(std::string(disc_.begin(), disc_.end()), read_file(beside));
+  EXPECT_EQ(beside, std::filesystem::path(CPC.driveA.file));
+  const MediaState state = media_state(MediaSlot::DriveA);
+  EXPECT_TRUE(state.present);
+  EXPECT_EQ(beside, std::filesystem::path(state.path));
+  EXPECT_GT(state.generation, generation) << "the change was not announced";
+}
+
+TEST_F(ZippedDiscWriteBackTest, CleanDiscWritesNothing) {
+  ASSERT_TRUE(started_) << "bridge did not start from rom/";
+  load_from_archive("Game.dsk");
+  subcycle_bridge_eject_media(0);
+  subcycle_bridge_apply_pending_media();
+
+  EXPECT_EQ(kArchiveBytes, read_file(archive_));
+  EXPECT_FALSE(std::filesystem::exists(dir_ / "inner" / "Game.dsk"));
 }
 
 }  // namespace
