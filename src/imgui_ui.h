@@ -41,6 +41,11 @@ void dbg_step_in();
 void dbg_step_over();
 void dbg_step_out();
 void dbg_run_pause_toggle();
+// Whether the GUI shows the machine as stopped: every Run/Pause toggle and
+// label asks this. It is cpc_announced_stopped() (lock-free), not
+// g_emu_paused, which another actor's pause lease also sets on a running
+// machine: a Pause clicked then was taken for a Run (beads-wwz8).
+bool dbg_machine_stopped();
 // Toast how the last step walk ended (once); a no-op while one is running.
 void dbg_step_walk_poll_outcome();
 int imgui_topbar_height();

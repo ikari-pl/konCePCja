@@ -5826,7 +5826,7 @@ int koncpc_main(int argc, char** argv) {
           break;
         case SDL_EVENT_WINDOW_FOCUS_GAINED:
           if (CPC.auto_pause) {
-            cpc_resume();
+            cpc_run();
           }
           // In docked mode, refocus CPC Screen so keyboard routes to emulator
           // Only on app focus gain — not mouse enter, which fires during
@@ -5837,7 +5837,7 @@ int koncpc_main(int argc, char** argv) {
           break;
         case SDL_EVENT_WINDOW_MOUSE_ENTER:
           if (CPC.auto_pause) {
-            cpc_resume();
+            cpc_run();
           }
           break;
         case SDL_EVENT_WINDOW_FOCUS_LOST:

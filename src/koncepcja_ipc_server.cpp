@@ -2401,21 +2401,22 @@ std::string handle_command(const std::string& line) {
         return "ERR 503 no-window\n";
 #else
         const std::string& path = parts[2];
-        // Force z80_execute to return so the main loop can render a frame
-        bool const was_paused = CPC.paused;
+        // Force z80_execute to return so the main loop can render a frame.
+        // Under a lease: the machine is borrowed, not stopped, and goes back
+        // to what it was even with another actor's lease overlapping.
         z80_stop_requested.store(true, std::memory_order_relaxed);
-        if (!was_paused) cpc_pause();
+        CpcPauseLease lease(CpcPauseLeaseMode::PauseOnly);
         video_request_window_screenshot(path);
         // Wait for the main loop to render a frame and capture (up to 5
         // seconds)
         for (int i = 0; i < 500; i++) {
           std::this_thread::sleep_for(std::chrono::milliseconds(10));
           if (access(path.c_str(), F_OK) == 0) {
-            if (!was_paused) cpc_resume();
+            lease.restore_run_state();
             return "OK\n";
           }
         }
-        if (!was_paused) cpc_resume();
+        lease.restore_run_state();
         return "ERR 504 timeout\n";
 #endif
       }

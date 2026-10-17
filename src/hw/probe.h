@@ -63,7 +63,9 @@ void probe_clear_watch(const Device* dev);
 int probe_list_watch(const Device* dev, uint16_t* out, int max);
 
 /* I/O comparators (up to 8): match (port & mask) == (value & mask) on the
- * selected directions; interrupt acknowledges (m1 with iorq) never match. */
+ * selected directions; interrupt acknowledges (m1 with iorq) never match.
+ * Adding a value and mask already held merges the directions into that one
+ * comparator (0); -1 = full, or no direction asked for. */
 int probe_add_io(const Device* dev, uint16_t value, uint16_t mask,
                  uint8_t on_read, uint8_t on_write);
 int probe_del_io(const Device* dev, uint16_t value, uint16_t mask);

@@ -534,13 +534,8 @@ void imgui_init_ui() {
     });
   }
   // Extra commands
-  g_command_palette.register_command(
-      "Pause / Resume", "Toggle emulation pause", "Pause", []() {
-        if (g_emu_paused.load(std::memory_order_relaxed))
-          cpc_resume();
-        else
-          cpc_pause();
-      });
+  g_command_palette.register_command("Pause / Resume", "Toggle emulation pause",
+                                     "Pause", []() { dbg_run_pause_toggle(); });
   g_command_palette.register_command(
       "Registers", "Show CPU registers", "",
       []() { g_devtools_ui.toggle_window("registers"); });
@@ -775,7 +770,7 @@ void imgui_render_ui() {
     if (cancel || ImGui::IsKeyPressed(ImGuiKey_Escape)) {
       ImGui::CloseCurrentPopup();
       if (!imgui_state.show_menu && !imgui_state.show_options) {
-        cpc_resume();
+        cpc_run();
       }
     }
     ImGui::EndPopup();
@@ -962,8 +957,13 @@ void imgui_close_menu() {
   // they may have just been set by the menu action that triggered
   // imgui_close_menu(). Each dialog is responsible for clearing its own flag on
   // close. Only unpause if no dialog is keeping the emulator paused.
+  //
+  // cpc_run(), here and wherever the user's gesture means "run the machine"
+  // (Resume, the DevTools Run, a dialog closing): a bare cpc_resume() does
+  // nothing while another actor holds a pause lease, and the gesture was
+  // lost with the machine left paused (beads-jlbg).
   if (!imgui_state.show_options && !imgui_state.show_quit_confirm) {
-    cpc_resume();
+    cpc_run();
   }
 }
 
@@ -1010,9 +1010,11 @@ void dbg_step_in() {
   cpc_resume();
 }
 
+bool dbg_machine_stopped() { return cpc_announced_stopped(); }
+
 void dbg_run_pause_toggle() {
-  if (g_emu_paused.load(std::memory_order_relaxed)) {
-    cpc_resume();
+  if (dbg_machine_stopped()) {
+    cpc_run();
   } else {
     cpc_pause();
   }
@@ -2131,10 +2133,11 @@ void imgui_render_topbar() {
         s_topbar_height_dirty = true;
       }
     }
-    // Label reflects live pause state (atomic flag — CPC.paused is written by
-    // the Z80 thread). When paused, the button resumes; when running, it opens
-    // the F1 menu and pauses, exactly as before.
-    const bool is_paused = g_emu_paused.load(std::memory_order_relaxed);
+    // Label reflects the announced run state (dbg_machine_stopped(), not
+    // g_emu_paused: another actor's lease sets that on a running machine).
+    // When paused, the button resumes; when running, it opens the F1 menu and
+    // pauses, exactly as before.
+    const bool is_paused = dbg_machine_stopped();
     // beads-uvo: reserve the gold/amber accent for the PAUSED state. While
     // running, the Pause button gets a flat neutral fill so the gold only
     // means "something is halted"; when paused, the Resume button keeps the
@@ -2148,7 +2151,7 @@ void imgui_render_topbar() {
     }
     if (ImGui::Button(is_paused ? "Resume (Esc)" : "Pause (F1)")) {
       if (is_paused) {
-        cpc_resume();
+        cpc_run();
         imgui_state.show_menu = false;
       } else {
         imgui_open_menu();
@@ -4574,7 +4577,7 @@ void imgui_render_options() {
     update_cpc_speed();
     video_set_palette();
     imgui_state.show_options = false;
-    cpc_resume();
+    cpc_run();
     first_open = true;
   };
 
@@ -4614,7 +4617,7 @@ void imgui_render_options() {
     if (plan.reinit_video) imgui_state.video_reinit_pending = true;
     video_set_palette();
     imgui_state.show_options = false;
-    cpc_resume();
+    cpc_run();
     audio_apply_volume();
     if (CPC.snd_enabled)
       audio_enable();
@@ -4913,9 +4916,8 @@ void imgui_render_devtools() {
     // Capture paused state once so BeginDisabled/EndDisabled stay balanced
     // even when a button handler calls cpc_resume() mid-frame.
     ImGui::SameLine(0, 12.0f);
-    // Use the atomic flag — CPC.paused is a plain bool written by the Z80
-    // thread.
-    bool const was_paused = g_emu_paused.load(std::memory_order_relaxed);
+    // The announced run state, not g_emu_paused (dbg_machine_stopped()).
+    bool const was_paused = dbg_machine_stopped();
     // A step walk in flight on its background thread is still resuming and
     // re-pausing the machine to skip nested CALLs -- Step In/Over issued
     // from this same toolbar while that's happening would race it over the
@@ -4965,7 +4967,7 @@ void imgui_render_devtools() {
           else if (ImGui::IsKeyPressed(ImGuiKey_F7, false))
             dbg_step_in();
           else if (ImGui::IsKeyPressed(ImGuiKey_F5, false))
-            cpc_resume();
+            cpc_run();
         } else if (ImGui::IsKeyPressed(ImGuiKey_F5, false)) {
           cpc_pause();
         }

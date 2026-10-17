@@ -1330,6 +1330,63 @@ TEST_F(IpcServerTest, AFrameStepRunsItsFramesAcrossAnotherHoldersLease) {
   cpc_resume();
 }
 
+// `screenshot window` holds the machine while the main loop renders a frame.
+// It used to pause and resume by hand (`if (!was_paused) cpc_resume();`):
+// announced to everybody as a stop and a resume, and the resume was dropped
+// when another actor's lease overlapped it (beads-jlbg).
+namespace {
+std::atomic<int> g_screenshot_run_events{0};
+void count_run_event(const CpcRunEvent&) { ++g_screenshot_run_events; }
+
+// A file that is already there: the command polls for the path to appear.
+std::string existing_screenshot_file() {
+  auto const path =
+      std::filesystem::temp_directory_path() / "koncepcja-ipc-window-shot.png";
+  std::ofstream(path) << "x";
+  return path.string();
+}
+}  // namespace
+
+TEST_F(IpcServerTest, AWindowScreenshotIsNotAnnouncedAsAStop) {
+  std::string const path = existing_screenshot_file();
+  cpc_resume();
+  ASSERT_FALSE(cpc_announced_stopped());
+  g_screenshot_run_events = 0;
+  cpc_set_run_state_observer(&count_run_event);
+  EXPECT_OK(send_command("screenshot window " + path));
+  cpc_set_run_state_observer(nullptr);
+  video_request_window_screenshot("");
+  std::filesystem::remove(path);
+  EXPECT_EQ(0, g_screenshot_run_events.load())
+      << "borrowing the machine for a frame is not a stop";
+  EXPECT_FALSE(CPC.paused);
+}
+
+TEST_F(IpcServerTest, AWindowScreenshotResumesUnderAnothersLease) {
+  std::string const path = existing_screenshot_file();
+  cpc_resume();
+  ASSERT_FALSE(CPC.paused);
+  // The second actor: takes a lease as soon as the screenshot has the machine
+  // paused, and is still holding it when the screenshot lets go.
+  std::atomic<bool> give_up{false};
+  std::thread other([&give_up] {
+    while (!g_emu_paused.load(std::memory_order_seq_cst)) {
+      if (give_up.load()) return;
+      std::this_thread::yield();
+    }
+    CpcPauseLease lease;
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    lease.restore_run_state();
+  });
+  EXPECT_OK(send_command("screenshot window " + path));
+  give_up = true;
+  other.join();
+  video_request_window_screenshot("");
+  std::filesystem::remove(path);
+  EXPECT_FALSE(CPC.paused) << "running before the screenshot, stopped after";
+  cpc_resume();
+}
+
 TEST_F(IpcServerTest, ScreenshotReturnsErrorWithoutSurface) {
   back_surface = nullptr;
   auto screenshotPath =
