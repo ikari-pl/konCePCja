@@ -4286,13 +4286,19 @@ def test_polling_every_chip_changes_nothing() -> None:
             'the reference run is not reproducible; the comparison below '
             'would prove nothing')
         assert alone[0] == frames and alone[1], alone[:2]
+        running_reads = 0
         for readers in (1, 3):
             watched = _stepped_state(core, frames, readers, 'chips')
             r = watched[4]
             label = f'{readers} x chips'
-            assert r.calls > 50 and r.running_reads > 50, (
+            # How many reads fit into the step depends on how fast the host
+            # turns a request round (a slow CI Mac got 41 of a hundred
+            # boundaries). That they were taken at a boundary is what the
+            # core's own count says, below.
+            assert r.running_reads >= readers, (
                 f'{label}: {r.calls} reads, {r.running_reads} of a running '
                 'machine')
+            running_reads += r.running_reads
             assert watched[0] == frames and watched[1], (label, watched[:2])
             assert watched[2] == alone[2], (
                 f'{label}: registers differ:\n  alone   {alone[2]}\n'
@@ -4300,7 +4306,7 @@ def test_polling_every_chip_changes_nothing() -> None:
             assert watched[3] == alone[3], (
                 f'{label}: RAM differs after the same {frames} frames')
             print(f'    {label}: {r.calls} reads during {frames} frames '
-                  f'({r.running_reads} at a frame boundary, slowest '
+                  f'({r.running_reads} of a running machine, slowest '
                   f'{r.slowest * 1000:.0f} ms); registers and RAM identical')
 
         # And a running machine keeps its 50 frames a second under them.
@@ -4321,6 +4327,7 @@ def test_polling_every_chip_changes_nothing() -> None:
             with Readers(core, 2, 'chips') as r:
                 watched_fps = frames_a_second(2.0)
             assert not r.errors, r.errors
+            running_reads += r.running_reads
             print(f'    {alone_fps:.1f} frames a second alone, '
                   f'{watched_fps:.1f} beside {r.calls} chip reads')
             # Against the pace when the machine alone read above it: the
@@ -4329,7 +4336,11 @@ def test_polling_every_chip_changes_nothing() -> None:
                                                           50.0) - 3, (
                 alone_fps, watched_fps)
         served = core_reads(core)
-        assert served['busy'] == 0, served
+        # No read took a pause lease, and every read that saw the machine
+        # running was copied by the runner at a frame boundary (a lease's
+        # read of a running machine is stamped running too).
+        assert served['fallback'] == 0 and served['busy'] == 0, served
+        assert served['boundary'] >= running_reads, (served, running_reads)
         print(f'    reads served: {served}')
 
 
