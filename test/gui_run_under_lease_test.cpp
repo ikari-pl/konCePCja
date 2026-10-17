@@ -13,6 +13,7 @@
 
 #include "imgui_state.h"
 #include "imgui_ui.h"
+#include "imgui_ui_testable.h"
 #include "koncepcja.h"
 #include "m4board_http.h"
 
@@ -128,4 +129,40 @@ TEST_F(GuiRunUnderLeaseTest, WithNoLeaseHeldTheToggleActsAtOnce) {
   EXPECT_TRUE(cpc_stopped());
   dbg_run_pause_toggle();
   EXPECT_FALSE(CPC.paused);
+}
+
+// The other way round (beads-wwz8): a Pause clicked while another actor's
+// lease holds a RUNNING machine. The lease sets g_emu_paused for the length
+// of its operation, and the toggle took that for a stopped machine: it
+// issued a Run, the user's Pause was lost and the machine kept running.
+TEST_F(GuiRunUnderLeaseTest, APauseIsNotTakenForARunUnderAnothersLease) {
+  ASSERT_FALSE(cpc_announced_stopped());
+  CpcPauseLease other;
+  dbg_run_pause_toggle();
+  other.restore_run_state();
+  EXPECT_TRUE(cpc_stopped()) << "the user's Pause was taken for a Run";
+}
+
+// What the labels show (the toolbar's and the Disassembly window's Run/Pause,
+// the topbar's Pause/Resume, the run-state chip): a lease on a running
+// machine does not flicker them to Resume, and a lease on a stopped machine
+// does not flicker them to Pause.
+TEST_F(GuiRunUnderLeaseTest, TheLabelsFollowTheStopNotAnothersLease) {
+  {
+    CpcPauseLease other;
+    EXPECT_FALSE(dbg_machine_stopped()) << "a running machine shown stopped";
+    EXPECT_STREQ(
+        debug_step_controls(dbg_machine_stopped(), false, true).run_pause_label,
+        "Pause");
+    other.restore_run_state();
+  }
+  cpc_pause();
+  {
+    CpcPauseLease other;
+    EXPECT_TRUE(dbg_machine_stopped()) << "a stopped machine shown running";
+    EXPECT_STREQ(debug_step_controls(dbg_machine_stopped(), false, false)
+                     .run_pause_label,
+                 "Resume");
+    other.restore_run_state();
+  }
 }
