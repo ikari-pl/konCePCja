@@ -263,9 +263,16 @@ int probe_list_watch(const Device* dev, uint16_t* out, int max) {
 int probe_add_io(const Device* dev, uint16_t value, uint16_t mask,
                  uint8_t on_read, uint8_t on_write) {
   probe_state* p = self_of(dev->self);
-  for (int i = 0; i < p->io_count; ++i)
-    if (p->io[i].value == value && p->io[i].mask == mask) return -1;
-  if (p->io_count >= kMaxIo || (!on_read && !on_write)) return -1;
+  if (!on_read && !on_write) return -1;
+  for (int i = 0; i < p->io_count; ++i) {
+    if (p->io[i].value != value || p->io[i].mask != mask) continue;
+    // Same port and mask added again: merge directions instead of dropping
+    // the second breakpoint (an IN and an OUT break may share a port).
+    p->io[i].on_read |= on_read;
+    p->io[i].on_write |= on_write;
+    return 0;
+  }
+  if (p->io_count >= kMaxIo) return -1;
   p->io[p->io_count++] = IoEntry{value, mask, on_read, on_write};
   return 0;
 }
