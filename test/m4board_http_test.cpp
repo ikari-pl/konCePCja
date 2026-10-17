@@ -240,6 +240,15 @@ class M4HttpTest : public ::testing::Test {
     ASSERT_TRUE(g_m4_http.is_running());
   }
 
+  // A request queued for the main thread stays queued in g_m4_http
+  // until something drains it, and nothing here does. Left behind, the next
+  // suite to call drain_pending() resets a machine it never asked to reset.
+  void TearDown() override {
+    g_m4_http.pending_reset.store(false);
+    g_m4_http.pending_pause_toggle.store(false);
+    g_m4_http.pending_nmi.store(false);
+  }
+
   std::filesystem::path sd_dir_;
   int port_ = 0;
 };

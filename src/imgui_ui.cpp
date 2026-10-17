@@ -540,7 +540,7 @@ void imgui_init_ui() {
   g_command_palette.register_command(
       "Pause / Resume", "Toggle emulation pause", "Pause", []() {
         if (g_emu_paused.load(std::memory_order_relaxed))
-          cpc_resume();
+          cpc_run();
         else
           cpc_pause();
       });
@@ -778,7 +778,7 @@ void imgui_render_ui() {
     if (cancel || ImGui::IsKeyPressed(ImGuiKey_Escape)) {
       ImGui::CloseCurrentPopup();
       if (!imgui_state.show_menu && !imgui_state.show_options) {
-        cpc_resume();
+        cpc_run();
       }
     }
     ImGui::EndPopup();
@@ -965,8 +965,13 @@ void imgui_close_menu() {
   // they may have just been set by the menu action that triggered
   // imgui_close_menu(). Each dialog is responsible for clearing its own flag on
   // close. Only unpause if no dialog is keeping the emulator paused.
+  //
+  // cpc_run(), here and wherever the user's gesture means "run the machine"
+  // (Resume, the DevTools Run, a dialog closing): a bare cpc_resume() does
+  // nothing while another actor holds a pause lease, and the gesture was
+  // lost with the machine left paused (beads-jlbg).
   if (!imgui_state.show_options && !imgui_state.show_quit_confirm) {
-    cpc_resume();
+    cpc_run();
   }
 }
 
@@ -1015,7 +1020,7 @@ void dbg_step_in() {
 
 void dbg_run_pause_toggle() {
   if (g_emu_paused.load(std::memory_order_relaxed)) {
-    cpc_resume();
+    cpc_run();
   } else {
     cpc_pause();
   }
@@ -2152,7 +2157,7 @@ void imgui_render_topbar() {
     }
     if (ImGui::Button(is_paused ? "Resume (Esc)" : "Pause (F1)")) {
       if (is_paused) {
-        cpc_resume();
+        cpc_run();
         imgui_state.show_menu = false;
       } else {
         imgui_open_menu();
@@ -4578,7 +4583,7 @@ void imgui_render_options() {
     update_cpc_speed();
     video_set_palette();
     imgui_state.show_options = false;
-    cpc_resume();
+    cpc_run();
     first_open = true;
   };
 
@@ -4618,7 +4623,7 @@ void imgui_render_options() {
     if (plan.reinit_video) imgui_state.video_reinit_pending = true;
     video_set_palette();
     imgui_state.show_options = false;
-    cpc_resume();
+    cpc_run();
     audio_apply_volume();
     if (CPC.snd_enabled)
       audio_enable();
@@ -4969,7 +4974,7 @@ void imgui_render_devtools() {
           else if (ImGui::IsKeyPressed(ImGuiKey_F7, false))
             dbg_step_in();
           else if (ImGui::IsKeyPressed(ImGuiKey_F5, false))
-            cpc_resume();
+            cpc_run();
         } else if (ImGui::IsKeyPressed(ImGuiKey_F5, false)) {
           cpc_pause();
         }
