@@ -1,5 +1,58 @@
 # Changelog
 
+## [6.5.0](https://github.com/ikari-pl/konCePCja/compare/v6.4.2...v6.5.0) (2026-10-17)
+
+
+### Features
+
+* **build:** the UI-free `koncepcja -H` links no SDL (beads-29zx) ([44d80cf](https://github.com/ikari-pl/konCePCja/commit/44d80cf4e96c5bfedba1beb51a53aed9c8a675a8))
+* **build:** the UI-free `koncepcja -H` links no SDL (beads-29zx) ([#89](https://github.com/ikari-pl/konCePCja/issues/89)) ([44d80cf](https://github.com/ikari-pl/konCePCja/commit/44d80cf4e96c5bfedba1beb51a53aed9c8a675a8))
+* **build:** the UI-free build is `koncepcja -H` and CI builds it (be… ([be321a3](https://github.com/ikari-pl/konCePCja/commit/be321a35b06d99a63e17a7fc575897fc7c6f21c2))
+* **build:** the UI-free build is `koncepcja -H` and CI builds it (beads-6oa) ([#88](https://github.com/ikari-pl/konCePCja/issues/88)) ([be321a3](https://github.com/ikari-pl/konCePCja/commit/be321a35b06d99a63e17a7fc575897fc7c6f21c2))
+* **kcpc:** binary frontend server skeleton on port 6545 (beads-3o1.1) ([#92](https://github.com/ikari-pl/konCePCja/issues/92)) ([4a7aa1a](https://github.com/ikari-pl/konCePCja/commit/4a7aa1ac0862e58a41706eb95a513da4025c3671))
+* **kcpc:** breakpoints, pushed hits and step over/out/to (beads-3o1.5) ([#97](https://github.com/ikari-pl/konCePCja/issues/97)) ([3f27030](https://github.com/ikari-pl/konCePCja/commit/3f27030f65d8689f6bd90915b0c0ed5a0d8fc08e))
+* **kcpc:** control role and machine writes: CONTROL, REGS_SET, MEM_WRITE (beads-3o1.3) ([#95](https://github.com/ikari-pl/konCePCja/issues/95)) ([69e2d30](https://github.com/ikari-pl/konCePCja/commit/69e2d30b28573f94aa1b2741010ca86543acabd7))
+* **kcpc:** DevTools data: CHIP_GET, ASIC page, symbols, FB_INFO, media/symbol/machine events (beads-3o1.7) ([#99](https://github.com/ikari-pl/konCePCja/issues/99)) ([41b78a2](https://github.com/ikari-pl/konCePCja/commit/41b78a2a49dc16f4706a950d65a5c3fa2919b47b))
+* **kcpc:** input: KEY, KEYS_RELEASE, TEXT, MOUSE, INPUT_STATE (beads-3o1.6) ([#98](https://github.com/ikari-pl/konCePCja/issues/98)) ([2a3c6fc](https://github.com/ikari-pl/konCePCja/commit/2a3c6fc2ae526137691f0bb965a7494b5eb00df4))
+* **kcpc:** machine reads through a frame-boundary gate: REGS_GET, MEM_INFO, MEM_READ (beads-3o1.2) ([#93](https://github.com/ikari-pl/konCePCja/issues/93)) ([d5a6b01](https://github.com/ikari-pl/konCePCja/commit/d5a6b012bf89aa487259563025a28b44f32327da))
+* **kcpc:** media, snapshots and configuration over the binary protocol (beads-rcyq) ([#102](https://github.com/ikari-pl/konCePCja/issues/102)) ([60bb0eb](https://github.com/ikari-pl/konCePCja/commit/60bb0eb0b2eaed2d18b04d7d129d01170563967a))
+* **kcpc:** run control and pushed events: SUBSCRIBE, PAUSE/RUN/RESET/STEP (beads-3o1.4) ([#96](https://github.com/ikari-pl/konCePCja/issues/96)) ([f8ffdac](https://github.com/ikari-pl/konCePCja/commit/f8ffdac45bc451bb72caf41cc76594a39b134c21))
+* **test:** KONCPC_TEST_WINDOW keeps test windows out of the user's way ([fb40b1f](https://github.com/ikari-pl/konCePCja/commit/fb40b1fe205cf344f97849ac322547a80014e177))
+* **test:** KONCPC_TEST_WINDOW keeps test windows out of the user's way ([#78](https://github.com/ikari-pl/konCePCja/issues/78)) ([fb40b1f](https://github.com/ikari-pl/konCePCja/commit/fb40b1fe205cf344f97849ac322547a80014e177))
+
+
+### Bug Fixes
+
+* **build:** m4board_http declares back_surface as HostSurface (beads-… ([44d80cf](https://github.com/ikari-pl/konCePCja/commit/44d80cf4e96c5bfedba1beb51a53aed9c8a675a8))
+* **cartridge:** a cartridge loaded into a running machine is the one the board reads ([#106](https://github.com/ikari-pl/konCePCja/issues/106)) ([90871e3](https://github.com/ikari-pl/konCePCja/commit/90871e365025667dae44e285ee9e282544a47e92))
+* **core:** a pauser is no longer starved of the pause mutex (beads-m1lz) ([#119](https://github.com/ikari-pl/konCePCja/issues/119)) ([73e5acf](https://github.com/ikari-pl/konCePCja/commit/73e5acff10dcdfde0738592caafb14b731ed18be))
+* **core:** exit writes back the Symbiface IDE image's unsaved writes (beads-ssqd) ([#125](https://github.com/ikari-pl/konCePCja/issues/125)) ([7f21133](https://github.com/ikari-pl/konCePCja/commit/7f21133285a51d6356935f91afd32d1dadca4808))
+* **core:** the startup manifest reports the tier the machine runs (beads-m9dq) ([#121](https://github.com/ikari-pl/konCePCja/issues/121)) ([544b298](https://github.com/ikari-pl/konCePCja/commit/544b298d8d9ef84c7844e0f98ee8abde6da42f4e))
+* **debug:** a breakpoint a step walk steps onto is hit once (beads-w88g) ([#117](https://github.com/ikari-pl/konCePCja/issues/117)) ([13f3a45](https://github.com/ikari-pl/konCePCja/commit/13f3a45efa53365c3b281b0e606f1071b6c1cca3))
+* **debug:** a second I/O breakpoint on the same port and mask is armed (beads-lj1t) ([#108](https://github.com/ikari-pl/konCePCja/issues/108)) ([a831d04](https://github.com/ikari-pl/konCePCja/commit/a831d04aa2c66e84b160aaedf2dc033e0472201d))
+* **debug:** wait bp reports an I/O breakpoint stop as one, with the real PC (beads-llnn) ([#113](https://github.com/ikari-pl/konCePCja/issues/113)) ([41409e1](https://github.com/ikari-pl/konCePCja/commit/41409e19079018a1483513e4394eea193b447304))
+* **disk:** a disc from a .zip is written back as a DSK beside the archive, never into it ([#107](https://github.com/ikari-pl/konCePCja/issues/107)) ([62704b1](https://github.com/ikari-pl/konCePCja/commit/62704b13ebc209637c62f6c68589bd3e31503921))
+* **disk:** a disc's unsaved writes go back to its own file, not the one being loaded ([#104](https://github.com/ikari-pl/konCePCja/issues/104)) ([241ddda](https://github.com/ikari-pl/konCePCja/commit/241dddaf689245e526bb9e5452997ef70ddd7018))
+* **disk:** an exit nobody is asked about writes a disc's unsaved writes back (beads-lgul) ([#111](https://github.com/ikari-pl/konCePCja/issues/111)) ([29d06b2](https://github.com/ikari-pl/konCePCja/commit/29d06b29ee36a6abaad40127076a643d2beb0348))
+* **gui:** a Pause clicked under another actor's lease is not taken for a Run (beads-wwz8) ([#110](https://github.com/ikari-pl/konCePCja/issues/110)) ([abbfab4](https://github.com/ikari-pl/konCePCja/commit/abbfab45a2965ed984c1a9bc2e8f4bb293120bb9))
+* **gui:** a Run the user asks for is not dropped under another actor's pause lease (beads-jlbg) ([#101](https://github.com/ikari-pl/konCePCja/issues/101)) ([7504976](https://github.com/ikari-pl/konCePCja/commit/75049767c98ea0452b4787f8cd11e9fca6bfbd0b))
+* **gui:** auto-pause only runs a machine it stopped itself (beads-z6yz) ([#112](https://github.com/ikari-pl/konCePCja/issues/112)) ([2e0ef76](https://github.com/ikari-pl/konCePCja/commit/2e0ef7630822226844225c1a17f52cc01bf8faca))
+* **ipc:** config set crtc_type|silicon_disc holds the machine still (beads-7h32) ([#122](https://github.com/ikari-pl/konCePCja/issues/122)) ([b9575b1](https://github.com/ikari-pl/konCePCja/commit/b9575b10fa76ef72008e9cebefa76e57cee1ef15))
+* **ipc:** pause and wait pc's timeout answer once the machine has stopped (beads-veb0) ([#120](https://github.com/ikari-pl/konCePCja/issues/120)) ([f2749a0](https://github.com/ikari-pl/konCePCja/commit/f2749a019454b1b5f0a4340fb776ab47c665319a))
+* **ipc:** pc= and mem= events fire through the bus probe (beads-uj1c) ([6627721](https://github.com/ikari-pl/konCePCja/commit/66277218e9de93fcca5c9ed564e90b650f0e854b))
+* **ipc:** pc= and mem= events fire through the bus probe (beads-uj1c) ([#82](https://github.com/ikari-pl/konCePCja/issues/82)) ([6627721](https://github.com/ikari-pl/konCePCja/commit/66277218e9de93fcca5c9ed564e90b650f0e854b))
+* **ipc:** reg set HALT is refused instead of answering OK and changing nothing ([#100](https://github.com/ikari-pl/konCePCja/issues/100)) ([0d9a6c5](https://github.com/ikari-pl/konCePCja/commit/0d9a6c5d0c212d9fe08a165815678950d2442b46))
+* **ipc:** wait bp drops the hit of a stop the machine has been run out of ([#103](https://github.com/ikari-pl/konCePCja/issues/103)) ([efc8465](https://github.com/ikari-pl/konCePCja/commit/efc84652ca7cb44b0fb68a4576b66ea66089a507))
+* **ipc:** wait vbl's ERR 408 answers once the machine has stopped (beads-wrkg) ([#118](https://github.com/ikari-pl/konCePCja/issues/118)) ([0b25e78](https://github.com/ikari-pl/konCePCja/commit/0b25e78c8bf61a640c524fb99e2716946fa9fe70))
+* **log:** one log line is one locked write (beads-2qcw) ([#123](https://github.com/ikari-pl/konCePCja/issues/123)) ([c17986b](https://github.com/ikari-pl/konCePCja/commit/c17986b0ebe046c6662078d38ba59ecb7bdaafc2))
+* **loop:** -H honours the speed limiter; auto frameskip keys on the p… ([43c4d57](https://github.com/ikari-pl/konCePCja/commit/43c4d5724bced65d78cb9315a5505bd62eebf362))
+* **loop:** -H honours the speed limiter; auto frameskip keys on the pacer ([#79](https://github.com/ikari-pl/konCePCja/issues/79)) ([43c4d57](https://github.com/ikari-pl/konCePCja/commit/43c4d5724bced65d78cb9315a5505bd62eebf362))
+* **loop:** pause leases exclude the frame under -H (beads-b0bj) ([ee55e5a](https://github.com/ikari-pl/konCePCja/commit/ee55e5a0c40e1287fb7aa93adcb0ca86d78aa167))
+* **loop:** pause leases exclude the frame under -H (beads-b0bj) ([#81](https://github.com/ikari-pl/konCePCja/issues/81)) ([ee55e5a](https://github.com/ikari-pl/konCePCja/commit/ee55e5a0c40e1287fb7aa93adcb0ca86d78aa167))
+* **pacing:** a stop shorter than 250 ms is not repaid as a burst of unpaced frames (beads-drzi) ([#105](https://github.com/ikari-pl/konCePCja/issues/105)) ([e6a977a](https://github.com/ikari-pl/konCePCja/commit/e6a977a5594fcd0bbe9cd9b9710dfb78643a7d6e))
+* **pause:** lease holders let go through one call that says what they mean (beads-mk1w) ([#94](https://github.com/ikari-pl/konCePCja/issues/94)) ([3c24ea2](https://github.com/ikari-pl/konCePCja/commit/3c24ea2ca33a4667c4521e713e95c7aa607bba84))
+* **tape:** a tape file that is refused leaves the deck as it was (beads-ow6r) ([#115](https://github.com/ikari-pl/konCePCja/issues/115)) ([bea5349](https://github.com/ikari-pl/konCePCja/commit/bea53496137bf0d7d835434baee704be35c00865))
+
 ## [6.4.2](https://github.com/ikari-pl/konCePCja/compare/v6.4.1...v6.4.2) (2026-10-07)
 
 
