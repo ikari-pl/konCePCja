@@ -74,10 +74,13 @@ void subcycle_bridge_repaint(HostSurface* dst);
  * not change mid-tick). `flux` selects SCP interpretation; bytes are moved
  * into the bridge, which keeps them alive for the machine. `path` is the file
  * the bytes came from: the disc's unsaved writes are written back there when
- * it leaves the drive (empty: nowhere, they are dropped). No-ops when the
- * engine is inactive. */
+ * it leaves the drive (empty: nowhere, they are dropped). When `path` is an
+ * archive, `archive_entry` names the entry the bytes are: the archive is
+ * never written, the writes go to a DSK named after the entry beside it.
+ * No-ops when the engine is inactive. */
 void subcycle_bridge_insert_media(std::vector<uint8_t> bytes, bool flux,
-                                  uint8_t unit = 0, std::string path = {});
+                                  uint8_t unit = 0, std::string path = {},
+                                  std::string archive_entry = {});
 void subcycle_bridge_eject_media(uint8_t unit = 0);
 // Apply a queued insert/eject now. Safe only while the Z80 thread is
 // idle (hold CpcPauseLease). IPC disk eject uses this so the next
