@@ -5420,8 +5420,7 @@ int koncpc_main(int argc, char** argv) {
                               "Failed to load disk: " + drop_fname);
             }
           } else if (ext == ".cdt" || ext == ".voc") {
-            CPC.tape.file = drop_path;
-            if (file_load(CPC.tape) == 0) {
+            if (tape_deck_insert(CPC.tape, drop_path) == 0) {
               ui_host().toast(UiToastLevel::Success,
                               "Tape loaded: " + drop_fname);
               koncpc_mru_push(CPC.mru_tapes, drop_path);

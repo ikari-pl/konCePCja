@@ -2128,9 +2128,9 @@ std::string handle_command(const std::string& line) {
         return ok_with_context();
       }
       if (ext == ".cdt" || ext == ".voc") {
-        CPC.tape.file = path;
-        CPC.tape.zip_index = 0;
-        if (file_load(CPC.tape) != 0) return "ERR 500 load-tape\n";
+        if (tape_deck_insert(CPC.tape, path) != 0) {
+          return "ERR 500 load-tape\n";
+        }
         tape_scan_blocks();  // build the block table (parity with the GUI load)
         ipc_mru_stage(&t_CPC::mru_tapes, path);
         return ok_with_context();
