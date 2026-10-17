@@ -255,8 +255,7 @@ void create_new_disk(const std::string& path, const std::string& fname) {
     imgui_toast_error("Failed to create disk: " + err);
     return;
   }
-  CPC.driveA.file = path;
-  if (file_load(CPC.driveA) == 0) {
+  if (disc_insert(CPC.driveA, path) == 0) {
     imgui_toast_success("New disk in A: " + fname);
     mru_push(CPC.mru_disks, path);
   } else {
@@ -283,8 +282,7 @@ void process_pending_dialog() {
   switch (action) {
     case FileDialogAction::LoadDiskA:
     case FileDialogAction::LoadDiskA_LED:
-      CPC.driveA.file = path;
-      if (file_load(CPC.driveA) == 0) {
+      if (disc_insert(CPC.driveA, path) == 0) {
         imgui_toast_success("Drive A: " + fname);
         mru_push(CPC.mru_disks, path);
       } else {
@@ -294,8 +292,7 @@ void process_pending_dialog() {
       break;
     case FileDialogAction::LoadDiskB:
     case FileDialogAction::LoadDiskB_LED:
-      CPC.driveB.file = path;
-      if (file_load(CPC.driveB) == 0) {
+      if (disc_insert(CPC.driveB, path) == 0) {
         imgui_toast_success("Drive B: " + fname);
         mru_push(CPC.mru_disks, path);
       } else {
@@ -1708,9 +1705,8 @@ void imgui_render_menubar() {
             }
           };
       render_mru_section("Disks", CPC.mru_disks, [](const std::string& p) {
-        CPC.driveA.file = p;
         auto f = std::filesystem::path(p).filename().string();
-        if (file_load(CPC.driveA) == 0) {
+        if (disc_insert(CPC.driveA, p) == 0) {
           imgui_toast_success("Drive A: " + f);
           mru_push(CPC.mru_disks, p);
         } else {

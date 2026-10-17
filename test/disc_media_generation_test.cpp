@@ -210,6 +210,35 @@ TEST_F(LiveBoardMediaTest, ARejectedHotSwapStillMovesTheGeneration) {
       << "a rejected image must leave the drive empty, not half-mounted";
 }
 
+TEST_F(LiveBoardMediaTest, ARefusedFileLeavesTheMachinesDisc) {
+  // The machine's half too: a disc the host refuses never reaches the board,
+  // and the board keeps the disc it had (beads-3o1.8).
+  load_a(one_);
+  subcycle_bridge_apply_pending_media();
+  uint64_t const generation = dsk_media_generation(0);
+  std::string const junk = (dir_ / "junk.dsk").string();
+  FILE* f = fopen(junk.c_str(), "wb");
+  ASSERT_NE(f, nullptr);
+  ASSERT_EQ(fputs("this is not a disc image either", f) >= 0, true);
+  ASSERT_EQ(fclose(f), 0);
+  std::string const flux = (dir_ / "junk.hfe").string();
+  f = fopen(flux.c_str(), "wb");
+  ASSERT_NE(f, nullptr);
+  ASSERT_EQ(fputs("HXCPICFE but nothing after it", f) >= 0, true);
+  ASSERT_EQ(fclose(f), 0);
+  for (const std::string& path : {junk, flux}) {
+    t_slot slot{};
+    slot.drive = DRIVE::DSK_A;
+    slot.file = path;
+    EXPECT_NE(0, file_load(slot)) << path;
+    subcycle_bridge_apply_pending_media();
+    EXPECT_EQ(generation, dsk_media_generation(0)) << path;
+    EXPECT_EQ(1u, listed_files()) << path << ": the host's view changed";
+    ASSERT_TRUE(subcycle_bridge_pull_drive_view(0)) << path;
+    EXPECT_EQ(1u, listed_files()) << path << ": the machine lost its disc";
+  }
+}
+
 TEST_F(LiveBoardMediaTest, TheBoardApplyingASwapMovesTheGeneration) {
   load_a(one_);
   uint64_t const queued = dsk_media_generation(0);
@@ -293,7 +322,7 @@ TEST_F(MediaNotesTest, AnEjectedDiscIsGoneFromTheNotes) {
   EXPECT_EQ(g_seen[0].generation, state.generation);
 }
 
-TEST_F(MediaNotesTest, AFileThatIsNoDiscLeavesTheDriveEmpty) {
+TEST_F(MediaNotesTest, AFileThatIsNoDiscChangesNothing) {
   t_slot slot{};
   slot.drive = DRIVE::DSK_A;
   slot.file = dsk_path_;
@@ -303,13 +332,39 @@ TEST_F(MediaNotesTest, AFileThatIsNoDiscLeavesTheDriveEmpty) {
   ASSERT_NE(f, nullptr);
   ASSERT_EQ(fputs("this is not a disc image", f) >= 0, true);
   ASSERT_EQ(fclose(f), 0);
+  MediaState const before = media_state(MediaSlot::DriveA);
+  size_t const seen = g_seen.size();
+  dword const tracks = driveA.tracks;
   slot.file = bad;
-  uint64_t const before = media_generation(MediaSlot::DriveA);
   EXPECT_NE(0, file_load(slot));
   MediaState const state = media_state(MediaSlot::DriveA);
-  EXPECT_FALSE(state.present) << "the old disc went when the load began";
-  EXPECT_TRUE(state.path.empty());
-  EXPECT_GT(state.generation, before);
+  EXPECT_TRUE(state.present) << "a refused file emptied the drive";
+  EXPECT_EQ(state.path, before.path);
+  EXPECT_EQ(state.generation, before.generation);
+  EXPECT_EQ(g_seen.size(), seen) << "a refused file was announced";
+  EXPECT_EQ(driveA.tracks, tracks) << "the host's view of the disc changed";
+  // A file that is not there is refused the same way.
+  slot.file = (dir_ / "nowhere.dsk").string();
+  EXPECT_NE(0, file_load(slot));
+  EXPECT_EQ(media_state(MediaSlot::DriveA).generation, before.generation);
+  EXPECT_EQ(driveA.tracks, tracks);
+}
+
+TEST_F(MediaNotesTest, DiscInsertKeepsTheSlotsFileWhenItRefuses) {
+  t_slot slot{};
+  slot.drive = DRIVE::DSK_B;
+  ASSERT_EQ(0, disc_insert(slot, dsk_path_));
+  EXPECT_EQ(slot.file, dsk_path_);
+  std::string const bad = (dir_ / "bad.dsk").string();
+  FILE* f = fopen(bad.c_str(), "wb");
+  ASSERT_NE(f, nullptr);
+  ASSERT_EQ(fputs("this is not a disc image", f) >= 0, true);
+  ASSERT_EQ(fclose(f), 0);
+  slot.zip_index = 3;
+  EXPECT_NE(0, disc_insert(slot, bad));
+  EXPECT_EQ(slot.file, dsk_path_) << "the slot names a file it does not hold";
+  EXPECT_EQ(slot.zip_index, 3U);
+  EXPECT_TRUE(media_state(MediaSlot::DriveB).present);
 }
 
 TEST_F(MediaNotesTest, ATapeIsAnnouncedOnceAnInsertAndOnceAnEject) {

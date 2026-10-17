@@ -1,29 +1,15 @@
 # KCPC binary frontend protocol, version 1
 
-**Status: being implemented, one slice at a time.** This is the contract for
-phase 3 of the headless-core epic (beads-cv2, bead beads-3o1). The
-implementation lands in the slices listed in
-[section 16](#16-implementation-slices), and that table says which have
-landed: so far slice 1, the server skeleton (`HELLO`, `PING`,
-`MACHINE_INFO`, `ERROR`), slice 2, the machine reads (`REGS_GET`,
-`MEM_INFO`, `MEM_READ`), slice 3, the control role and the machine
-writes (`CONTROL`, `REGS_SET`, `MEM_WRITE`), slice 4, run control and
-the pushed events (`SUBSCRIBE`, `RUN_STATE`, `PAUSE`, `RUN`, `RESET`,
-`STEP` in and frames, and the events that tell every client about them),
-slice 5, breakpoints (`BP_LIST`, `BP_ADD`, `BP_DEL`, `BP_CLEAR`), their
-hits pushed with what was hit, and `STEP` over, out and to,
-slice 6, input (`KEY`, `KEYS_RELEASE`, `TEXT`, `MOUSE`, `INPUT_STATE`),
-slice 7, what the DevTools show (`CHIP_GET`, the memory space
-`ASIC_PAGE`, `SYM_LIST`, `SYM_ADD`, `SYM_DEL`, `SYM_LOAD`, `FB_INFO`) with
-the events for a change of medium, of the symbols and of the machine,
-and slice 9, media, snapshots and configuration (`MEDIA_INSERT`,
-`MEDIA_EJECT`, `MEDIA_INFO`, `TAPE_CONTROL`, `SNAPSHOT_SAVE`,
-`SNAPSHOT_LOAD`, `CONFIG_GET`, `CONFIG_SET`, `CONFIG_APPLY`).
-Slice 8, the exit test, is what is left; a server tells a
-client what it implements through the `caps` mask of `HELLO`. The server
-announces protocol
-version 0, and the layouts below may still change, until phase 5 (the remote
-GUI) has shipped; see [section 6](#6-versioning-and-hello).
+**Status: implemented; phase 3 is complete.** This is the contract for
+phase 3 of the headless-core epic (beads-cv2, bead beads-3o1), and every
+opcode, event and capability bit below is in the server. The slices it was
+built in are listed in [section 16](#16-implementation-slices), and the test
+that closes the phase is its
+[exit criterion](#exit-criterion-of-phase-3). A server tells a client what
+it implements through the `caps` mask of `HELLO`. The server announces
+protocol version 0, and the layouts below may still change, until phase 5
+(the remote GUI) has shipped; see [section 6](#6-versioning-and-hello).
+Client and server must come from the same checkout until then.
 
 The text IPC on port 6543 ([ipc-protocol.md](../ipc-protocol.md)) stays as it
 is. This is a second, separate server.
@@ -1613,7 +1599,8 @@ moved name, as an entry `SYM_DEL` could never reach.)
   `u64 generation`, `u32 loaded` (the symbols the file held). Its symbols are
   added to the table as one change; breakpoints and entry points in the file
   are ignored, as `sym load` ignores them. `NOT_FOUND` when the file cannot
-  be opened; `BAD_PAYLOAD` for an empty path.
+  be opened; `BAD_PAYLOAD` for an empty path or one that still has a `..` in
+  it once it is normalised, the rule of [Media](#media).
 
 `generation` grows with every change of the table and is the value
 `EVT_SYMBOLS_CHANGED` carries. None of these requests touches the machine,
@@ -1676,11 +1663,15 @@ as `EVT_MEDIA_CHANGED`. A number above 3 is `BAD_PAYLOAD`.
     is malformed. Checked in this order: `NOT_CONTROLLER`, `BAD_PAYLOAD`
     (slot, flags, path), `NOT_FOUND`, `BAD_PAYLOAD` (type), `BUSY`,
     `NOT_PRESENT`, `BAD_PAYLOAD` (malformed).
-  - **A malformed image leaves a drive or the deck empty**: the disc or tape
-    that was there is gone, as it is after a failed load from the menu, and
-    the events say so. The cartridge port is the exception: a 6128+ does not
-    run without a cartridge, so a file that is no cartridge leaves the one
-    that was there, and no reset happens.
+  - **A disc that is refused changes nothing**: the drive keeps the disc it
+    had, in the host's view and in the machine, its file stays the one
+    `MEDIA_INFO` names, and no event is sent. The image is tried on copies
+    before either is touched (`disc_insert()`, `src/slotshandler.h`); the
+    text IPC's `load`, the menus and drag and drop go the same way. A
+    cartridge is the same: a file that is no cartridge leaves the one that
+    was there, and no reset happens. **The tape deck is the exception**: a
+    file that is no tape empties it, host and machine alike, and the event
+    says so (keeping the tape that was there is beads-ow6r).
   - **The outgoing disc keeps its writes.** A disc that was written to is
     written back to its own file when the new one takes its place.
   - There is no write-protect flag. The FDC has no switch for it: a medium
@@ -1717,8 +1708,8 @@ as `EVT_MEDIA_CHANGED`. A number above 3 is `BAD_PAYLOAD`.
   `MEDIA_INFO`.
 
 Every successful insert and eject, from this port or any other source,
-produces `EVT_MEDIA_CHANGED`; so does a load that failed and left the slot
-empty. The events of a request name it and follow its reply.
+produces `EVT_MEDIA_CHANGED`; so does a tape load that failed and left the
+deck empty. A refused disc or cartridge produces none: nothing changed. The events of a request name it and follow its reply.
 
 ### Snapshots
 
@@ -1906,7 +1897,9 @@ The same position as the text IPC today:
   reach the loopback port can read and change the emulated machine, make the
   core read any file the core's user can read (`SYM_LOAD`, `MEDIA_INSERT`,
   `SNAPSHOT_LOAD`) and write an SNA file anywhere that user can write
-  (`SNAPSHOT_SAVE`). That is already true of port 6543 (`load`,
+  (`SNAPSHOT_SAVE`). The `..` rule of [Media](#media), which all four
+  apply, keeps a relative path inside the core's working directory; it is
+  no sandbox, since an absolute path is accepted. That is already true of port 6543 (`load`,
   `snapshot save`), so this port adds no new exposure, and it must not be
   forwarded off the machine.
 - `[ipc] binary_port_enabled=0` (section 3) closes the port for users who do
@@ -1933,13 +1926,13 @@ test-first against a real `-H` core.
 | 5 | Breakpoints and pushed hits (**landed**, beads-3o1.5) | `BP_LIST`, `BP_ADD`, `BP_DEL`, `BP_CLEAR` on the editing lists the text IPC and the DevTools share; `EVT_STOPPED` says what was hit; `EVT_BREAKPOINTS_CHANGED` for edits from any source; the walker and `STEP` over, out, to; walks announced as one step, whoever walks; `CAP_BREAKPOINTS` |
 | 6 | Input (**landed**, beads-3o1.6) | `KEY`, `KEYS_RELEASE`, `TEXT`, `MOUSE`, `INPUT_STATE` on the paths the text IPC's `input` commands use; the keys and mouse buttons a controller holds are released when it loses control; `CAP_INPUT` |
 | 7 | DevTools data (**landed**, beads-3o1.7) | `CHIP_GET` for the CRTC, the Gate Array, the PSG, the FDC and the ASIC (layout 2), the memory space `ASIC_PAGE`; `SYM_LIST`, `SYM_ADD`, `SYM_DEL`, `SYM_LOAD` on a symbol table that now has a lock; `FB_INFO` with no transport; `EVT_MEDIA_CHANGED`, `EVT_SYMBOLS_CHANGED`, `EVT_MACHINE_CHANGED` for changes from any source; `CAP_CHIPS`, `CAP_SYMBOLS`, `CAP_FB_INFO` |
-| 8 | Exit test and documentation | The exit test of beads-3o1, the documentation brought in line with the code. **No freeze:** the server stays at major 0 |
+| 8 | Exit test and documentation (**landed**, beads-3o1.8) | The exit test of beads-3o1 (`test_exit_criterion.py`), a refusal checked for every opcode of [section 13](#13-opcode-table), the documentation brought in line with the code; `SYM_LOAD` takes the `..` rule of the other paths, and a refused disc changes nothing on either port. **No freeze:** the server stays at major 0 |
 | 9 | Media, snapshots, configuration (**landed**, beads-rcyq) | `MEDIA_INSERT`, `MEDIA_EJECT`, `MEDIA_INFO`, `TAPE_CONTROL` on the loaders and the media swap the text IPC and the menus use, with the machine's half applied under the request's lease; `SNAPSHOT_SAVE`, `SNAPSHOT_LOAD` (SNA); `CONFIG_GET`, `CONFIG_SET`, `CONFIG_APPLY` on one table of keys shared with the text IPC; `CAP_MEDIA`, `CAP_SNAPSHOT`, `CAP_CONFIG` |
 
 Slice 9 needs slices 3 (the controller role) and 4 (events) and nothing
 later, so it can be built alongside slices 5 to 7. Slice 8 is numbered before
 it because it carries the exit criterion below, which does not involve
-media; phase 3 is finished when both have merged.
+media; phase 3 is finished when both have merged, and both have.
 
 The `[ipc] binary_port_enabled` key and forced takeover belong to slices 1
 and 3.
@@ -2017,7 +2010,8 @@ Source layout the slices should follow:
 - `src/net_socket.{h,cpp}` — the one place with `#ifdef _WIN32` around
   sockets. The text IPC keeps its own two copies of `run()` for now; moving
   it onto the shim is a separate clean-up.
-- `test/integrated/kcpc/kcpc_client.py`, `test/integrated/kcpc/test_kcpc.py`
+- `test/integrated/kcpc/kcpc_client.py`, `test/integrated/kcpc/test_kcpc.py`,
+  `test/integrated/kcpc/test_exit_criterion.py`
   — standard library only (`socket`, `struct`, `threading`), so the Windows
   CI job needs nothing installed. `test_kcpc.py` starts its own cores:
   with `-H` by default, `--ui-free` for a `KONCPC_MODERN_UI=0` binary and
@@ -2037,6 +2031,23 @@ A Python test starts one `-H` core and, with no polling loop anywhere:
    frame and the bytes match the text IPC's `mem read` of the same range.
 
 It passes on Linux, macOS and Windows CI, against `-H` and the UI-free build.
+
+The test is `test/integrated/kcpc/test_exit_criterion.py`. It waits only in
+blocking reads (the startup manifest is read from the core's pipe line by
+line, every event from the socket), and a watchdog timer kills a core that
+hangs, so a hang is a failed read and never a stuck job. `make e2e_test` runs
+it under `-H` (`test/integrated/kcpc/test.sh`); the UI-free step of the
+Linux, macOS and MSVC workflows runs it with `--ui-free`, and the MSVC one
+with `-H` too. `--gui` runs it against the threaded loop, and `--repeat N`
+runs it N times, each against a core of its own.
+
+`test_every_opcode_has_a_documented_refusal` in `test_kcpc.py` reads the
+table of [section 13](#13-opcode-table) from this document, checks that it
+names the client's opcodes with the client's numbers, and sends each one
+the way it must be refused: as a first frame (`HELLO_REQUIRED`), from an
+observer when the opcode is the controller's (`NOT_CONTROLLER`) and without
+its payload when it has one (`BAD_PAYLOAD`). Every opcode's success, and
+its other failures, are in the slice's own tests.
 
 ## 17. Engineering decisions made here
 
@@ -2243,3 +2254,14 @@ Recorded so a reviewer can disagree with one without reading the rest.
     that the controller is sent the event after the reply. The rebuild runs
     on the main thread, so the request travels in two atomics, not in
     thread-local storage like the other causes.
+57. **A refused disc changes nothing** (slice 8). A disc load emptied the
+    drive before it parsed the file, so a file that was no disc left the
+    drive empty, on this port and on every other; the text IPC's test said
+    the opposite and checked neither. The image is now tried on copies
+    first, and the slot keeps naming the disc it holds (`disc_insert()`),
+    as `cpc_cartridge_swap()` already did for a cartridge. A tape still
+    empties the deck: both halves of it agree, so it is a follow-up, not a
+    defect of this protocol (beads-ow6r).
+58. **`SYM_LOAD` takes the `..` rule** (slice 8). It was the one path from
+    a client that did not; it now answers `BAD_PAYLOAD`, with the message
+    `MEDIA_INSERT` gives, through a message of its own on the callback.
