@@ -255,8 +255,7 @@ void create_new_disk(const std::string& path, const std::string& fname) {
     imgui_toast_error("Failed to create disk: " + err);
     return;
   }
-  CPC.driveA.file = path;
-  if (file_load(CPC.driveA) == 0) {
+  if (disc_insert(CPC.driveA, path) == 0) {
     imgui_toast_success("New disk in A: " + fname);
     mru_push(CPC.mru_disks, path);
   } else {
@@ -283,8 +282,7 @@ void process_pending_dialog() {
   switch (action) {
     case FileDialogAction::LoadDiskA:
     case FileDialogAction::LoadDiskA_LED:
-      CPC.driveA.file = path;
-      if (file_load(CPC.driveA) == 0) {
+      if (disc_insert(CPC.driveA, path) == 0) {
         imgui_toast_success("Drive A: " + fname);
         mru_push(CPC.mru_disks, path);
       } else {
@@ -294,8 +292,7 @@ void process_pending_dialog() {
       break;
     case FileDialogAction::LoadDiskB:
     case FileDialogAction::LoadDiskB_LED:
-      CPC.driveB.file = path;
-      if (file_load(CPC.driveB) == 0) {
+      if (disc_insert(CPC.driveB, path) == 0) {
         imgui_toast_success("Drive B: " + fname);
         mru_push(CPC.mru_disks, path);
       } else {
@@ -537,13 +534,8 @@ void imgui_init_ui() {
     });
   }
   // Extra commands
-  g_command_palette.register_command(
-      "Pause / Resume", "Toggle emulation pause", "Pause", []() {
-        if (g_emu_paused.load(std::memory_order_relaxed))
-          cpc_run();
-        else
-          cpc_pause();
-      });
+  g_command_palette.register_command("Pause / Resume", "Toggle emulation pause",
+                                     "Pause", []() { dbg_run_pause_toggle(); });
   g_command_palette.register_command(
       "Registers", "Show CPU registers", "",
       []() { g_devtools_ui.toggle_window("registers"); });
@@ -1018,8 +1010,10 @@ void dbg_step_in() {
   cpc_resume();
 }
 
+bool dbg_machine_stopped() { return cpc_announced_stopped(); }
+
 void dbg_run_pause_toggle() {
-  if (g_emu_paused.load(std::memory_order_relaxed)) {
+  if (dbg_machine_stopped()) {
     cpc_run();
   } else {
     cpc_pause();
@@ -1713,9 +1707,8 @@ void imgui_render_menubar() {
             }
           };
       render_mru_section("Disks", CPC.mru_disks, [](const std::string& p) {
-        CPC.driveA.file = p;
         auto f = std::filesystem::path(p).filename().string();
-        if (file_load(CPC.driveA) == 0) {
+        if (disc_insert(CPC.driveA, p) == 0) {
           imgui_toast_success("Drive A: " + f);
           mru_push(CPC.mru_disks, p);
         } else {
@@ -2140,10 +2133,11 @@ void imgui_render_topbar() {
         s_topbar_height_dirty = true;
       }
     }
-    // Label reflects live pause state (atomic flag — CPC.paused is written by
-    // the Z80 thread). When paused, the button resumes; when running, it opens
-    // the F1 menu and pauses, exactly as before.
-    const bool is_paused = g_emu_paused.load(std::memory_order_relaxed);
+    // Label reflects the announced run state (dbg_machine_stopped(), not
+    // g_emu_paused: another actor's lease sets that on a running machine).
+    // When paused, the button resumes; when running, it opens the F1 menu and
+    // pauses, exactly as before.
+    const bool is_paused = dbg_machine_stopped();
     // beads-uvo: reserve the gold/amber accent for the PAUSED state. While
     // running, the Pause button gets a flat neutral fill so the gold only
     // means "something is halted"; when paused, the Resume button keeps the
@@ -4922,9 +4916,8 @@ void imgui_render_devtools() {
     // Capture paused state once so BeginDisabled/EndDisabled stay balanced
     // even when a button handler calls cpc_resume() mid-frame.
     ImGui::SameLine(0, 12.0f);
-    // Use the atomic flag — CPC.paused is a plain bool written by the Z80
-    // thread.
-    bool const was_paused = g_emu_paused.load(std::memory_order_relaxed);
+    // The announced run state, not g_emu_paused (dbg_machine_stopped()).
+    bool const was_paused = dbg_machine_stopped();
     // A step walk in flight on its background thread is still resuming and
     // re-pausing the machine to skip nested CALLs -- Step In/Over issued
     // from this same toolbar while that's happening would race it over the

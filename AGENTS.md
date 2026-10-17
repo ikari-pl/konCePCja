@@ -392,10 +392,10 @@ nc localhost 6544
 
 A second server for out-of-process frontends on **port 6545** (probes forward
 to 6554; read `ports.binary` from the startup manifest, never assume it).
-Binary frames, up to 8 clients at once, loopback only. The contract, and the
-table of which implementation slices have landed, is
-[docs/protocol/kcpc-binary-v1.md](docs/protocol/kcpc-binary-v1.md). So far it
-answers `HELLO`, `PING`, `MACHINE_INFO`, the machine reads `REGS_GET`,
+Binary frames, up to 8 clients at once, loopback only. The contract, with
+the slices it was built in, is
+[docs/protocol/kcpc-binary-v1.md](docs/protocol/kcpc-binary-v1.md); all of
+it is implemented (phase 3 of beads-cv2 is complete). It answers `HELLO`, `PING`, `MACHINE_INFO`, the machine reads `REGS_GET`,
 `MEM_INFO` and `MEM_READ` (64 KiB of memory is one reply), and, for the one
 client that holds control (`CONTROL`; a forced request takes it from another
 client), the writes `REGS_SET` and `MEM_WRITE` and run control: `PAUSE`,
@@ -416,7 +416,9 @@ that sends `SUBSCRIBE` is pushed events (`EVT_STOPPED`, `EVT_RESUMED`,
 them: a pause, a `bp add`, a `sym add`, a `load` or a `config apply` from the
 text IPC or the GUI is pushed too, and
 a breakpoint, watchpoint or I/O hit says what was hit. The protocol is at
-major version 0: client and server must come from the same checkout.
+major version 0: client and server must come from the same checkout, until
+phase 5 (the remote GUI) ships; the freeze to major 1 comes after that, not
+before (user decision).
 
 ```ini
 [ipc]
@@ -554,6 +556,12 @@ binary_port_enabled=1      # 0 = do not open the port (manifest: `binary: null`)
 - `test/integrated/kcpc/kcpc_client.py` is the reference client (standard
   library only); `test_kcpc.py` next to it starts its own cores
   (`-H` by default, `--ui-free`, `--gui`) and runs inside `make e2e_test`.
+  `test_exit_criterion.py` is the phase's acceptance test (two clients, a
+  pushed breakpoint stop, 64 KiB in one frame equal to the text IPC's
+  `mem read`), with no polling anywhere: keep it that way, a wait is a
+  blocking read. `test_every_opcode_has_a_documented_refusal` parses the
+  opcode table of the protocol document: an opcode added to the client must
+  be added to that table, with its refusals.
 
 A test must only ever connect to ports its own core printed in its manifest.
 Probing 6543–6554 to see who answers reaches the text IPC and telnet console
@@ -830,6 +838,10 @@ host_chords=1     # Cmd/Ctrl+K/O/S drive the host UI (palette, Load Disk A,
   (`src/koncepcja.h`), never `file_load(CPC.cartridge)`: the load frees the
   image the board reads through a raw pointer. A caller that holds the
   machine itself uses `cpc_cartridge_swap()`.
+- A disc goes into a drive through `disc_insert()` (`src/slotshandler.h`),
+  never `slot.file = path; file_load(slot)`: a file that is refused then
+  changes nothing, the slot's file included (`file_load()` tries the image
+  on copies before it empties the drive).
 - A disc's unsaved writes go back to the file the bridge was told it came
   from (`subcycle_bridge_insert_media()`'s `path`). A loader that reads a
   disc out of an archive must pass the entry's name too (`archive_entry`):

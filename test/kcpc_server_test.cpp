@@ -3080,7 +3080,8 @@ struct FakeDevtools {
     };
     c.sym_load = [this, &server](
                      const kcpc::Cause& cause, const std::string& path,
-                     std::uint64_t& generation, std::uint32_t& loaded) {
+                     std::uint64_t& generation, std::uint32_t& loaded,
+                     std::string& /*message*/) {
       std::scoped_lock const lock(mutex);
       if (path != "game.sym") return Status::kNotFound;
       symbols.push_back(kcpc::Symbol{0xC000, "rom_entry"});

@@ -2084,9 +2084,7 @@ std::string handle_command(const std::string& line) {
         // a frame, and swapping the medium under it would corrupt the drive.
         CpcPauseLease lease;
         if (!lease.idle()) return z80_not_idle(lease);
-        CPC.driveA.file = path;
-        CPC.driveA.zip_index = 0;
-        int const rc = file_load(CPC.driveA);
+        int const rc = disc_insert(CPC.driveA, path);
         lease.restore_run_state();
         if (rc != 0) return "ERR 500 load-disk\n";
         // Only a load that actually happened goes on the Recent list, and it

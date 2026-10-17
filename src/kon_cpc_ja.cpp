@@ -5362,8 +5362,7 @@ int koncpc_main(int argc, char** argv) {
           // a hand-kept copy — a dropped .hfe used to hit the unknown-file
           // toast because this list had drifted from the loaders.
           if (extension_in_dotted_list(drive_extensions(DRIVE::DSK_A), ext)) {
-            CPC.driveA.file = drop_path;
-            if (file_load(CPC.driveA) == 0) {
+            if (disc_insert(CPC.driveA, drop_path) == 0) {
               ui_host().toast(UiToastLevel::Success, "Drive A: " + drop_fname);
               koncpc_mru_push(CPC.mru_disks, drop_path);
             } else {
@@ -5402,8 +5401,7 @@ int koncpc_main(int argc, char** argv) {
             }
           } else if (ext == ".zip") {
             // Try as disk first (most common zip content)
-            CPC.driveA.file = drop_path;
-            if (file_load(CPC.driveA) == 0) {
+            if (disc_insert(CPC.driveA, drop_path) == 0) {
               ui_host().toast(UiToastLevel::Success, "Drive A: " + drop_fname);
               koncpc_mru_push(CPC.mru_disks, drop_path);
             } else {
