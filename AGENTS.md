@@ -758,14 +758,19 @@ whichever config file wins, so they move with it.
 
 ### Scripted runs and dialogs
 
-Only a user gesture (window close, F10, the native Quit item) may raise the
-"unsaved changes to a disk" dialog. IPC `quit`, SIGTERM/SIGINT,
+Only a user gesture (window close, F10, the native Quit item, the menu's
+Quit) may raise the "unsaved changes" dialog. It asks about a disc in either
+drive and about a Symbiface II IDE image the CPC has written to, and names
+which (`quitLosesWrites()`, `koncpc_quit_unsaved_message()` in
+`src/quit_policy.h`; the other prompts, reset and an Options restart, keep
+asking about discs only, through `driveAltered()`). IPC `quit`, SIGTERM/SIGINT,
 `-E/--exit-after`, `-B/--exit-on-break` and a scripted `-a KONCPC_EXIT` quit
 without asking — nobody is there to answer — and write each disc's unsaved
 writes back to its own file, exactly as an eject does (a disc loaded from an
-archive goes to a DSK beside it, never into it). Only a user who was shown
-the dialog and answered "Quit anyway?" with yes leaves them unwritten; with
-the dialog suppressed, the writes go back. A signal exits with 128+signo
+archive goes to a DSK beside it, never into it), and each IDE image's to its
+image file. Only a user who was shown the dialog and answered "Quit anyway?"
+with yes leaves them unwritten, discs and IDE alike; with the dialog
+suppressed, the writes go back. A signal exits with 128+signo
 (130 for Ctrl+C, 143 for SIGTERM) and does not save settings; a second signal
 before shutdown finishes kills the process outright. `KONCPC_NO_DIALOGS=1`
 in the environment suppresses the dialog on every path;

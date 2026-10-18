@@ -22,8 +22,10 @@
 #include "host_clock.h"
 #include "keyboard_manager.h"
 #include "koncepcja.h"
+#include "quit_policy.h"
 #include "subcycle/machine.h"
 #include "subcycle_bridge.h"
+#include "symbiface.h"
 #include "z80_view.h"
 
 extern t_CPC CPC;
@@ -517,4 +519,85 @@ TEST(FrameskipDecision, SkipsOnlyALateCompletedPacedFrameUpToTheCap) {
       frameskip_should_skip(true, true, 1, true, kMaxConsecutiveSkips - 1));
   EXPECT_FALSE(frameskip_should_skip(true, true, 1, true, kMaxConsecutiveSkips))
       << "a machine that can never keep up must still show a frame";
+}
+
+// Writes sector 0 of the Symbiface II IDE master full of 0xA5 (ports
+// &FD08-&FD0F, the ATA register file), then DI : JR $.
+const unsigned char kIdeWriteSector0[] = {
+    0xF3,                          // di
+    0x01, 0x0A, 0xFD,              // ld bc,&FD0A
+    0x3E, 0x01, 0xED, 0x79,        // sector count = 1
+    0xAF,                          // xor a
+    0x0C, 0xED, 0x79,              // LBA low = 0
+    0x0C, 0xED, 0x79,              // LBA mid = 0
+    0x0C, 0xED, 0x79,              // LBA high = 0
+    0x0C, 0x3E, 0xE0, 0xED, 0x79,  // drive/head: master, LBA
+    0x0C, 0x3E, 0x30, 0xED, 0x79,  // command: WRITE SECTORS
+    0x0E, 0x08,                    // ld c,&08: the data register
+    0x3E, 0xA5,                    // ld a,&A5
+    0x16, 0x02, 0x1E, 0x00,        // 2 x 256 bytes
+    0xED, 0x79,                    // loop: out (c),a
+    0x1D, 0x20, 0xFB,              // dec e : jr nz,loop
+    0x15, 0x20, 0xF8,              // dec d : jr nz,loop
+    0x18, 0xFE,                    // jr $
+};
+
+// A board with a Symbiface II whose IDE master is a blank 64K image.
+class EmuFrameIdeTest : public EmuFrameTest {
+ protected:
+  void SetUp() override {
+    image_ = std::filesystem::temp_directory_path() / "koncepcja-quit-ide.img";
+    FILE* f = fopen(image_.string().c_str(), "wb");
+    ASSERT_NE(nullptr, f);
+    std::vector<char> const blank(64 * 1024, 0);
+    ASSERT_EQ(blank.size(), fwrite(blank.data(), 1, blank.size(), f));
+    ASSERT_EQ(0, fclose(f));
+    saved_enabled_ = g_symbiface.enabled;
+    saved_master_ = g_symbiface.ide_master.image_path;
+    g_symbiface.enabled = true;
+    g_symbiface.ide_master.image_path = image_.string();
+    EmuFrameTest::SetUp();
+  }
+
+  void TearDown() override {
+    EmuFrameTest::TearDown();
+    g_symbiface.enabled = saved_enabled_;
+    g_symbiface.ide_master.image_path = saved_master_;
+    std::error_code ec;
+    std::filesystem::remove(image_, ec);
+  }
+
+  std::vector<unsigned char> rom_code() const override {
+    return {std::begin(kIdeWriteSector0), std::end(kIdeWriteSector0)};
+  }
+
+  std::filesystem::path image_;
+  bool saved_enabled_ = false;
+  std::string saved_master_;
+};
+
+// The quit dialog asks about an IDE image the CPC has written to and not yet
+// saved (beads-nfz8). It reads that off the host side, which the frame runner
+// brings up to date at every frame boundary, never the board's own flag.
+TEST_F(EmuFrameIdeTest, TheQuitDialogSeesUnsavedIdeWrites) {
+  subcycle_bridge_debug_sync();  // the frame runner syncs before each frame
+  EXPECT_FALSE(subcycle_bridge_ide_altered()) << "nothing written yet";
+  uint8_t rows[16];
+  for (auto& r : rows) r = 0xFF;
+  for (int i = 0; i < 3; ++i) {
+    subcycle_bridge_frame(rows, nullptr, /*limit=*/false);
+    subcycle_bridge_debug_sync();
+  }
+  ASSERT_TRUE(subcycle_bridge_machine()->symbiface_dirty())
+      << "the program never wrote the sector; the test proves nothing";
+  EXPECT_FALSE(driveAltered()) << "no floppy is involved";
+  EXPECT_TRUE(subcycle_bridge_ide_altered());
+  EXPECT_TRUE(koncpc_quit_should_prompt(
+      /*headless=*/false, /*ask_if_unsaved=*/true,
+      koncpc_quit_has_unsaved(driveAltered(), subcycle_bridge_ide_altered()),
+      /*dialogs_suppressed=*/false));
+
+  // Written back (an exit nobody was asked about), there is nothing to ask.
+  subcycle_bridge_write_back_discs();
+  EXPECT_FALSE(subcycle_bridge_ide_altered());
 }
