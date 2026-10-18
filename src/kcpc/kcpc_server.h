@@ -70,6 +70,24 @@ using RegsSetFn = std::function<Status(std::uint32_t mask, const Regs& values,
 using MemWriteFn = std::function<Status(
     const MemWriteRequest&, const std::uint8_t* data, std::size_t len, Stamp&)>;
 
+// One REGS_SET or MEM_WRITE of a run the controller sent back to back. The
+// server has checked it as it checks one on its own; the machine fills in
+// the rest, as RegsSetFn or MemWriteFn would.
+struct WriteOp {
+  bool mem = false;  // MEM_WRITE, with `request`, `data`, `len`; else REGS_SET
+  RegsSetRequest regs;
+  MemWriteRequest request;
+  const std::uint8_t* data = nullptr;
+  std::size_t len = 0;
+  Status status = Status::kInternal;
+  Stamp stamp;
+  Regs after;  // REGS_SET
+};
+// Makes the writes of a run, in order, as one change: one frame boundary or
+// one pause lease for all of them (beads-dws9). Optional: without it each
+// goes through RegsSetFn or MemWriteFn on its own.
+using WritesFn = std::function<void(std::vector<WriteOp>&)>;
+
 // Run control. Each is called on a reader thread and returns without waiting
 // for emulated time: a step answers once it is armed, and how it ended
 // arrives as an event (Server::post()). `cause` names the request, for the
@@ -241,6 +259,7 @@ struct ServerConfig {
   // set. Without them every client is an observer.
   RegsSetFn regs_set;
   MemWriteFn mem_write;
+  WritesFn writes;
   // The CAP_RUN_CONTROL group: RUN_STATE, PAUSE, RUN, RESET and STEP exist,
   // and HELLO announces the capability, only when all five are set.
   RunStateFn run_state;

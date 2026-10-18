@@ -229,6 +229,9 @@ Bridge g_bridge;
 // The board's "IDE image written" flag as of the last frame boundary, for
 // threads that must not read the board (subcycle_bridge_ide_altered()).
 std::atomic<bool> g_ide_altered{false};
+// Whether the last frame was paced, for threads off the runner
+// (subcycle_bridge_paced()).
+std::atomic<bool> g_paced{true};
 
 // A breakpoint stop shows the halted instruction's address (probe spec §3),
 // not the machine's PC, which is already past the opcode it just fetched.
@@ -2065,6 +2068,9 @@ const std::vector<int16_t>& subcycle_bridge_frame(const uint8_t rows[16],
                                                   bool limit) {
   Bridge& b = g_bridge;
   if (!b.active) return g_empty_audio;
+  if (g_paced.load(std::memory_order_relaxed) != limit) {
+    g_paced.store(limit, std::memory_order_relaxed);
+  }
   // When the frame began, for pacing_thread (a paced frame only).
   const uint64_t frame_start = limit ? host_perf_counter() : 0;
 
@@ -2206,6 +2212,8 @@ const std::vector<int16_t>& subcycle_bridge_frame(const uint8_t rows[16],
 }
 
 bool subcycle_bridge_frame_was_late() { return g_bridge.pacer.late(); }
+
+bool subcycle_bridge_paced() { return g_paced.load(std::memory_order_relaxed); }
 
 void subcycle_bridge_pacing_stopped() { g_bridge.pacer.stopped(); }
 

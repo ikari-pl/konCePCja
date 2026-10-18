@@ -173,21 +173,28 @@ Status changed(Change&& change) {
   return alone_changed(std::forward<Change>(change));
 }
 
-// changed() for a write of registers or memory, the requests a controller
-// sends back to back. While clients read a running machine the write is
-// queued behind their reads and the runner takes it at the same frame
-// boundary: it costs one frame and no pause, where letting a boundary pass and
-// then taking a lease cost two to three, and the leases took the frames the
-// reads were waiting for (beads-df1x). With nobody reading, or on a paused
-// machine, the lease is quicker: it waits for no boundary at all.
+// Writes the runner made at a frame boundary, one by one: a run of them is
+// one change (kcpc_host_writes()), counted once by the gate.
+std::atomic<std::uint64_t> g_writes_at_boundary{0};
+
+// changed() for a run of register and memory writes, the requests a
+// controller sends back to back. On a running machine that clients read, or
+// that runs unpaced, the run is queued behind the reads and the runner makes
+// it at the next frame boundary: it costs one frame and no pause. A lease
+// costs the frames the reads wait for (beads-df1x), and on an unpaced machine
+// it stops one that has no time to spare: a write-only controller cut it from
+// ~3000 to ~150 frames a second, one pause per write (beads-dws9). Paced with
+// nobody reading, the lease is quicker: it takes the time the runner sleeps,
+// and waits for no boundary. On a paused machine it waits for nothing.
 // `change` runs on the runner then, so it must only touch the machine.
 template <typename Change>
-Status written(std::size_t cost, Change&& change) {
-  if (g_gate.reading()) {
+Status written(std::size_t cost, std::size_t writes, Change&& change) {
+  if (g_gate.reading() || !subcycle_bridge_paced()) {
     Status status = Status::kInternal;
     if (g_gate.at_boundary(
             cost, kBoundaryWaitMs,
             [&](const kcpc::Stamp& stamp) { status = change(stamp); })) {
+      g_writes_at_boundary.fetch_add(writes, std::memory_order_relaxed);
       return status;
     }
   }
@@ -1080,14 +1087,32 @@ Status kcpc_host_mem_read(const kcpc::MemReadRequest& request,
   });
 }
 
-Status kcpc_host_regs_set(std::uint32_t mask, const kcpc::Regs& values,
-                          kcpc::Stamp& stamp, kcpc::Regs& after) {
-  kcpc::RegsSetRequest request;
-  request.mask = mask;
-  request.regs = values;
-  if (kcpc::regs_set_refusal(request) != nullptr) return Status::kBadPayload;
-  return written(sizeof(kcpc::Regs), [&](const kcpc::Stamp& taken) {
-    if (subcycle_bridge_machine() == nullptr) return Status::kInternal;
+namespace {
+
+// What a REGS_SET or MEM_WRITE asks of the machine itself, before it is
+// made: kOk, or the status it is refused with.
+Status write_refusal(const kcpc::WriteOp& op) {
+  if (!op.mem) {
+    return kcpc::regs_set_refusal(op.regs) != nullptr ? Status::kBadPayload
+                                                      : Status::kOk;
+  }
+  if (!kcpc::mem_space_writable(op.request.space) || op.request.bank != 0) {
+    return Status::kBadPayload;
+  }
+  // A request is at most 1 MiB, so its length fits 32 bits.
+  if (static_cast<kcpc::MemSpace>(op.request.space) ==
+          kcpc::MemSpace::kCpuRam &&
+      !kcpc::mem_range_ok(op.request.addr, static_cast<std::uint32_t>(op.len),
+                          kcpc::kCpuSpaceSize)) {
+    return Status::kOutOfRange;
+  }
+  return Status::kOk;
+}
+
+// Makes one write that passed write_refusal(), with the machine not clocked.
+Status make_write(subcycle::Machine& machine, kcpc::WriteOp& op) {
+  if (!op.mem) {
+    const kcpc::Regs& values = op.regs.regs;
     Z80Regs z{};
     z.af = values.af;
     z.bc = values.bc;
@@ -1106,49 +1131,86 @@ Status kcpc_host_regs_set(std::uint32_t mask, const kcpc::Regs& values,
     z.iff1 = values.iff1;
     z.iff2 = values.iff2;
     z.im = values.im;
-    subcycle_bridge_write_regs(z, mask);
-    to_wire(subcycle_bridge_shown_regs(), after);
-    stamp = taken;
+    subcycle_bridge_write_regs(z, op.regs.mask);
+    to_wire(subcycle_bridge_shown_regs(), op.after);
+    return Status::kOk;
+  }
+  if (static_cast<kcpc::MemSpace>(op.request.space) ==
+      kcpc::MemSpace::kCpuRam) {
+    // Where a Z80 write to that address lands: banked RAM, never ROM.
+    for (std::size_t i = 0; i < op.len; ++i) {
+      machine.poke_mem(static_cast<std::uint16_t>(op.request.addr + i),
+                       op.data[i]);
+    }
+    return Status::kOk;
+  }
+  if (!kcpc::mem_range_ok(op.request.addr, static_cast<std::uint32_t>(op.len),
+                          machine.ram_size())) {
+    return Status::kOutOfRange;
+  }
+  for (std::size_t i = 0; i < op.len; ++i) {
+    machine.ram_write(op.request.addr + i, op.data[i]);
+  }
+  return Status::kOk;
+}
+
+}  // namespace
+
+void kcpc_host_writes(std::vector<kcpc::WriteOp>& ops) {
+  std::size_t cost = 0;
+  std::size_t count = 0;
+  for (kcpc::WriteOp& op : ops) {
+    op.status = write_refusal(op);
+    if (op.status != Status::kOk) continue;
+    op.status = Status::kInternal;  // until it is made
+    cost += op.mem ? op.len : sizeof(kcpc::Regs);
+    ++count;
+  }
+  if (count == 0) return;
+  bool memory = false;
+  Status const status = written(cost, count, [&](const kcpc::Stamp& taken) {
+    subcycle::Machine* machine = subcycle_bridge_machine();
+    if (machine == nullptr) return Status::kInternal;
+    for (kcpc::WriteOp& op : ops) {
+      if (op.status != Status::kInternal) continue;  // refused above
+      op.status = make_write(*machine, op);
+      op.stamp = taken;
+      if (op.status == Status::kOk && op.mem && op.len != 0) memory = true;
+    }
     return Status::kOk;
   });
+  if (status != Status::kOk) {
+    // Nothing was made: the machine could not be had, or is gone.
+    for (kcpc::WriteOp& op : ops) {
+      if (op.status == Status::kInternal) op.status = status;
+    }
+  }
+  // What the in-process debugger had decoded from those bytes is stale.
+  if (memory) ui_host().debugger_memory_changed();
+}
+
+Status kcpc_host_regs_set(std::uint32_t mask, const kcpc::Regs& values,
+                          kcpc::Stamp& stamp, kcpc::Regs& after) {
+  std::vector<kcpc::WriteOp> ops(1);
+  ops[0].regs.mask = mask;
+  ops[0].regs.regs = values;
+  kcpc_host_writes(ops);
+  stamp = ops[0].stamp;
+  after = ops[0].after;
+  return ops[0].status;
 }
 
 Status kcpc_host_mem_write(const kcpc::MemWriteRequest& request,
                            const std::uint8_t* data, std::size_t len,
                            kcpc::Stamp& stamp) {
-  if (!kcpc::mem_space_writable(request.space) || request.bank != 0) {
-    return Status::kBadPayload;
-  }
-  auto const space = static_cast<kcpc::MemSpace>(request.space);
-  // A request is at most 1 MiB, so its length fits 32 bits.
-  auto const len32 = static_cast<std::uint32_t>(len);
-  if (space == kcpc::MemSpace::kCpuRam &&
-      !kcpc::mem_range_ok(request.addr, len32, kcpc::kCpuSpaceSize)) {
-    return Status::kOutOfRange;
-  }
-  Status const status = written(len, [&](const kcpc::Stamp& taken) {
-    subcycle::Machine* machine = subcycle_bridge_machine();
-    if (machine == nullptr) return Status::kInternal;
-    if (space == kcpc::MemSpace::kCpuRam) {
-      // Where a Z80 write to that address lands: banked RAM, never ROM.
-      for (std::size_t i = 0; i < len; ++i) {
-        machine->poke_mem(static_cast<std::uint16_t>(request.addr + i),
-                          data[i]);
-      }
-    } else {
-      if (!kcpc::mem_range_ok(request.addr, len32, machine->ram_size())) {
-        return Status::kOutOfRange;
-      }
-      for (std::size_t i = 0; i < len; ++i) {
-        machine->ram_write(request.addr + i, data[i]);
-      }
-    }
-    stamp = taken;
-    return Status::kOk;
-  });
-  // What the in-process debugger had decoded from those bytes is stale.
-  if (status == Status::kOk && len != 0) ui_host().debugger_memory_changed();
-  return status;
+  std::vector<kcpc::WriteOp> ops(1);
+  ops[0].mem = true;
+  ops[0].request = request;
+  ops[0].data = data;
+  ops[0].len = len;
+  kcpc_host_writes(ops);
+  stamp = ops[0].stamp;
+  return ops[0].status;
 }
 
 namespace {
@@ -1671,6 +1733,7 @@ void kcpc_host_start(bool enabled) {
   config.mem_read = &kcpc_host_mem_read;
   config.regs_set = &kcpc_host_regs_set;
   config.mem_write = &kcpc_host_mem_write;
+  config.writes = &kcpc_host_writes;
   config.run_state = &kcpc_host_run_state;
   config.pause = [](const kcpc::Cause& cause, kcpc::Stamp& stamp) {
     return kcpc_host_pause(cause.client, cause.request, stamp);
@@ -1786,7 +1849,8 @@ void kcpc_host_stop() {
   LOG_INFO("KCPC: reads served: "
            << c.at_boundary << " at a frame boundary, " << c.while_paused
            << " while paused, " << c.fallback << " by fallback, " << c.busy
-           << " busy; " << c.writes << " writes at a frame boundary");
+           << " busy; " << g_writes_at_boundary.load(std::memory_order_relaxed)
+           << " writes at a frame boundary in " << c.writes << " changes");
 }
 
 int kcpc_host_port() { return g_kcpc_server.port(); }
