@@ -9,6 +9,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -68,6 +69,13 @@ kcpc::Status kcpc_host_mem_write(const kcpc::MemWriteRequest& request,
 // A run of the two, in order, as one change: one frame boundary or one
 // lease for all. Each fills in its own status, stamp and register block.
 void kcpc_host_writes(std::vector<kcpc::WriteOp>& ops);
+// A memory write from outside this port (the text IPC's `mem write` and
+// `mem fill`), made the way this port's writes are: one change, at a frame
+// boundary or under a lease alone. `cost` is the bytes it writes. `change`
+// must only touch the machine: it may run on the frame runner. False when the
+// machine could not be had; `change` did not run then (beads-nlho).
+bool kcpc_host_write_machine(std::size_t cost,
+                             const std::function<void()>& change);
 
 // Run control (section 12): RUN_STATE, PAUSE, RUN, RESET, STEP. None waits
 // for emulated time. `client` and `request` name the request in the events

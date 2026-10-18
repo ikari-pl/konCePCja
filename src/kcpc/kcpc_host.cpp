@@ -1213,6 +1213,14 @@ Status kcpc_host_mem_write(const kcpc::MemWriteRequest& request,
   return ops[0].status;
 }
 
+bool kcpc_host_write_machine(std::size_t cost,
+                             const std::function<void()>& change) {
+  return written(cost, 1, [&](const kcpc::Stamp&) {
+           change();
+           return Status::kOk;
+         }) == Status::kOk;
+}
+
 namespace {
 
 static_assert(static_cast<int>(kcpc::ConfigEffect::kNextFrame) ==

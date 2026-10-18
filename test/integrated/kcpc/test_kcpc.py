@@ -2108,9 +2108,9 @@ class LeaseTaker:
     """Another actor that holds one pause lease after another: the text IPC
     setting the CRTC type to the one fitted, in a loop, on its own
     connections. That changes nothing, and runs under a CpcPauseLease alone
-    (ipc_config_set(), change_alone()). Not `mem write`: that pokes the
-    machine with no lease at all (beads-0nj8), so the tests counted
-    connections, not leases. `writes` counts the leases."""
+    (ipc_config_set(), change_alone()). Not `mem write`: that may be taken
+    at a frame boundary with no lease at all (beads-nlho), so the tests
+    would count connections, not leases. `writes` counts the leases."""
 
     def __init__(self, core: Core):
         self.core = core
@@ -2183,6 +2183,59 @@ def test_run_is_not_lost_to_another_actors_lease() -> None:
             'turns: this proved little')
         print(f'    {turn} pause/run pairs beside {other.writes} text IPC '
               'leases: every RUN took effect')
+
+
+def test_a_text_ipc_fill_is_one_change_beside_reads() -> None:
+    """The text IPC's `mem fill` (and `mem write`) used to poke a running
+    machine byte by byte from its socket thread, beside the frame runner
+    (beads-nlho): a read the runner took at a frame boundary in the middle of
+    the fill saw half of it. Each fill must be one change, so every read of
+    the block sees one pattern. Unpaced, so that boundaries come often."""
+    addr, length = 0x9000, 0x3000
+    with Core('-O', 'system.limit_speed=0') as core:
+        with controller(core, 'test_kcpc spinner') as c:
+            assert core.ipc('wait vbl 60 20000').startswith('OK')
+            spin(core, c)
+            fills = 0
+            torn: List[str] = []
+            stop = threading.Event()
+            errors: List[str] = []
+
+            def fill() -> None:
+                nonlocal fills
+                try:
+                    while not stop.is_set():
+                        pattern = 'AA' if fills % 2 else '55'
+                        resp = core.ipc(f'mem fill {addr:#x} {length:#x} '
+                                        f'{pattern}')
+                        assert resp.startswith('OK'), resp
+                        fills += 1
+                except Exception as e:  # pylint: disable=broad-except
+                    errors.append(repr(e))
+
+            filler = threading.Thread(target=fill)
+            filler.start()
+            reads = 0
+            try:
+                with core.client() as r:
+                    r.hello('test_kcpc block reader')
+                    begin = time.monotonic()
+                    while time.monotonic() - begin < 2.0 and not errors:
+                        data = r.mem_read(kc.SPACE_CPU, addr, length)
+                        reads += 1
+                        if data.count(data[0]) != length:
+                            torn.append(f'read {reads}: {data[0]:02X} then '
+                                        f'{len(set(data))} values')
+            finally:
+                stop.set()
+                filler.join(timeout=30)
+            assert not errors, errors
+            assert fills > 10 and reads > 10, (fills, reads)
+            assert not torn, (f'{len(torn)} of {reads} reads beside {fills} '
+                              f'fills saw a fill half made: {torn[:3]}')
+            wait_running(c)
+            print(f'    {reads} reads beside {fills} text IPC fills, none '
+                  'torn')
 
 
 def test_frame_events_arrive_at_the_interval() -> None:
@@ -3097,7 +3150,7 @@ def test_a_kcpc_walk_runs_beside_other_actors_leases() -> None:
                 assert other.wait_for(leases + 2, IO_TIMEOUT_S), (
                     f'turn {turn}: {other.writes - leases} leases in '
                     f'{IO_TIMEOUT_S} s of walking; errors {other.errors}')
-                # `mem write` takes no lease: it only lets the routine return.
+                # The text IPC `mem write` lets the routine return.
                 assert core.ipc(f'mem write {flag:#06x} 01').startswith('OK')
                 for who, c in (('stepper', a), ('observer', b)):
                     event = expect_stopped(c, kc.STOP_STEP_DONE, a_id,
@@ -5058,6 +5111,7 @@ TESTS: List[Callable[[], None]] = [
     test_step_frames_counts_like_the_text_ipc,
     test_reset_is_pushed,
     test_run_is_not_lost_to_another_actors_lease,
+    test_a_text_ipc_fill_is_one_change_beside_reads,
     test_frame_events_arrive_at_the_interval,
     test_a_client_that_stops_reading_is_told_what_it_missed,
     test_control_changes_reach_every_client,
