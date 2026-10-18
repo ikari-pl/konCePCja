@@ -1820,6 +1820,19 @@ FifoMutex g_pause_mutex;
 // the frame runner holds for the whole of every frame.
 std::atomic<uint64_t> g_resume_epoch{0};
 unsigned g_pause_lease_count = 0;
+// The thread whose holders have the machine to change it, and how many of
+// its leases count (beads-nhfy). Leases overlap, and each used to find the
+// runner idle and go ahead: the text IPC loading a snapshot beside a rebuild
+// on the main thread. A holder that went idle claims the machine; a holder
+// on another thread waits for it (CpcPauseLease::wait()). Per thread, not
+// per lease: one holder nests another (a cartridge insert resets under its
+// own lease). Written and read under g_pause_mutex.
+std::thread::id g_machine_holder;
+unsigned g_machine_holds = 0;
+// Names each hold: a lease lets go only of the hold it counted in, never of
+// one somebody else took after its own was lent away (CpcPauseLease::lend()).
+uint64_t g_machine_hold_id = 0;
+uint64_t g_machine_hold_ids = 0;
 // Whether the machine was paused before the first of the leases now held was
 // taken. Leases overlap (two KCPC clients, a client and the text IPC, IPC and
 // the UI), and a holder that arrives while another holds one finds
@@ -2080,8 +2093,11 @@ CpcPauseLease::CpcPauseLease(CpcPauseLease&& other) noexcept
     : was_paused_(other.was_paused_),
       active_(other.active_),
       idle_(other.idle_),
+      owns_(other.owns_),
+      hold_id_(other.hold_id_),
       idle_timeout_ms_(other.idle_timeout_ms_) {
   other.active_ = false;
+  other.owns_ = false;
 }
 
 CpcPauseLease::~CpcPauseLease() { release(); }
@@ -2091,6 +2107,7 @@ bool CpcPauseLease::wait() {
   int bound = idle_timeout_ms_ < 0 ? cpc_idle_timeout_ms() : idle_timeout_ms_;
   bool const known_stuck = g_z80_unresponsive.load(std::memory_order_relaxed);
   if (known_stuck) bound = std::min(bound, kCpcIdleRetryMs);
+  auto const start = std::chrono::steady_clock::now();
   idle_ = cpc_wait_until_idle(bound);
   g_z80_unresponsive.store(!idle_, std::memory_order_relaxed);
   if (!idle_) {
@@ -2098,8 +2115,95 @@ bool CpcPauseLease::wait() {
               << bound
               << " ms; not touching machine state (the holder restores the "
                  "run state it found)");
+    return idle_;
+  }
+  auto const spent = std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::steady_clock::now() - start);
+  idle_ = claim_machine(std::max(0, bound - static_cast<int>(spent.count())));
+  if (!idle_) {
+    LOG_ERROR("Another pause-lease holder kept the machine for "
+              << bound
+              << " ms; not touching machine state (the holder restores the "
+                 "run state it found)");
   }
   return idle_;
+}
+
+// Called once the runner is idle, so whoever holds the machine is not
+// running it: they are changing it, and this waits for them to let go.
+bool CpcPauseLease::claim_machine(int timeout_ms) {
+  // The frame runner inside its own turn (an autotype ~KONCPC_RESET~): no
+  // holder on another thread can be idle while that turn runs, and the
+  // runner must never wait for one (beads-b0bj).
+  if (t_frame_turn) return true;
+  auto const me = std::this_thread::get_id();
+  auto const deadline =
+      std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
+  for (;;) {
+    {
+      std::scoped_lock const lock(g_pause_mutex);
+      if (g_machine_holds == 0 || g_machine_holder == me) {
+        if (g_machine_holds == 0) {
+          g_machine_holder = me;
+          g_machine_hold_id = ++g_machine_hold_ids;
+        }
+        ++g_machine_holds;
+        hold_id_ = g_machine_hold_id;
+        owns_ = true;
+        return true;
+      }
+    }
+    if (std::chrono::steady_clock::now() >= deadline) return false;
+    std::this_thread::sleep_for(std::chrono::microseconds(200));
+  }
+}
+
+void CpcPauseLease::let_go_of_machine_locked() {
+  if (!owns_) return;
+  owns_ = false;
+  if (hold_id_ != g_machine_hold_id || g_machine_holds == 0) return;
+  if (--g_machine_holds == 0) g_machine_holder = std::thread::id();
+}
+
+bool CpcPauseLease::lend(const std::function<void()>& wait_for_it) {
+  unsigned lent = 0;
+  if (owns_) {
+    std::scoped_lock const lock(g_pause_mutex);
+    // Every lease of this thread is waiting here with this one, so the
+    // machine is lent on behalf of all of them. Still paused: the count
+    // stays.
+    if (hold_id_ == g_machine_hold_id) {
+      lent = g_machine_holds;
+      g_machine_holds = 0;
+      g_machine_holder = std::thread::id();
+    }
+  }
+  wait_for_it();
+  if (lent == 0) return idle_;
+  int const bound =
+      idle_timeout_ms_ < 0 ? cpc_idle_timeout_ms() : idle_timeout_ms_;
+  auto const deadline =
+      std::chrono::steady_clock::now() + std::chrono::milliseconds(bound);
+  for (;;) {
+    {
+      std::scoped_lock const lock(g_pause_mutex);
+      if (g_machine_holds == 0) {
+        g_machine_holder = std::this_thread::get_id();
+        g_machine_holds = lent;
+        g_machine_hold_id = hold_id_;
+        return idle_;
+      }
+    }
+    if (std::chrono::steady_clock::now() >= deadline) break;
+    std::this_thread::sleep_for(std::chrono::microseconds(200));
+  }
+  LOG_ERROR("Another pause-lease holder kept the machine for "
+            << bound << " ms after it was lent; not touching machine state");
+  // Not this thread's any more. Its other leases, if any, still name the
+  // lent hold and so let go of nothing.
+  owns_ = false;
+  idle_ = false;
+  return false;
 }
 
 void CpcPauseLease::release() {
@@ -2107,6 +2211,7 @@ void CpcPauseLease::release() {
   std::scoped_lock const lock(g_pause_mutex);
   if (g_pause_lease_count > 0) --g_pause_lease_count;
   active_ = false;
+  let_go_of_machine_locked();
   cpc_reconcile_run_state_locked();
 }
 
@@ -2118,6 +2223,7 @@ void CpcPauseLease::restore_run_state() {
   std::scoped_lock const lock(g_pause_mutex);
   if (g_pause_lease_count > 0) --g_pause_lease_count;
   active_ = false;
+  let_go_of_machine_locked();
   // With other leases still held the machine stays theirs, and the last
   // holder does this. The chain's flag, not what this holder was told when
   // it arrived: a stop that landed since stands, and so does a
@@ -2140,6 +2246,7 @@ void CpcPauseLease::release_stopped(const CpcRunCause& cause) {
   std::scoped_lock const lock(g_pause_mutex);
   if (g_pause_lease_count > 0) --g_pause_lease_count;
   active_ = false;
+  let_go_of_machine_locked();
   cpc_stop_requested_locked(cause);
   cpc_interrupt_walk_locked(cause);
   cpc_pause_locked();
@@ -2151,6 +2258,7 @@ void CpcPauseLease::release_running(const CpcRunCause& cause) {
   std::scoped_lock const lock(g_pause_mutex);
   if (g_pause_lease_count > 0) --g_pause_lease_count;
   active_ = false;
+  let_go_of_machine_locked();
   cpc_run_requested_locked(cause);
   if (g_pause_lease_count > 0) {
     // Not ours to run yet. The last holder's restore_run_state() will.

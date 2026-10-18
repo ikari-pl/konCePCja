@@ -395,3 +395,119 @@ TEST_F(PauseLeaseChainTest, ALeaseThatIsNotIdleDoesNotRead) {
   }
   cpc_set_idle_timeout_ms(kCpcIdleTimeoutMs);
 }
+
+// Two holders on two threads that both change the machine (beads-nhfy): the
+// text IPC loading a snapshot while the main thread rebuilds the machine, a
+// KCPC reset beside a DevTools disc format. Each used to find the runner idle
+// and go ahead; the second now waits for the first to let go.
+TEST_F(PauseLeaseChainTest, TwoChangingHoldersOnTwoThreadsTakeTurns) {
+  std::atomic<bool> held{false};
+  std::atomic<bool> changing{false};
+  std::thread first([&] {
+    CpcPauseLease lease;
+    ASSERT_TRUE(lease.idle());
+    changing.store(true);
+    held.store(true);
+    std::this_thread::sleep_for(std::chrono::milliseconds(60));
+    changing.store(false);
+    lease.restore_run_state();
+  });
+  while (!held.load()) std::this_thread::yield();
+
+  CpcPauseLease second;
+  EXPECT_TRUE(second.idle());
+  EXPECT_FALSE(changing.load());
+  second.restore_run_state();
+  first.join();
+  EXPECT_FALSE(CPC.paused);
+}
+
+// The wait for the other holder is bounded like the wait for the runner, and
+// fails closed the same way: not idle, so the holder must not touch anything.
+TEST_F(PauseLeaseChainTest, AHolderGivesUpOnAnotherThatStays) {
+  std::atomic<bool> held{false};
+  std::atomic<bool> done{false};
+  std::thread first([&] {
+    CpcPauseLease lease;
+    held.store(true);
+    while (!done.load()) std::this_thread::yield();
+    lease.restore_run_state();
+  });
+  while (!held.load()) std::this_thread::yield();
+
+  auto const start = std::chrono::steady_clock::now();
+  CpcPauseLease second(CpcPauseLeaseMode::WaitImmediately, 30);
+  EXPECT_FALSE(second.idle());
+  EXPECT_GE(std::chrono::steady_clock::now() - start,
+            std::chrono::milliseconds(30));
+  second.restore_run_state();
+  done.store(true);
+  first.join();
+  EXPECT_FALSE(CPC.paused);
+}
+
+// A thread that already holds the machine does not wait for itself: a
+// cartridge insert resets under its own lease, a rebuild reapplies media.
+TEST_F(PauseLeaseChainTest, ANestedHolderOnTheSameThreadGoesAhead) {
+  CpcPauseLease outer;
+  ASSERT_TRUE(outer.idle());
+  CpcPauseLease inner(CpcPauseLeaseMode::WaitImmediately, 30);
+  EXPECT_TRUE(inner.idle());
+  inner.restore_run_state();
+  CpcPauseLease again(CpcPauseLeaseMode::WaitImmediately, 30);
+  EXPECT_TRUE(again.idle());
+  again.restore_run_state();
+  outer.restore_run_state();
+  EXPECT_FALSE(CPC.paused);
+}
+
+// A lease that only pauses and never waits (a window screenshot, which waits
+// for the main thread to render) does not keep anybody from the machine.
+TEST_F(PauseLeaseChainTest, APauseOnlyHolderThatNeverWaitsKeepsNobodyOut) {
+  CpcPauseLease pausing(CpcPauseLeaseMode::PauseOnly);
+  bool idle = false;
+  std::thread other([&] {
+    CpcPauseLease lease(CpcPauseLeaseMode::WaitImmediately, 1000);
+    idle = lease.idle();
+    lease.restore_run_state();
+  });
+  other.join();
+  EXPECT_TRUE(idle);
+  pausing.restore_run_state();
+  EXPECT_FALSE(CPC.paused);
+}
+
+// The cooperating pair: IPC `profile load` holds a lease while the main
+// thread rebuilds the machine under its own, and waits for it. The holder
+// lends the machine for the length of that wait and has it back afterwards;
+// the machine stays paused throughout.
+TEST_F(PauseLeaseChainTest, AHolderLendsTheMachineToTheThreadItWaitsFor) {
+  CpcPauseLease lease;
+  ASSERT_TRUE(lease.idle());
+  bool rebuilt = false;
+  bool paused_while_lent = false;
+  EXPECT_TRUE(lease.lend([&] {
+    std::thread main_thread([&] {
+      CpcPauseLease rebuild(CpcPauseLeaseMode::WaitImmediately, 1000);
+      rebuilt = rebuild.idle();
+      paused_while_lent = CPC.paused;
+      rebuild.restore_run_state();
+    });
+    main_thread.join();
+  }));
+  EXPECT_TRUE(rebuilt);
+  EXPECT_TRUE(paused_while_lent);
+  EXPECT_TRUE(lease.idle());
+
+  // And it is the holder again: another thread waits for it.
+  bool other_idle = true;
+  std::thread other([&] {
+    CpcPauseLease late(CpcPauseLeaseMode::WaitImmediately, 30);
+    other_idle = late.idle();
+    late.restore_run_state();
+  });
+  other.join();
+  EXPECT_FALSE(other_idle);
+  lease.restore_run_state();
+  EXPECT_FALSE(CPC.paused);
+}

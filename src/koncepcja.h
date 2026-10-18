@@ -832,9 +832,23 @@ class CpcPauseLease {
   // out: the machine is paused (the lease still holds it) but a frame may be
   // running, so the holder must NOT touch machine state. Fail closed: call
   // restore_run_state() and report the failure (IPC: ERR 409 z80-not-idle).
+  //
+  // Idle also means alone among the holders that may change the machine
+  // (beads-nhfy): a holder on another thread that went idle first keeps it
+  // until it lets go, and this one waits for that within the same bound. A
+  // thread that already holds the machine does not wait for itself, nor does
+  // the frame runner inside its own turn.
   bool idle() const { return idle_; }
-  // Wait (bounded) for g_z80_idle; returns idle(). Idempotent once idle.
+  // Wait (bounded) for g_z80_idle, then for any holder on another thread to
+  // let go; returns idle(). Idempotent once idle.
   bool wait();
+  // For a holder that waits for another thread which takes a lease of its
+  // own (IPC `profile load` waits for the main thread's rebuild): lets that
+  // thread have the machine while wait_for_it() runs, keeping it paused, and
+  // takes it back afterwards. False when it could not be taken back within
+  // the bound: idle() is then false and the holder must not touch the
+  // machine.
+  bool lend(const std::function<void()>& wait_for_it);
   // Drop the lease and put the run state back: run the machine if it was
   // running before the first of the leases now held and nobody has stopped
   // it since. With other leases still held the machine stays theirs, and the
@@ -867,9 +881,13 @@ class CpcPauseLease {
  private:
   void acquire(CpcPauseLeaseMode mode);
   void release();  // drop the count only; what the destructor does
+  bool claim_machine(int timeout_ms);
+  void let_go_of_machine_locked();
   bool was_paused_ = false;
   bool active_ = false;
   bool idle_ = false;
+  bool owns_ = false;  // counted in the machine's holder (claim_machine())
+  uint64_t hold_id_ = 0;
   int idle_timeout_ms_ = -1;
 };
 
