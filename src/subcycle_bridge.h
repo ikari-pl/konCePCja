@@ -155,6 +155,15 @@ subcycle::Machine* subcycle_bridge_machine();
 struct Device;
 const Device* subcycle_bridge_fdc();
 
+/* The Silicon Disc the CPC sees (beads-mtfy): the board's banks 4-7 while
+ * the machine has one fitted, else g_silicon_disc.data, which the next build
+ * loads. Copies SILICON_DISC_SIZE bytes out, or in (copy_in(nullptr)
+ * clears); copy_in fills g_silicon_disc.data too, so a rebuild keeps it.
+ * g_silicon_disc.data must be allocated. The caller holds the machine still
+ * and alone (CpcPauseLease::change_alone): the CPU writes the board's copy. */
+void subcycle_bridge_silicon_disc_copy_out(uint8_t* dst);
+void subcycle_bridge_silicon_disc_copy_in(const uint8_t* src);
+
 // --- Run-tier policy (F9, beads-3wyl; user decision 2026-07-10) -----------
 // Auto = RunTier::Fast, dropping to Wake for as long as the debugger is
 // engaged (any breakpoint / watchpoint / IO breakpoint set — the per-cycle

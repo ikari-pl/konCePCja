@@ -739,6 +739,24 @@ subcycle::Machine* subcycle_bridge_machine() {
   return g_bridge.active ? &g_bridge.machine : nullptr;
 }
 
+void subcycle_bridge_silicon_disc_copy_out(uint8_t* dst) {
+  Bridge& b = g_bridge;
+  if (b.active && b.machine.silicon_disc_enabled())
+    b.machine.silicon_disc_save(dst, SILICON_DISC_SIZE);
+  else
+    std::memcpy(dst, g_silicon_disc.data, SILICON_DISC_SIZE);
+}
+
+void subcycle_bridge_silicon_disc_copy_in(const uint8_t* src) {
+  Bridge& b = g_bridge;
+  if (src != nullptr)
+    std::memcpy(g_silicon_disc.data, src, SILICON_DISC_SIZE);
+  else
+    std::memset(g_silicon_disc.data, 0, SILICON_DISC_SIZE);
+  if (b.active && b.machine.silicon_disc_enabled())
+    b.machine.silicon_disc_load(g_silicon_disc.data, SILICON_DISC_SIZE);
+}
+
 const Device* subcycle_bridge_fdc() {
   return g_bridge.active ? g_bridge.machine.fdc() : nullptr;
 }
