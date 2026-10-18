@@ -1914,6 +1914,19 @@ void DevToolsUI::render_symbols() {
 // Debug Window 7: Silicon Disc
 // -----------------------------------------------
 
+namespace {
+// Runs change() with the machine held still and alone (beads-mtfy). False,
+// with a toast, when that could not be had and change() was not called.
+bool sd_with_machine(const std::function<void()>& change) {
+  constexpr int kAloneWaitMs = 250;
+  CpcPauseLease lease;
+  if (!imgui_lease_ready(lease)) return false;
+  bool const changed = lease.change_alone(change, kAloneWaitMs);
+  lease.restore_run_state();
+  return changed;
+}
+}  // namespace
+
 void DevToolsUI::render_silicon_disc() {
   apply_default_window_layout(6, 380, 280);
 
@@ -1933,8 +1946,13 @@ void DevToolsUI::render_silicon_disc() {
   // every frame
   if (g_silicon_disc.data) {
     if (sd_usage_dirty_) {
-      for (int bank = 0; bank < SILICON_DISC_BANKS; bank++) {
-        const uint8_t* ptr = g_silicon_disc.bank_ptr(bank);
+      // What the CPC sees, read off the board (beads-mtfy)
+      SiliconDisc seen;
+      silicon_disc_init(seen);
+      bool const read = sd_with_machine(
+          [&seen] { subcycle_bridge_silicon_disc_copy_out(seen.data); });
+      for (int bank = 0; read && bank < SILICON_DISC_BANKS; bank++) {
+        const uint8_t* ptr = seen.bank_ptr(bank);
         int used = 0;
         for (size_t i = 0; i < SILICON_DISC_BANK_SIZE; i++) {
           if (ptr[i] != 0) used++;
@@ -1942,7 +1960,8 @@ void DevToolsUI::render_silicon_disc() {
         sd_bank_usage_[bank] =
             static_cast<float>(used) / SILICON_DISC_BANK_SIZE;
       }
-      sd_usage_dirty_ = false;
+      silicon_disc_free(seen);
+      sd_usage_dirty_ = false;  // once: Refresh Usage tries again
     }
     for (int bank = 0; bank < SILICON_DISC_BANKS; bank++) {
       char overlay[32];
@@ -1961,19 +1980,29 @@ void DevToolsUI::render_silicon_disc() {
   ImGui::InputTextWithHint("##sdpath", "File path for save/load...", sd_path_,
                            sizeof(sd_path_));
 
-  if (ImGui::Button("Save")) {
-    if (sd_path_[0] != '\0') silicon_disc_save(g_silicon_disc, sd_path_);
+  // Save, Load and Clear act on the disc the CPC sees (beads-mtfy), copied
+  // out of or into the board with the machine held still; the file is read
+  // and written outside the lease.
+  if (ImGui::Button("Save") && sd_path_[0] != '\0' && g_silicon_disc.data) {
+    SiliconDisc image;
+    silicon_disc_init(image);
+    if (sd_with_machine(
+            [&image] { subcycle_bridge_silicon_disc_copy_out(image.data); }))
+      silicon_disc_save(image, sd_path_);
+    silicon_disc_free(image);
   }
   ImGui::SameLine();
-  if (ImGui::Button("Load")) {
-    if (sd_path_[0] != '\0') {
-      silicon_disc_load(g_silicon_disc, sd_path_);
-      sd_usage_dirty_ = true;
-    }
+  if (ImGui::Button("Load") && sd_path_[0] != '\0' && g_silicon_disc.data) {
+    SiliconDisc image;
+    if (silicon_disc_load(image, sd_path_))
+      sd_with_machine(
+          [&image] { subcycle_bridge_silicon_disc_copy_in(image.data); });
+    silicon_disc_free(image);
+    sd_usage_dirty_ = true;
   }
   ImGui::SameLine();
-  if (ImGui::Button("Clear")) {
-    silicon_disc_clear(g_silicon_disc);
+  if (ImGui::Button("Clear") && g_silicon_disc.data) {
+    sd_with_machine([] { subcycle_bridge_silicon_disc_copy_in(nullptr); });
     sd_usage_dirty_ = true;
   }
 

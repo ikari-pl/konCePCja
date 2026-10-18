@@ -379,6 +379,7 @@ class Machine {
   static constexpr size_t kSiliconStart = 256u * 1024;                 // bank 4
   static constexpr size_t kSiliconEnd = kSiliconStart + kSiliconSize;  // 512K
   void enable_silicon_disc(bool on);
+  bool silicon_disc_enabled() const { return silicon_; }
   void silicon_disc_load(const uint8_t* src, size_t len);
   void silicon_disc_save(uint8_t* dst, size_t len) const;
 
