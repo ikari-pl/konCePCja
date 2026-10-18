@@ -1038,6 +1038,113 @@ def test_config_set_machine_keys_on_a_running_machine():
     return True
 
 
+def test_sdisc_commands_reach_the_running_machine():
+    """`sdisc save|load|clear` act on the Silicon Disc the CPC is using.
+
+    The board keeps the disc in its own expansion RAM (banks 4-7); the host
+    buffer the commands used was only synced with it around a machine
+    rebuild, so a save wrote what the disc held at the last rebuild and a
+    load or clear never reached the CPC (beads-mtfy). Here a Z80 program
+    writes the disc and another reads it back, through the real banking.
+    """
+    print("Running sdisc commands reach the running machine test...")
+    size = 256 * 1024
+    # Above &7FFF: configs 4 and 5 swap a disc bank in at &4000-&7FFF.
+    base, park = 0x8000, 0x8020
+
+    def program(ram_config, body):
+        # DI : select ram_config : body : back to config 0 : park at `park`
+        code = bytes([0xF3, 0x01, ram_config, 0x7F, 0xED, 0x49]) + body + \
+            bytes([0x01, 0xC0, 0x7F, 0xED, 0x49])
+        code += bytes(park - base - len(code)) + bytes([0x18, 0xFE])
+        return code
+
+    # bank 4, config 4: bank 4's first 16K at &4000; store &5A, &A5 there
+    write_bank4 = program(0xE4, bytes([0x21, 0x00, 0x40, 0x36, 0x5A, 0x23,
+                                       0x36, 0xA5]))
+    # bank 5, config 5: bank 5's second 16K at &4000; LD HL,(&4000) and
+    # LD (&9000),HL, into base RAM the test can read
+    read_bank5 = program(0xED, bytes([0x2A, 0x00, 0x40, 0x22, 0x00, 0x90]))
+
+    def run(ipc, code):
+        for cmd in (f'mem write 0x{base:04X} {code.hex()}',
+                    f'reg set PC 0x{base:04X}'):
+            ok, resp = ipc.send_command(cmd)
+            if not ok:
+                print(f"FAIL: {cmd}: {resp}")
+                return False
+        ok, resp = ipc.send_command(f'wait pc 0x{park:04X} 5000')
+        if not ok:
+            print(f"FAIL: the program never parked: {resp}")
+            return False
+        return True
+
+    def bank5_word(ipc):
+        ok, resp = ipc.send_command('mem read 0x9000 2')
+        return resp.split()[-1].upper() if ok else resp
+
+    def sdisc(ipc, cmd):
+        ok, resp = ipc.send_command(f'sdisc {cmd}')
+        if not ok:
+            print(f"FAIL: sdisc {cmd}: {resp}")
+        return ok
+
+    tmpdir = tempfile.mkdtemp(prefix='sdisc_')
+    try:
+        saved = os.path.join(tmpdir, 'saved.ksdx')
+        loaded = os.path.join(tmpdir, 'loaded.ksdx')
+        image = bytearray(size)
+        image[0x14000:0x14002] = b'\x3c\xc3'  # bank 5, its second 16K
+        with open(loaded, 'wb') as f:
+            f.write(b'KSDX\x01\x00\x00\x00' + bytes(image))
+
+        with EmulatorRunner() as emu:
+            if not emu.start('-O', 'system.silicon_disc=1'):
+                print("FAIL: Could not start emulator")
+                return False
+            ipc = emu.ipc
+            ipc.pause()
+
+            if not run(ipc, write_bank4) or not sdisc(ipc, f'save {saved}'):
+                return False
+            with open(saved, 'rb') as f:
+                data = f.read()
+            if len(data) != 8 + size or data[8:10] != b'\x5a\xa5':
+                print(f"FAIL: sdisc save wrote {data[8:10].hex()} where the "
+                      "CPC wrote 5aa5 (a stale copy of the disc)")
+                return False
+
+            if not sdisc(ipc, f'load {loaded}') or not run(ipc, read_bank5):
+                return False
+            word = bank5_word(ipc)
+            if word != '3CC3':
+                print(f"FAIL: after sdisc load the CPC reads {word}, "
+                      "expected 3CC3")
+                return False
+            if not sdisc(ipc, f'save {saved}'):
+                return False
+            with open(saved, 'rb') as f:
+                if f.read()[8:] != bytes(image):
+                    print("FAIL: a save after a load is not the loaded image")
+                    return False
+
+            if not sdisc(ipc, 'clear') or not run(ipc, read_bank5):
+                return False
+            word = bank5_word(ipc)
+            if word != '0000':
+                print(f"FAIL: after sdisc clear the CPC reads {word}, "
+                      "expected 0000")
+                return False
+            ok, resp = ipc.send_command('status')
+            if not ok or 'paused=1' not in resp:
+                print(f"FAIL: the sdisc commands ran the machine: {resp}")
+                return False
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+    print("PASS: sdisc commands reach the running machine")
+    return True
+
+
 def test_wait_pc_timeout_ends_stopped():
     """`wait pc` that times out must answer only once the machine HAS stopped.
 
@@ -4806,6 +4913,7 @@ def main():
         test_wait_vbl_timeout_ends_stopped,
         test_pause_replies_once_stopped,
         test_config_set_machine_keys_on_a_running_machine,
+        test_sdisc_commands_reach_the_running_machine,
         test_wait_pc_timeout_ends_stopped,
         test_wait_pc_is_exact,
         test_wait_pc_aborts_on_shutdown,

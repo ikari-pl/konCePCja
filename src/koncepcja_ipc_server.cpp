@@ -5543,7 +5543,12 @@ std::string handle_command(const std::string& line) {
       if (parts[1] == "clear") {
         if (!g_silicon_disc.enabled)
           return "ERR 400 silicon-disc-not-enabled\n";
-        silicon_disc_clear(g_silicon_disc);
+        // The disc the CPC sees, not only the copy the next build loads
+        // (beads-mtfy): the board's, changed with the machine held still.
+        if (!config_change_machine(IpcConfigHold::Lease, [] {
+              subcycle_bridge_silicon_disc_copy_in(nullptr);
+            }))
+          return err_with_context(409, "z80-not-idle");
         return "OK cleared 256K\n";
       }
       if (parts[1] == "save" && parts.size() >= 3) {
@@ -5553,8 +5558,18 @@ std::string handle_command(const std::string& line) {
         for (const auto& comp : std::filesystem::path(parts[2])) {
           if (comp == "..") return "ERR 403 path-traversal\n";
         }
-        if (silicon_disc_save(g_silicon_disc, parts[2]))
-          return "OK saved to " + parts[2] + "\n";
+        SiliconDisc image;  // copied out under the lease, written after it
+        silicon_disc_init(image);
+        bool saved = config_change_machine(IpcConfigHold::Lease, [&image] {
+          subcycle_bridge_silicon_disc_copy_out(image.data);
+        });
+        if (!saved) {
+          silicon_disc_free(image);
+          return err_with_context(409, "z80-not-idle");
+        }
+        saved = silicon_disc_save(image, parts[2]);
+        silicon_disc_free(image);
+        if (saved) return "OK saved to " + parts[2] + "\n";
         return "ERR 500 save-failed\n";
       }
       if (parts[1] == "load" && parts.size() >= 3) {
@@ -5566,11 +5581,19 @@ std::string handle_command(const std::string& line) {
           g_silicon_disc.enabled = true;
           silicon_disc_init(g_silicon_disc);
         }
-        if (silicon_disc_load(g_silicon_disc, parts[2])) {
-          ga_memory_manager();
-          return "OK loaded from " + parts[2] + "\n";
+        SiliconDisc image;  // read before the lease, copied in under it
+        if (!silicon_disc_load(image, parts[2])) {
+          silicon_disc_free(image);
+          return "ERR 500 load-failed\n";
         }
-        return "ERR 500 load-failed\n";
+        bool const loaded =
+            config_change_machine(IpcConfigHold::Lease, [&image] {
+              subcycle_bridge_silicon_disc_copy_in(image.data);
+              ga_memory_manager();
+            });
+        silicon_disc_free(image);
+        if (!loaded) return err_with_context(409, "z80-not-idle");
+        return "OK loaded from " + parts[2] + "\n";
       }
       return "ERR 400 usage: sdisc (status|clear|save|load) [path]\n";
     }
