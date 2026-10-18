@@ -14,6 +14,10 @@
 
 #include "kcpc/kcpc_proto.h"
 
+namespace kcpc {
+struct WriteOp;  // kcpc_server.h
+}  // namespace kcpc
+
 // Starts the server on the first free port from 6545, unless `enabled` is
 // false ([ipc] binary_port_enabled=0): then no socket is created and no
 // thread starts. Call once the machine is built, so a client that connects at
@@ -61,6 +65,9 @@ kcpc::Status kcpc_host_regs_set(std::uint32_t mask, const kcpc::Regs& values,
 kcpc::Status kcpc_host_mem_write(const kcpc::MemWriteRequest& request,
                                  const std::uint8_t* data, std::size_t len,
                                  kcpc::Stamp& stamp);
+// A run of the two, in order, as one change: one frame boundary or one
+// lease for all. Each fills in its own status, stamp and register block.
+void kcpc_host_writes(std::vector<kcpc::WriteOp>& ops);
 
 // Run control (section 12): RUN_STATE, PAUSE, RUN, RESET, STEP. None waits
 // for emulated time. `client` and `request` name the request in the events

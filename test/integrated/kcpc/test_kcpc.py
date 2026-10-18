@@ -204,17 +204,19 @@ class Core:
         """Where the machine gate took this core's reads, from the line the
         server logs when it stops: {'boundary', 'paused', 'fallback',
         'busy'}, and 'writes' (writes the runner took at a frame boundary)
-        when the line says. Call after the core has exited."""
+        and 'changes' (the runs of them it made, each at one boundary) when
+        the line says. Call after the core has exited."""
         deadline = time.monotonic() + 2.0
         while True:
             for line in self.stderr_lines:
                 m = re.search(r'KCPC: reads served: (\d+) at a frame '
                               r'boundary, (\d+) while paused, (\d+) by '
                               r'fallback, (\d+) busy(?:; (\d+) writes at a '
-                              r'frame boundary)?', line)
+                              r'frame boundary(?: in (\d+) changes)?)?', line)
                 if m:
                     return {key: int(value) for key, value in zip(
-                        ('boundary', 'paused', 'fallback', 'busy', 'writes'),
+                        ('boundary', 'paused', 'fallback', 'busy', 'writes',
+                         'changes'),
                         m.groups()) if value is not None}
             # The pump thread may still be draining the pipe.
             assert time.monotonic() < deadline, (
@@ -1677,6 +1679,99 @@ def test_writes_beside_readers_are_taken_at_the_frame_boundary() -> None:
         print(f'    {served["writes"]} of {writes} writes taken at a frame '
               f'boundary, {writes / max(frames, 1):.2f} a frame, beside '
               f'{readers.calls} reads')
+
+
+def test_a_write_only_controller_leaves_an_unpaced_machine_its_speed() -> None:
+    """A controller writing back to back with nobody reading, unpaced: its
+    writes are taken at the frame boundary, about one a frame, and the
+    machine keeps its frames. One pause lease per write let it do ~150
+    frames a second instead of ~3000 (beads-dws9)."""
+    with Core('-O', 'system.limit_speed=0') as core:
+        with controller(core, 'test_kcpc writer') as c:
+            assert core.ipc('wait vbl 60 20000').startswith('OK')
+            spin(core, c)
+            first = wait_running(c).frame
+            writes = 0
+            begin = time.monotonic()
+            while time.monotonic() - begin < 1.5:
+                value = 0x4000 + (writes & 0xFFF)
+                assert c.regs_set(hl=value).hl == value
+                writes += 1
+            frames = c.machine_info().stamp.frame - first
+            assert c.regs_get().hl == 0x4000 + ((writes - 1) & 0xFFF)
+        core.ipc_quit()
+        assert core.wait_exit() == 0
+        served = core.reads_served()
+        assert served.get('writes', 0) >= 0.9 * writes, (
+            f'{served.get("writes", 0)} of {writes} writes were taken at a '
+            f'frame boundary; the rest each paused the machine ({served})')
+        # A write is one frame boundary: the machine turned out at least as
+        # many frames as it took writes.
+        assert frames >= 0.9 * writes, (
+            f'{frames} frames beside {writes} writes')
+        print(f'    {writes} writes in 1.5 s, {frames} frames, '
+              f'{served["writes"]} at a frame boundary')
+
+
+def test_writes_sent_together_are_made_together() -> None:
+    """Writes that arrive together are made as one change, at one frame
+    boundary, and answered one by one in request order, with the request
+    behind them answered after them (beads-dws9)."""
+    with Core('-O', 'system.limit_speed=0') as core:
+        with controller(core, 'test_kcpc writer') as c:
+            assert core.ipc('wait vbl 60 20000').startswith('OK')
+            spin(core, c)
+            wait_running(c)
+            rounds = 20
+            for turn in range(rounds):
+                blob = b''
+                ids = []
+                for i in range(16):
+                    rid = c.next_id
+                    c.next_id += 1
+                    ids.append(rid)
+                    if i % 2:
+                        payload = kc.mem_write_payload(
+                            kc.SPACE_CPU_RAM, 0x9000 + 2 * i,
+                            (turn * 16 + i).to_bytes(2, 'little'))
+                        blob += kc.encode_frame(kc.KIND_REQUEST,
+                                                kc.OP_MEM_WRITE, rid, payload)
+                    else:
+                        payload = kc.regs_set_payload(
+                            kc.REG_BITS['hl'], {'hl': turn * 16 + i})
+                        blob += kc.encode_frame(kc.KIND_REQUEST,
+                                                kc.OP_REGS_SET, rid, payload)
+                last = c.next_id
+                c.next_id += 1
+                blob += kc.encode_frame(kc.KIND_REQUEST, kc.OP_REGS_GET, last)
+                c.send_raw(blob)
+                frames = set()
+                for i, rid in enumerate(ids):
+                    reply = c.read_response(rid)
+                    assert reply.status == kc.OK, (i, reply.status)
+                    stamp = kc.Stamp.read(kc.Fields(reply.payload[4:]))
+                    assert not stamp.paused, stamp
+                    frames.add(stamp.frame)
+                regs = kc.Regs.read(kc.Fields(
+                    c.read_response(last).payload[4:]))
+                assert regs.hl == turn * 16 + 14, hex(regs.hl)
+                assert len(frames) <= 2, (
+                    f'round {turn}: 16 writes sent together landed at '
+                    f'frames {sorted(frames)}')
+            data = c.mem_read(kc.SPACE_CPU_RAM, 0x9000, 32)
+            assert data[30:32] == ((rounds - 1) * 16 + 15).to_bytes(
+                2, 'little'), data.hex()
+        core.ipc_quit()
+        assert core.wait_exit() == 0
+        served = core.reads_served()
+        assert 'changes' in served, f'the core did not count them: {served}'
+        writes = rounds * 16
+        assert served['writes'] >= writes, (served, writes)
+        # The two writes of spin() ran on a paused machine, under a lease.
+        assert served['changes'] <= 2 * rounds, (
+            f'{served["writes"]} writes at a frame boundary in '
+            f'{served["changes"]} changes: not made together')
+        print(f'    {served["writes"]} writes in {served["changes"]} changes')
 
 
 def test_quit_while_clients_read() -> None:
@@ -4929,6 +5024,8 @@ TESTS: List[Callable[[], None]] = [
     test_writes_leave_the_run_state_alone,
     test_readers_and_a_writer_at_once,
     test_writes_beside_readers_are_taken_at_the_frame_boundary,
+    test_a_write_only_controller_leaves_an_unpaced_machine_its_speed,
+    test_writes_sent_together_are_made_together,
     test_pause_and_run_are_pushed_to_every_subscriber,
     test_stops_from_the_text_ipc_are_pushed,
     test_reads_and_writes_are_not_run_state_events,

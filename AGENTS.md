@@ -445,11 +445,14 @@ binary_port_enabled=1      # 0 = do not open the port (manifest: `binary: null`)
   (`change_alone()`, so a write never runs beside a machine rebuild) and
   ended with `restore_run_state()`. A read callback must only copy:
   it runs on the frame runner. The one change that may run there too is a
-  `REGS_SET`/`MEM_WRITE` while clients read a running machine
-  (`written()`, `Gate::at_boundary()`): it is made at the frame boundary
-  behind the reads, with no lease (beads-df1x); keep anything with file
-  I/O or a lease of its own off that path. **Do not call anything that takes
-  `g_pause_mutex` (`cpc_stopped()`, a lease) from a path a running machine
+  `REGS_SET`/`MEM_WRITE` while clients read a running machine, or on an
+  unpaced one (`written()`, `Gate::at_boundary()`): it is made at the frame
+  boundary behind the reads, with no lease (beads-df1x, beads-dws9); keep
+  anything with file I/O or a lease of its own off that path. The writes a
+  controller sent together are one such change (`kcpc_host_writes()`): the
+  reader takes those its receive buffer already holds into the run, never
+  waits for more, and answers each in request order. **Do not call anything
+  that takes `g_pause_mutex` (`cpc_stopped()`, a lease) from a path a running machine
   hits per read**: the runner holds that mutex for the whole of every
   machine frame, and on an unpaced machine a socket thread then waits about
   15 ms for it each time.

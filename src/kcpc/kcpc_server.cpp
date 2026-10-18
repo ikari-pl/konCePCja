@@ -30,6 +30,10 @@ constexpr int kShutdownLingerMs = 200;
 // Connections beyond the client limit get an ERROR frame from a short-lived
 // thread pair of their own. Beyond this many at once they are just closed.
 constexpr std::size_t kMaxRejectedConnections = 8;
+// A run of writes the controller sent back to back is made as one change
+// while it is shorter than this many requests and this many payload bytes.
+constexpr std::size_t kMaxWriteRun = 256;
+constexpr std::size_t kMaxWriteRunBytes = kMaxRequestPayload;
 
 std::atomic<std::uint32_t> g_next_client_id{1};
 
@@ -245,6 +249,13 @@ class Server::Connection {
   ReadResult read_exact(std::uint8_t* buf, std::size_t size) {
     std::size_t got = 0;
     while (got < size) {
+      if (in_pos_ < in_len_) {
+        std::size_t const n = std::min(size - got, in_len_ - in_pos_);
+        std::copy_n(in_.data() + in_pos_, n, buf + got);
+        in_pos_ += n;
+        got += n;
+        continue;
+      }
       if (stop_.load(std::memory_order_acquire)) return ReadResult::kStop;
       if (broken_.load(std::memory_order_acquire)) return ReadResult::kGone;
       if (!hello_done_ && Clock::now() >= hello_deadline_) {
@@ -254,10 +265,21 @@ class Server::Connection {
         return ReadResult::kIdleTimeout;
       }
       if (!net::wait_readable(socket_, kPollMs)) continue;
-      net::IoResult const r = net::recv_some(socket_, buf + got, size - got);
+      // Into the receive buffer, so that a request sent behind this one is
+      // seen without another system call (serve()). What does not fit it
+      // goes straight where it belongs.
+      bool const direct = size - got >= in_.size();
+      net::IoResult const r =
+          direct ? net::recv_some(socket_, buf + got, size - got)
+                 : net::recv_some(socket_, in_.data(), in_.size());
       switch (r.status) {
         case net::IoStatus::kOk:
-          got += r.bytes;
+          if (direct) {
+            got += r.bytes;
+          } else {
+            in_pos_ = 0;
+            in_len_ = r.bytes;
+          }
           break;
         case net::IoStatus::kWouldBlock:
           break;
@@ -294,56 +316,186 @@ class Server::Connection {
     return End{};
   }
 
+  struct Request {
+    FrameHeader header;
+    std::vector<std::uint8_t> payload;
+  };
+
+  // Reads the next request. False when the connection has to end; `end`
+  // then says how.
+  bool read_request(Request& request, End& end) {
+    std::uint8_t raw[kHeaderSize];
+    ReadResult r = read_exact(raw, sizeof(raw));
+    if (r != ReadResult::kOk) {
+      end = end_of_read(r);
+      return false;
+    }
+
+    FrameHeader& header = request.header;
+    HeaderError const error = parse_header(raw, kMaxRequestPayload, header);
+    switch (error) {
+      case HeaderError::kOk:
+        break;
+      case HeaderError::kBadMagic:
+        end = fatal(Status::kBadFrame, "bad magic: this is the KCPC port");
+        return false;
+      case HeaderError::kBadVersion:
+        end = fatal(Status::kUnsupportedVersion,
+                    "this server speaks protocol major " +
+                        std::to_string(kVersionMajor));
+        return false;
+      case HeaderError::kBadKind:
+        end = fatal(Status::kBadFrame, "unknown frame kind");
+        return false;
+      case HeaderError::kTooLarge:
+        end = fatal(Status::kBadFrame, "payload longer than " +
+                                           std::to_string(kMaxRequestPayload) +
+                                           " bytes");
+        return false;
+    }
+    if (header.kind != static_cast<std::uint8_t>(Kind::kRequest)) {
+      end = fatal(Status::kBadFrame, "a client may only send requests");
+      return false;
+    }
+    if (header.id == 0) {
+      end = fatal(Status::kBadFrame, "request id 0 is reserved");
+      return false;
+    }
+
+    // parse_header() has bounded length at kMaxRequestPayload.
+    request.payload.resize(header.length);
+    r = read_exact(request.payload.data(), request.payload.size());
+    if (r != ReadResult::kOk) {
+      end = end_of_read(r);
+      return false;
+    }
+    return true;
+  }
+
   // Reads and answers requests until the connection has to end.
   End serve() {
-    std::vector<std::uint8_t> payload;
+    Request next;
     for (;;) {
-      std::uint8_t raw[kHeaderSize];
-      ReadResult r = read_exact(raw, sizeof(raw));
-      if (r != ReadResult::kOk) return end_of_read(r);
-
-      FrameHeader header;
-      HeaderError const error = parse_header(raw, kMaxRequestPayload, header);
-      switch (error) {
-        case HeaderError::kOk:
-          break;
-        case HeaderError::kBadMagic:
-          return fatal(Status::kBadFrame, "bad magic: this is the KCPC port");
-        case HeaderError::kBadVersion:
-          return fatal(Status::kUnsupportedVersion,
-                       "this server speaks protocol major " +
-                           std::to_string(kVersionMajor));
-        case HeaderError::kBadKind:
-          return fatal(Status::kBadFrame, "unknown frame kind");
-        case HeaderError::kTooLarge:
-          return fatal(Status::kBadFrame,
-                       "payload longer than " +
-                           std::to_string(kMaxRequestPayload) + " bytes");
-      }
-      if (header.kind != static_cast<std::uint8_t>(Kind::kRequest)) {
-        return fatal(Status::kBadFrame, "a client may only send requests");
-      }
-      if (header.id == 0) {
-        return fatal(Status::kBadFrame, "request id 0 is reserved");
-      }
-
-      // parse_header() has bounded length at kMaxRequestPayload.
-      payload.resize(header.length);
-      r = read_exact(payload.data(), payload.size());
-      if (r != ReadResult::kOk) return end_of_read(r);
-
       End end;
+      if (!read_request(next, end)) return end;
+      if (joins_write_run(next.header)) {
+        // The writes behind this one that have arrived with it are made
+        // with it, as one change, and then answered one by one: a
+        // controller that writes back to back costs the machine one frame
+        // boundary or one pause per run, not per write (beads-dws9).
+        std::vector<Request> run;
+        std::size_t bytes = next.payload.size();
+        run.push_back(std::move(next));
+        bool gone = false;
+        bool ahead = false;  // `next` is a request read behind the run
+        while (run.size() < kMaxWriteRun && bytes < kMaxWriteRunBytes &&
+               in_pos_ < in_len_) {
+          if (!read_request(next, end)) {
+            gone = true;
+            break;
+          }
+          if (!joins_write_run(next.header)) {
+            ahead = true;
+            break;
+          }
+          bytes += next.payload.size();
+          run.push_back(std::move(next));
+        }
+        serve_writes(run);
+        if (gone) return end;
+        if (overflowed_) return End{};
+        last_frame_ = Clock::now();
+        if (!ahead) continue;
+      }
+
       {
         std::scoped_lock const lock(queue_mutex_);
-        in_flight_id_ = header.id;
+        in_flight_id_ = next.header.id;
       }
-      bool const serving = dispatch(header, payload, end);
+      bool const serving = dispatch(next.header, next.payload, end);
       request_done();
       if (!serving) return end;
       if (overflowed_) return End{};
       // The controller's silence is counted from here: the time the core
       // took to serve its request is not the client's.
       last_frame_ = Clock::now();
+    }
+  }
+
+  // A write the controller may make: it goes in a run (serve_writes()).
+  // Anything else, an observer's write included, goes through dispatch().
+  bool joins_write_run(const FrameHeader& header) const {
+    auto const opcode = static_cast<Opcode>(header.opcode);
+    return hello_done_ &&
+           (opcode == Opcode::kRegsSet || opcode == Opcode::kMemWrite) &&
+           machine_writes() && is_controller();
+  }
+
+  // The checks of a REGS_SET or MEM_WRITE before the machine sees it: null
+  // when `op` is ready to be made, else why the request is a bad payload.
+  static const char* prepare_write(const Request& request, WriteOp& op) {
+    Reader r(request.payload);
+    if (static_cast<Opcode>(request.header.opcode) == Opcode::kRegsSet) {
+      if (!read_regs_set_request(r, op.regs)) {
+        return "REGS_SET payload too short";
+      }
+      return regs_set_refusal(op.regs);
+    }
+    op.mem = true;
+    if (!read_mem_write_request(r, op.request)) {
+      return "MEM_WRITE payload too short";
+    }
+    if (!mem_space_writable(op.request.space)) {
+      return "only the spaces CPU_RAM and PHYS_RAM can be written";
+    }
+    if (op.request.bank != 0) return "bank must be 0 for this space";
+    op.data = request.payload.data() + kMemWriteHeaderSize;
+    op.len = request.payload.size() - kMemWriteHeaderSize;
+    return nullptr;
+  }
+
+  // Makes the writes of `run` that pass their checks, together, then answers
+  // each request in the order it came.
+  void serve_writes(const std::vector<Request>& run) {
+    std::vector<WriteOp> ops;
+    ops.reserve(run.size());
+    std::vector<const char*> refusals(run.size(), nullptr);
+    for (std::size_t i = 0; i < run.size(); ++i) {
+      WriteOp op;
+      refusals[i] = prepare_write(run[i], op);
+      if (refusals[i] == nullptr) ops.push_back(op);
+    }
+    {
+      std::scoped_lock const lock(queue_mutex_);
+      in_flight_id_ = run.front().header.id;
+    }
+    if (config_.writes && !ops.empty()) {
+      config_.writes(ops);
+    } else {
+      for (WriteOp& op : ops) {
+        op.status =
+            op.mem ? config_.mem_write(op.request, op.data, op.len, op.stamp)
+                   : config_.regs_set(op.regs.mask, op.regs.regs, op.stamp,
+                                      op.after);
+      }
+    }
+    std::size_t made = 0;
+    for (std::size_t i = 0; i < run.size(); ++i) {
+      const FrameHeader& header = run[i].header;
+      if (refusals[i] != nullptr) {
+        respond_error(header, Status::kBadPayload, refusals[i]);
+        continue;
+      }
+      const WriteOp& op = ops[made++];
+      if (op.status != Status::kOk) {
+        respond_error(header, op.status, machine_refusal(op.status));
+        continue;
+      }
+      Writer w;
+      write_status(w, Status::kOk);
+      write_stamp(w, op.stamp);
+      if (!op.mem) write_regs(w, op.after);
+      respond(header, w.take());
     }
   }
 
@@ -529,12 +681,11 @@ class Server::Connection {
         handle_control(header, payload);
         return true;
       case Opcode::kRegsSet:
-        if (!machine_writes()) break;
-        if (controller_only(header)) handle_regs_set(header, payload);
-        return true;
       case Opcode::kMemWrite:
+        // A controller's write goes in a run (serve()); this is one that
+        // control came to between the two looks.
         if (!machine_writes()) break;
-        if (controller_only(header)) handle_mem_write(header, payload);
+        if (controller_only(header)) serve_writes({Request{header, payload}});
         return true;
       default:
         break;
@@ -1415,65 +1566,6 @@ class Server::Connection {
     respond(header, w.take());
   }
 
-  void handle_regs_set(const FrameHeader& header,
-                       const std::vector<std::uint8_t>& payload) {
-    Reader r(payload);
-    RegsSetRequest request;
-    if (!read_regs_set_request(r, request)) {
-      respond_error(header, Status::kBadPayload, "REGS_SET payload too short");
-      return;
-    }
-    if (const char* const refusal = regs_set_refusal(request)) {
-      respond_error(header, Status::kBadPayload, refusal);
-      return;
-    }
-    Stamp stamp;
-    Regs after;
-    Status const status =
-        config_.regs_set(request.mask, request.regs, stamp, after);
-    if (status != Status::kOk) {
-      respond_error(header, status, machine_refusal(status));
-      return;
-    }
-    Writer w;
-    write_status(w, Status::kOk);
-    write_stamp(w, stamp);
-    write_regs(w, after);
-    respond(header, w.take());
-  }
-
-  void handle_mem_write(const FrameHeader& header,
-                        const std::vector<std::uint8_t>& payload) {
-    Reader r(payload);
-    MemWriteRequest request;
-    if (!read_mem_write_request(r, request)) {
-      respond_error(header, Status::kBadPayload, "MEM_WRITE payload too short");
-      return;
-    }
-    if (!mem_space_writable(request.space)) {
-      respond_error(header, Status::kBadPayload,
-                    "only the spaces CPU_RAM and PHYS_RAM can be written");
-      return;
-    }
-    if (request.bank != 0) {
-      respond_error(header, Status::kBadPayload,
-                    "bank must be 0 for this space");
-      return;
-    }
-    Stamp stamp;
-    Status const status =
-        config_.mem_write(request, payload.data() + kMemWriteHeaderSize,
-                          payload.size() - kMemWriteHeaderSize, stamp);
-    if (status != Status::kOk) {
-      respond_error(header, status, machine_refusal(status));
-      return;
-    }
-    Writer w;
-    write_status(w, Status::kOk);
-    write_stamp(w, stamp);
-    respond(header, w.take());
-  }
-
   // CAP_MACHINE_READ: the group is there whole or not at all.
   bool machine_reads() const {
     return config_.regs_get && config_.mem_info && config_.mem_read;
@@ -1773,6 +1865,10 @@ class Server::Connection {
   std::deque<std::vector<std::uint8_t>> queue_;
   std::size_t queued_bytes_ = 0;
   bool overflowed_ = false;  // written and read by the reader only
+  // Received and not yet read, in_[in_pos_, in_len_): the reader's only.
+  std::vector<std::uint8_t> in_ = std::vector<std::uint8_t>(64U << 10);
+  std::size_t in_pos_ = 0;
+  std::size_t in_len_ = 0;
   bool closing_ = false;
   Clock::time_point flush_deadline_;
 
