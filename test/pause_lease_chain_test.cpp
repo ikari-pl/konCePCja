@@ -511,3 +511,37 @@ TEST_F(PauseLeaseChainTest, AHolderLendsTheMachineToTheThreadItWaitsFor) {
   lease.restore_run_state();
   EXPECT_FALSE(CPC.paused);
 }
+
+// A holder that has the machine and only waits to be the one lease held
+// (read_alone(), change_alone(): a text IPC `config set`, a KCPC write)
+// beside a lease on another thread that waits for the machine (a KCPC
+// PAUSE). The second is counted the moment it is asked for, and then waits
+// for the first to let go; the first waited for the count, and each waited
+// for the other until the first gave up (beads-0nj8). A lease that is
+// waiting for the machine is not changing it, and does not count.
+TEST_F(PauseLeaseChainTest, AWaitingHolderDoesNotKeepTheHolderFromItsRead) {
+  CpcPauseLease holder;
+  ASSERT_TRUE(holder.idle());
+  std::atomic<bool> asking{false};
+  bool idle = false;
+  std::thread other([&] {
+    asking.store(true);
+    CpcPauseLease lease(CpcPauseLeaseMode::WaitImmediately, 2000);
+    idle = lease.idle();
+    lease.restore_run_state();
+  });
+  while (!asking.load()) std::this_thread::yield();
+  // Into its wait for the machine.
+  std::this_thread::sleep_for(std::chrono::milliseconds(30));
+
+  int reads = 0;
+  auto const start = std::chrono::steady_clock::now();
+  EXPECT_TRUE(holder.read_alone([&] { ++reads; }, 250));
+  EXPECT_LT(std::chrono::steady_clock::now() - start,
+            std::chrono::milliseconds(250));
+  EXPECT_EQ(1, reads);
+  holder.restore_run_state();
+  other.join();
+  EXPECT_TRUE(idle);
+  EXPECT_FALSE(CPC.paused);
+}

@@ -1833,6 +1833,11 @@ unsigned g_machine_holds = 0;
 // one somebody else took after its own was lent away (CpcPauseLease::lend()).
 uint64_t g_machine_hold_id = 0;
 uint64_t g_machine_hold_ids = 0;
+// How many of the leases counted in g_pause_lease_count are still waiting in
+// claim_machine() for a holder on another thread. They change nothing until
+// that holder lets go, so read_alone() does not count them: it waited for
+// them while they waited for it (beads-0nj8).
+unsigned g_machine_claim_waiters = 0;
 // Whether the machine was paused before the first of the leases now held was
 // taken. Leases overlap (two KCPC clients, a client and the text IPC, IPC and
 // the UI), and a holder that arrives while another holds one finds
@@ -2139,10 +2144,12 @@ bool CpcPauseLease::claim_machine(int timeout_ms) {
   auto const me = std::this_thread::get_id();
   auto const deadline =
       std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
+  bool waiting = false;
   for (;;) {
     {
       std::scoped_lock const lock(g_pause_mutex);
       if (g_machine_holds == 0 || g_machine_holder == me) {
+        if (waiting) --g_machine_claim_waiters;
         if (g_machine_holds == 0) {
           g_machine_holder = me;
           g_machine_hold_id = ++g_machine_hold_ids;
@@ -2152,8 +2159,13 @@ bool CpcPauseLease::claim_machine(int timeout_ms) {
         owns_ = true;
         return true;
       }
+      if (std::chrono::steady_clock::now() >= deadline) {
+        if (waiting) --g_machine_claim_waiters;
+        return false;
+      }
+      if (!waiting) ++g_machine_claim_waiters;
+      waiting = true;
     }
-    if (std::chrono::steady_clock::now() >= deadline) return false;
     std::this_thread::sleep_for(std::chrono::microseconds(200));
   }
 }
@@ -2280,9 +2292,11 @@ bool CpcPauseLease::read_alone(const std::function<void()>& read,
     {
       // Paused and idle already (this lease). Under the mutex nobody can
       // take another lease, so being the only holder now is being the only
-      // holder until read() returns.
+      // holder until read() returns. A lease waiting for the machine this
+      // one has is not a holder yet, and cannot become one before this
+      // lease lets go.
       std::scoped_lock const lock(g_pause_mutex);
-      if (g_pause_lease_count == 1) {
+      if (g_pause_lease_count - g_machine_claim_waiters == 1) {
         read();
         return true;
       }
