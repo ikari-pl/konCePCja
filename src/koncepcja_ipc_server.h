@@ -64,7 +64,16 @@ class KoncepcjaIpcServer {
   std::atomic<uint64_t> frame_step_after_serial{0};
 
   // Arm a frame step of n counted frames (see frame_step_after_serial).
-  void arm_frame_step(int n, uint64_t after_serial = 0);
+  // There is one counter, and the step armed on it owns it until it ends:
+  // returns that step's ticket, or 0 when another step is running (a second
+  // starter replaced the count, so the first step ended with the second,
+  // beads-y3tm).
+  uint64_t arm_frame_step(int n, uint64_t after_serial = 0);
+  // Whether the step with this ticket is still running.
+  bool frame_step_running(uint64_t ticket) const;
+  // Disarms the step with this ticket without pausing anything; a step armed
+  // since by somebody else is left alone. Callable under the pause mutex.
+  void cancel_frame_step(uint64_t ticket);
   // Called by the emulation loop at each completed frame with the serial of
   // the keyboard snapshot that frame began with. Returns true when this frame
   // finished the step; the caller then pauses and calls
@@ -73,8 +82,8 @@ class KoncepcjaIpcServer {
 
   // Signal that frame stepping has completed (called from main loop)
   void notify_frame_step_done();
-  // Block until frame_step_active becomes false
-  void wait_frame_step_done();
+  // Block until the step with this ticket has ended
+  void wait_frame_step_done(uint64_t ticket);
 
   // How wait_frame_step_until() ended.
   enum class FrameStepWait {
@@ -88,7 +97,7 @@ class KoncepcjaIpcServer {
   // else lifts again (the -i injection's) just delays the count. Anything but
   // Done disarms the step, so a late tick cannot pause a later run.
   FrameStepWait wait_frame_step_until(
-      std::chrono::steady_clock::time_point deadline,
+      uint64_t ticket, std::chrono::steady_clock::time_point deadline,
       const std::function<bool()>& should_abort);
 
   // Event system — called from hot paths, must be fast. A matching event's
@@ -133,6 +142,12 @@ class KoncepcjaIpcServer {
   // Condition variable for frame-step completion (replaces busy-wait)
   std::mutex frame_step_mutex;
   std::condition_variable frame_step_cv;
+  // Taking and giving back the counter (arm_frame_step(), cancel_frame_step())
+  // is done under this, so a check of the owner and the change it allows are
+  // one step. Taken last: nothing else is locked while it is held.
+  mutable std::mutex frame_step_owner_mutex;
+  // The ticket of the step armed last; tickets start at 1.
+  std::atomic<uint64_t> frame_step_ticket{0};
 
   // Events — guarded by mutex for add/remove, but checks use atomic flag for
   // fast path

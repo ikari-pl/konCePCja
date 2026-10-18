@@ -221,10 +221,10 @@ std::uint32_t fitted_rom_slots() {
   return slots;
 }
 
-// The frame step this port armed, if one is running. It shares the text
-// IPC's frame counter (arm_frame_step()), which nobody waits on here: the
-// end of the step is an event.
-std::atomic<bool> g_frame_step_armed{false};
+// The ticket of the frame step this port armed, 0 if none is running. It
+// shares the text IPC's frame counter (arm_frame_step()), which nobody waits
+// on here: the end of the step is an event.
+std::atomic<std::uint64_t> g_frame_step_ticket{0};
 
 static_assert(static_cast<int>(CpcStopReason::Paused) ==
               static_cast<int>(kcpc::StopReason::kPaused));
@@ -254,8 +254,9 @@ void on_run_event(const CpcRunEvent& change) {
       // Whatever stopped the machine, a frame step this port armed is over:
       // left armed, it would stop the machine again some frames after the
       // next Run.
-      if (g_frame_step_armed.exchange(false, std::memory_order_acq_rel)) {
-        emu_cancel_frame_step();
+      if (std::uint64_t const ticket =
+              g_frame_step_ticket.exchange(0, std::memory_order_acq_rel)) {
+        emu_cancel_frame_step(ticket);
       }
       break;
     case CpcRunEventKind::Resumed:
@@ -633,8 +634,12 @@ Status kcpc_host_step(std::uint32_t client, std::uint32_t request,
       lease.restore_run_state();
       return Status::kBusy;
     }
-    g_frame_step_armed.store(true, std::memory_order_release);
-    emu_arm_frame_step(static_cast<int>(count));
+    std::uint64_t const ticket = emu_arm_frame_step(static_cast<int>(count));
+    if (ticket == 0) {
+      lease.restore_run_state();
+      return Status::kBusy;
+    }
+    g_frame_step_ticket.store(ticket, std::memory_order_release);
     // release_running(), not a resume by hand: with another lease held the
     // frames then run when its holder lets go, instead of never.
     lease.release_running(cause);
