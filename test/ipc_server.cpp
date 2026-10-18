@@ -740,6 +740,46 @@ TEST_F(IpcServerTest, WaitVblWithoutFramesTimesOutPaused) {
   EXPECT_FALSE(server.frame_step_active.load());
 }
 
+// There is one frame-step counter, and a step armed by one actor (KCPC's
+// STEP frames, another connection's `step frame`) owns it until it ends. A
+// second starter is refused instead of replacing the count: the first step
+// then ended when the second did (beads-y3tm).
+TEST(IpcFrameStep, ASecondArmIsRefusedWhileAStepRuns) {
+  KoncepcjaIpcServer s;
+  uint64_t const first = s.arm_frame_step(5);
+  ASSERT_NE(0u, first);
+  EXPECT_EQ(0u, s.arm_frame_step(1)) << "the counter is taken";
+  EXPECT_EQ(5, s.frame_step_remaining.load());
+  EXPECT_TRUE(s.frame_step_running(first));
+  s.notify_frame_step_done();
+  EXPECT_FALSE(s.frame_step_running(first));
+  uint64_t const second = s.arm_frame_step(1);
+  EXPECT_NE(0u, second);
+  EXPECT_NE(first, second);
+  // Cancelling an ended step does not touch the one that runs now.
+  s.cancel_frame_step(first);
+  EXPECT_TRUE(s.frame_step_running(second));
+  s.cancel_frame_step(second);
+  EXPECT_FALSE(s.frame_step_active.load());
+}
+
+TEST_F(IpcServerTest, StepFrameAndWaitVblAreRefusedWhileAnotherStepRuns) {
+  cpc_pause();
+  FakeFrameLoop loop(server);
+  uint64_t const owner = server.arm_frame_step(1000);  // another actor's
+  ASSERT_NE(0u, owner);
+  auto resp = send_command("step frame 2");
+  EXPECT_EQ(0u, resp.rfind("ERR 409 frame-step-busy", 0)) << resp;
+  resp = send_command("wait vbl 2 500");
+  EXPECT_EQ(0u, resp.rfind("ERR 409 frame-step-busy", 0)) << resp;
+  // The owner's step is untouched: same count, still armed, nothing ran.
+  EXPECT_TRUE(server.frame_step_running(owner));
+  EXPECT_EQ(1000, server.frame_step_remaining.load());
+  EXPECT_TRUE(CPC.paused);
+  EXPECT_EQ(0, loop.frames());
+  server.cancel_frame_step(owner);
+}
+
 TEST_F(IpcServerTest, WaitVblRejectsANonPositiveCount) {
   EXPECT_EQ(0u, send_command("wait vbl 0").rfind("ERR 400", 0));
   EXPECT_EQ(0u, send_command("wait vbl -2 100").rfind("ERR 400", 0));

@@ -759,6 +759,13 @@ count, a breakpoint, somebody's pause) is delivered to the client that
 asked. A stop that ends the step early also disarms the counter: left armed,
 it would stop the machine again some frames after the next `RUN`.
 
+There is one counter, and the step armed on it owns it until it ends. A
+frame step from this port while the text IPC's runs (`step frame`,
+`wait vbl`, a key tap's hold, `frames dump`) answers `BUSY`; a text command
+that needs the counter while this port's step runs answers
+`ERR 409 frame-step-busy`. Neither replaces the other's count (before, the
+second starter's count replaced the first's, which then ended with it).
+
 The steps that walk the machine (over, out, to) need a thread, because a
 walk waits: for a one-shot breakpoint to be reached, for a deadline. The
 server has one **walker** thread for them. The request pauses the machine
