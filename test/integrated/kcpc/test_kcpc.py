@@ -2106,23 +2106,43 @@ def test_reset_is_pushed() -> None:
 
 class LeaseTaker:
     """Another actor that holds one pause lease after another: the text IPC
-    writing a byte of memory in a loop, on its own connections."""
+    setting the CRTC type to the one fitted, in a loop, on its own
+    connections. That changes nothing, and runs under a CpcPauseLease alone
+    (ipc_config_set(), change_alone()). Not `mem write`: that pokes the
+    machine with no lease at all (beads-0nj8), so the tests counted
+    connections, not leases. `writes` counts the leases."""
 
     def __init__(self, core: Core):
         self.core = core
         self.stop = threading.Event()
         self.writes = 0
         self.errors: List[str] = []
+        self.counted = threading.Condition()
         self.thread = threading.Thread(target=self._run)
+
+    def wait_for(self, writes: int, timeout: float) -> bool:
+        """Blocks until `writes` leases have been taken, the actor has
+        failed, or `timeout` seconds have passed; whether they were taken."""
+        with self.counted:
+            return self.counted.wait_for(
+                lambda: self.writes >= writes or self.errors, timeout) and \
+                self.writes >= writes
 
     def _run(self) -> None:
         try:
+            resp = self.core.ipc('config get crtc_type')
+            assert resp.startswith('OK '), resp
+            command = f'config set crtc_type {resp.split()[1]}'
             while not self.stop.is_set():
-                resp = self.core.ipc('mem write 0x9000 00')
+                resp = self.core.ipc(command)
                 assert resp.startswith('OK'), resp
-                self.writes += 1
+                with self.counted:
+                    self.writes += 1
+                    self.counted.notify_all()
         except Exception as exc:  # noqa: BLE001 - reported by the test
-            self.errors.append(f'{type(exc).__name__}: {exc}')
+            with self.counted:
+                self.errors.append(f'{type(exc).__name__}: {exc}')
+                self.counted.notify_all()
 
     def __enter__(self) -> 'LeaseTaker':
         self.thread.start()
@@ -2162,7 +2182,7 @@ def test_run_is_not_lost_to_another_actors_lease() -> None:
             f'only {other.writes} leases by the other actor in {turn} '
             'turns: this proved little')
         print(f'    {turn} pause/run pairs beside {other.writes} text IPC '
-              'writes: every RUN took effect')
+              'leases: every RUN took effect')
 
 
 def test_frame_events_arrive_at_the_interval() -> None:
@@ -3041,22 +3061,24 @@ def test_quit_during_a_walk() -> None:
 
 
 def test_a_kcpc_walk_runs_beside_other_actors_leases() -> None:
-    """beads-pja3 over this port: STEP over a routine that takes half an
-    emulated second, while the text IPC writes memory in a loop and so
-    pauses the machine under a lease again and again. The walk lands where
-    it should every time, and an observer sees one resume and one stop for
-    each step: the leases are nobody's event."""
+    """beads-pja3 over this port: STEP over a routine that runs until the
+    test lets it return, while the text IPC pauses the machine under a lease
+    again and again. The test lets it return only once two leases have been
+    taken since the walk was announced, so the second fell wholly inside the
+    walk however slow the host (beads-0nj8: a routine of a fixed half
+    second fitted no text IPC connection on the Windows runner). The walk
+    lands where it should every time, and an observer sees one resume and
+    one stop for each step: the leases are nobody's event."""
     code = bytes([
         0xCD, 0x10, 0x80,   # 8000 CALL &8010
         0x18, 0xFE,         # 8003 JR $
     ]) + bytes(11) + bytes([
-        0x01, 0x00, 0x00,   # 8010 LD BC,0
-        0x0B,               # 8013 DEC BC
-        0x78,               # 8014 LD A,B
-        0xB1,               # 8015 OR C
-        0x20, 0xFB,         # 8016 JR NZ,&8013
-        0xC9,               # 8018 RET
+        0x3A, 0x00, 0x90,   # 8010 LD A,(&9000)
+        0xB7,               # 8013 OR A
+        0x28, 0xFA,         # 8014 JR Z,&8010
+        0xC9,               # 8016 RET
     ])
+    flag = 0x9000
     with Core() as core, controller(core, 'stepper') as a, \
             observer(core, 'watcher', kc.CLASS_RUN) as b:
         a_id = a.hello_reply.client_id
@@ -3065,19 +3087,22 @@ def test_a_kcpc_walk_runs_beside_other_actors_leases() -> None:
         load_program(a, code)
         with LeaseTaker(core) as other:
             for turn in range(3):
+                a.mem_write(kc.SPACE_CPU_RAM, flag, b'\x00')
                 a.regs_set(pc=CODE_ADDR)
-                writes = other.writes
-                step_id = a.step(mode=kc.STEP_OVER)
+                step_id = a.step(mode=kc.STEP_OVER, timeout_ms=60000)
                 expect_resumed(b, a_id, step_id, f'turn {turn}')
+                # A lease that a walk kept out (or took for its stop) never
+                # gets here, and the routine never returns.
+                leases = other.writes
+                assert other.wait_for(leases + 2, IO_TIMEOUT_S), (
+                    f'turn {turn}: {other.writes - leases} leases in '
+                    f'{IO_TIMEOUT_S} s of walking; errors {other.errors}')
+                # `mem write` takes no lease: it only lets the routine return.
+                assert core.ipc(f'mem write {flag:#06x} 01').startswith('OK')
                 for who, c in (('stepper', a), ('observer', b)):
                     event = expect_stopped(c, kc.STOP_STEP_DONE, a_id,
                                            step_id, f'turn {turn}, {who}')
                     assert event.pc == CODE_ADDR + 3, f'turn {turn}: {event}'
-                # (One is enough to end a walk that mistakes it for a stop;
-                # a slow host fits few text IPC connections into the walk.)
-                assert other.writes - writes >= 1, (
-                    f'turn {turn}: no lease during the walk: this proved '
-                    'nothing')
         assert not other.errors, other.errors
         assert a.regs_get().pc == CODE_ADDR + 3
 
