@@ -1874,6 +1874,14 @@ def test_step_frames_counts_like_the_text_ipc() -> None:
         assert state.walk_active and not state.stamp.paused, state
         refused(kc.BUSY, 'a second STEP during a step', a.step)
         refused(kc.BUSY, 'a second frame step', a.step, 2, kc.STEP_FRAMES)
+        # The text IPC shares the one frame-step counter: its frame steps
+        # are refused too, instead of replacing the count, which ended this
+        # step when theirs did (beads-y3tm).
+        for command in ('step frame 2', 'wait vbl 2 500', 'input key a'):
+            resp = core.ipc(command)
+            assert resp.startswith('ERR 409 frame-step-busy'), (command, resp)
+        state = a.run_state()
+        assert state.walk_active and not state.stamp.paused, state
         a.pause()
         pause_id = a.last_request_id
         for who, c in (('stepper', a), ('observer', b)):

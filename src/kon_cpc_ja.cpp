@@ -4600,11 +4600,12 @@ void frame_epilogue() {
 
 bool emu_frame_step_active() { return g_ipc->frame_step_active.load(); }
 
-void emu_arm_frame_step(int frames) { g_ipc->arm_frame_step(frames); }
+uint64_t emu_arm_frame_step(int frames) {
+  return g_ipc->arm_frame_step(frames);
+}
 
-void emu_cancel_frame_step() {
-  g_ipc->frame_step_active.store(false);
-  g_ipc->frame_step_remaining.store(0);
+void emu_cancel_frame_step(uint64_t ticket) {
+  g_ipc->cancel_frame_step(ticket);
 }
 
 EmuFrameResult emu_handle_stop() {

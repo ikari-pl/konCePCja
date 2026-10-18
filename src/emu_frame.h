@@ -83,9 +83,12 @@ EmuFrameResult emu_handle_stop();
 // The one frame-step counter, for a caller outside the text IPC server (KCPC's
 // STEP frames). The frame runner counts it down in its epilogue and pauses
 // the machine when it reaches zero, as it does for the text IPC's
-// `step frame`. Arm it with the machine held under a pause lease.
+// `step frame`. Arm it with the machine held under a pause lease. The step
+// armed owns the counter until it ends: arming returns its ticket, or 0 while
+// another step (the text IPC's) is running.
 bool emu_frame_step_active();
-void emu_arm_frame_step(int frames);
-// Disarms it without pausing anything. Only atomics: callable under the
-// pause mutex.
-void emu_cancel_frame_step();
+uint64_t emu_arm_frame_step(int frames);
+// Disarms the step with this ticket without pausing anything; a later step is
+// left alone. Takes only the counter's own lock: callable under the pause
+// mutex.
+void emu_cancel_frame_step(uint64_t ticket);

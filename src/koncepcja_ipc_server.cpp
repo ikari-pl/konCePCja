@@ -1456,7 +1456,8 @@ void init_command_registry() {
       "of your own AT <addr> is an arrival (OK breakpoint-hit); any other "
       "breakpoint or watchpoint firing first is ERR 409 stopped-elsewhere, "
       "the same polarity wait pc uses.\n"
-      "  frame [N]: Steps exactly N video frames (1/50th of a second).");
+      "  frame [N]: Steps exactly N video frames (1/50th of a second). "
+      "ERR 409 frame-step-busy while another frame step runs.");
 
   register_command(
       "input", "INPUT",
@@ -3300,11 +3301,15 @@ std::string handle_command(const std::string& line) {
         int n = 1;
         if (parts.size() >= 3) n = parse_int(parts[2]);
         if (n < 1) return "ERR 400 bad-args\n";
-        g_ipc_instance->arm_frame_step(n);
+        uint64_t const ticket = g_ipc_instance->arm_frame_step(n);
+        if (ticket == 0) {
+          lease.restore_run_state();
+          return err_with_context(409, "frame-step-busy");
+        }
         // Not release-then-cpc_resume(): that does nothing while another
         // lease is held, and the step then never ran.
         lease.release_running();
-        g_ipc_instance->wait_frame_step_done();
+        g_ipc_instance->wait_frame_step_done(ticket);
         return ok_with_context();
       }
       // "step over [N]" — step over CALL/RST (or single-step if not a call)
@@ -3488,14 +3493,19 @@ std::string handle_command(const std::string& line) {
       // ends there with what it has; the stop is the caller's `wait bp`.
       auto step_one_frame = [&]() -> bool {
         if (!g_ipc_instance) return true;
-        g_ipc_instance->arm_frame_step(1);
+        uint64_t const ticket = g_ipc_instance->arm_frame_step(1);
+        // Another actor's frame step: the recording ends here, as at a stop.
+        if (ticket == 0) return false;
         // cpc_run(), not cpc_resume(): the latter is dropped while another
         // actor holds a pause lease, and the frame then never came
         // (beads-pja3).
         cpc_run();
-        g_ipc_instance->wait_frame_step_done();
+        g_ipc_instance->wait_frame_step_done(ticket);
         return !g_ipc_instance->breakpoint_hit_pending();
       };
+      if (g_ipc_instance && g_ipc_instance->frame_step_active.load()) {
+        return err_with_context(409, "frame-step-busy");
+      }
       if (is_gif) {
         // Animated GIF output
         if (!back_surface) return "ERR 503 no-surface\n";
@@ -3592,7 +3602,12 @@ std::string handle_command(const std::string& line) {
       // matrix rows atomically in the same locked ipc_apply_keypress call),
       // hold hold_frames frames via the frame-step counter so the CPC firmware
       // scans the chord, then release every row it set.
-      auto tap_scancode = [&](CPCScancode scancode, int hold_frames) {
+      // False, with nothing pressed, while another actor's frame step holds
+      // the counter the hold is measured on.
+      auto tap_scancode = [&](CPCScancode scancode, int hold_frames) -> bool {
+        if (g_ipc_instance && g_ipc_instance->frame_step_active.load()) {
+          return false;
+        }
         // A tap must not change whether the emulator is running. The frame
         // step it rides on ends with cpc_pause() (kon_cpc_ja.cpp, "IPC frame
         // step"), so without this the machine is left STOPPED even when the
@@ -3608,15 +3623,19 @@ std::string handle_command(const std::string& line) {
           // land before the firmware ever scanned the key (beads-cjej). The
           // serial is read AFTER the press — a publish racing in between
           // only makes the hold one frame longer, never shorter.
-          g_ipc_instance->arm_frame_step(
+          uint64_t const ticket = g_ipc_instance->arm_frame_step(
               hold_frames,
               g_kbd_publish_serial.load(std::memory_order_acquire));
+          if (ticket == 0) {
+            ipc_apply_keypress(scancode, keyboard_matrix, false);
+            return false;
+          }
           // A run that is not lost to another actor's pause lease
           // (beads-pja3): the hold needs its frames.
           cpc_run();
           // Block on the frame-step condvar until the hold completes — no
           // busy-wait.
-          g_ipc_instance->wait_frame_step_done();
+          g_ipc_instance->wait_frame_step_done(ticket);
         }
         ipc_apply_keypress(scancode, keyboard_matrix, false);
         // Resume only if the tap itself stopped us. If a breakpoint fired
@@ -3626,6 +3645,7 @@ std::string handle_command(const std::string& line) {
             !g_ipc_instance->breakpoint_hit_pending()) {
           cpc_run();
         }
+        return true;
       };
 
       // Parse optional trailing "hold=<frames>" args (start = index of the
@@ -3718,7 +3738,9 @@ std::string handle_command(const std::string& line) {
         if (hold < 0)
           return "ERR 400 bad-hold (usage: input key <name> "
                  "[hold=<frames>=1+])\n";
-        tap_scancode(scancode, hold);
+        if (!tap_scancode(scancode, hold)) {
+          return err_with_context(409, "frame-step-busy");
+        }
         return "OK\n";
       }
       if (parts[1] == "chord" && parts.size() >= 3) {
@@ -3750,7 +3772,9 @@ std::string handle_command(const std::string& line) {
         if (hold < 0)
           return "ERR 400 bad-hold (usage: input chord <MOD+KEY> "
                  "[hold=<frames>=1+])\n";
-        tap_scancode(static_cast<CPCScancode>(scancode | mods), hold);
+        if (!tap_scancode(static_cast<CPCScancode>(scancode | mods), hold)) {
+          return err_with_context(409, "frame-step-busy");
+        }
         return "OK\n";
       }
       if (parts[1] == "type") {
@@ -4097,16 +4121,17 @@ std::string handle_command(const std::string& line) {
         // unpaced -H loop, ~1800 frames/s). A paused one can still complete
         // the frame it was in when the pause landed, so check afterwards too.
         bool const was_paused = CPC.paused;
-        g_ipc_instance->arm_frame_step(count);
+        uint64_t const ticket = g_ipc_instance->arm_frame_step(count);
+        if (ticket == 0) return err_with_context(409, "frame-step-busy");
         if (was_paused) {
           // cpc_run(): with a bare resume the frames never came when another
           // actor held a pause lease at this instant, and the wait timed out
           // on a machine nobody had started (beads-pja3).
           cpc_run();
-          if (!g_ipc_instance->frame_step_active.load()) cpc_pause();
+          if (!g_ipc_instance->frame_step_running(ticket)) cpc_pause();
         }
-        switch (
-            g_ipc_instance->wait_frame_step_until(deadline, server_stopping)) {
+        switch (g_ipc_instance->wait_frame_step_until(ticket, deadline,
+                                                      server_stopping)) {
           case KoncepcjaIpcServer::FrameStepWait::Done:
             return ok_with_context();
           case KoncepcjaIpcServer::FrameStepWait::Breakpoint:
@@ -6574,10 +6599,28 @@ bool KoncepcjaIpcServer::consume_breakpoint_hit(uint16_t& pc,
 
 // --- Frame step synchronization ---
 
-void KoncepcjaIpcServer::arm_frame_step(int n, uint64_t after_serial) {
+uint64_t KoncepcjaIpcServer::arm_frame_step(int n, uint64_t after_serial) {
+  std::lock_guard<std::mutex> const owner(frame_step_owner_mutex);
+  if (frame_step_active.load()) return 0;
   frame_step_after_serial.store(after_serial);
   frame_step_remaining.store(n);
+  uint64_t const ticket = frame_step_ticket.load() + 1;
+  frame_step_ticket.store(ticket);
+  // Last: the frame runner counts nothing until the step is whole.
   frame_step_active.store(true);
+  return ticket;
+}
+
+bool KoncepcjaIpcServer::frame_step_running(uint64_t ticket) const {
+  std::lock_guard<std::mutex> const owner(frame_step_owner_mutex);
+  return frame_step_active.load() && frame_step_ticket.load() == ticket;
+}
+
+void KoncepcjaIpcServer::cancel_frame_step(uint64_t ticket) {
+  std::lock_guard<std::mutex> const owner(frame_step_owner_mutex);
+  if (frame_step_ticket.load() != ticket) return;
+  frame_step_active.store(false);
+  frame_step_remaining.store(0);
 }
 
 bool KoncepcjaIpcServer::frame_step_tick(uint64_t frame_kbd_serial) {
@@ -6593,7 +6636,7 @@ void KoncepcjaIpcServer::notify_frame_step_done() {
   frame_step_cv.notify_all();
 }
 
-void KoncepcjaIpcServer::wait_frame_step_done() {
+void KoncepcjaIpcServer::wait_frame_step_done(uint64_t ticket) {
   // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated
   // (out-param/compound-assign/loop/reference)
   std::unique_lock<std::mutex> lock(frame_step_mutex);
@@ -6605,9 +6648,9 @@ void KoncepcjaIpcServer::wait_frame_step_done() {
   // poll) wedged the socket and every later command on it (beads-7983).
   // Poll instead, and abandon the step if the machine stopped under us; the
   // breakpoint's own pause is the caller's to observe via `wait bp`.
-  while (frame_step_active.load()) {
-    if (frame_step_cv.wait_for(lock, std::chrono::milliseconds(50),
-                               [this] { return !frame_step_active.load(); })) {
+  auto const done = [this, ticket] { return !frame_step_running(ticket); };
+  while (!done()) {
+    if (frame_step_cv.wait_for(lock, std::chrono::milliseconds(50), done)) {
       return;
     }
     // cpc_stopped(), not CPC.paused: a pause lease held by another client
@@ -6615,20 +6658,19 @@ void KoncepcjaIpcServer::wait_frame_step_done() {
     // lets it run on. Taking that for a stop abandoned the step after a few
     // frames and left the machine running (beads-3o1.1).
     if (cpc_stopped()) {
-      frame_step_active.store(false);
-      frame_step_remaining.store(0);
+      cancel_frame_step(ticket);
       return;
     }
   }
 }
 
 KoncepcjaIpcServer::FrameStepWait KoncepcjaIpcServer::wait_frame_step_until(
-    std::chrono::steady_clock::time_point deadline,
+    uint64_t ticket, std::chrono::steady_clock::time_point deadline,
     const std::function<bool()>& should_abort) {
   // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated
   // (out-param/compound-assign/loop/reference)
   std::unique_lock<std::mutex> lock(frame_step_mutex);
-  auto const done = [this] { return !frame_step_active.load(); };
+  auto const done = [this, ticket] { return !frame_step_running(ticket); };
   for (;;) {
     // Sliced: notify_frame_step_done() signals without the mutex, so a wakeup
     // can be missed, and the stop conditions below are not signalled at all.
@@ -6646,8 +6688,7 @@ KoncepcjaIpcServer::FrameStepWait KoncepcjaIpcServer::wait_frame_step_until(
     } else {
       continue;
     }
-    frame_step_active.store(false);
-    frame_step_remaining.store(0);
+    cancel_frame_step(ticket);
     return why;
   }
 }
