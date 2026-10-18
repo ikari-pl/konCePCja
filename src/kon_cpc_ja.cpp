@@ -2438,8 +2438,12 @@ bool cpc_commit_breakpoint_stop(uint64_t hit_epoch, uint64_t arming_generation,
 
   cpc_stop_requested_locked(hit);
   cpc_pause_locked();
-  cpc_reconcile_run_state_locked();
+  // The hit before the announcement: a walk reads both without this mutex,
+  // and one that saw the stop first took it for an arrival with no hit, so
+  // `step to` onto its own breakpoint answered stopped-elsewhere
+  // (beads-1meo).
   z80_call_breakpoint_hit_hook(hook_pc, watchpoint, arming_generation);
+  cpc_reconcile_run_state_locked();
   return true;
 }
 
