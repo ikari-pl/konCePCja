@@ -297,6 +297,9 @@ TEST_F(EmuFramePacingTest, PacedFramesReportTheirSleep) {
         work_ms, attempts.c_str());
   }
   EXPECT_EQ(0u, subcycle_bridge_take_sleep_ticks()) << "take must reset";
+  // Paced frames made this thread a pacing thread (host_pacing_thread); an
+  // unpaced one hands it back to the tests after this one as an ordinary one.
+  subcycle_bridge_frame(rows, nullptr, /*limit=*/false);
 
   subcycle_bridge_frame(rows, nullptr, /*limit=*/false);
   EXPECT_EQ(0u, subcycle_bridge_take_sleep_ticks())
