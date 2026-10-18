@@ -1145,6 +1145,115 @@ def test_sdisc_commands_reach_the_running_machine():
     return True
 
 
+def test_sdisc_enabled_at_run_time_is_fitted():
+    """A Silicon Disc switched on or off at run time is on the board at once.
+
+    `config set silicon_disc` and `sdisc load` on a disabled disc only set
+    the host flag; the board gained banks 4-7 at the next rebuild, so on a
+    128K machine the CPC's bank 4 was still expansion bank 0 while `sdisc
+    status` said enabled (beads-t9vs). Here a Z80 program writes bank 4
+    and the disc's image, expansion bank 0 and a re-fitted disc are checked.
+    """
+    print("Running sdisc enabled at run time is fitted test...")
+    base, park = 0x8000, 0x8020
+
+    def program(ram_config, body):
+        # DI : select ram_config : body : back to config 0 : park at `park`
+        code = bytes([0xF3, 0x01, ram_config, 0x7F, 0xED, 0x49]) + body + \
+            bytes([0x01, 0xC0, 0x7F, 0xED, 0x49])
+        code += bytes(park - base - len(code)) + bytes([0x18, 0xFE])
+        return code
+
+    # config 4 of bank 4 (&E4) / bank 0 (&C4): that bank's first 16K at &4000
+    write_bank4 = program(0xE4, bytes([0x21, 0x00, 0x40, 0x36, 0x5A, 0x23,
+                                       0x36, 0xA5]))
+    copy = bytes([0x2A, 0x00, 0x40, 0x22, 0x00, 0x90])  # (&9000) = (&4000)
+    read_bank4, read_bank0 = program(0xE4, copy), program(0xC4, copy)
+
+    def run(ipc, code):
+        for cmd in (f'mem write 0x{base:04X} {code.hex()}',
+                    f'reg set PC 0x{base:04X}',
+                    f'wait pc 0x{park:04X} 5000'):
+            ok, resp = ipc.send_command(cmd)
+            if not ok:
+                print(f"FAIL: {cmd}: {resp}")
+                return False
+        return True
+
+    def word(ipc, code):
+        if not run(ipc, code):
+            return None
+        ok, resp = ipc.send_command('mem read 0x9000 2')
+        return resp.split()[-1].upper() if ok else resp
+
+    def send(ipc, cmd):
+        ok, resp = ipc.send_command(cmd)
+        if not ok:
+            print(f"FAIL: {cmd}: {resp}")
+        return ok
+
+    tmpdir = tempfile.mkdtemp(prefix='sdisc_')
+    try:
+        saved = os.path.join(tmpdir, 'saved.ksdx')
+        with EmulatorRunner() as emu:
+            if not emu.start('-O', 'system.silicon_disc=0',
+                             '-O', 'system.ram_size=128'):
+                print("FAIL: Could not start emulator")
+                return False
+            ipc = emu.ipc
+            ipc.pause()
+            if not send(ipc, 'config set silicon_disc 1') or \
+                    not run(ipc, write_bank4):
+                return False
+            got = word(ipc, read_bank0)
+            if got != '0000':
+                print(f"FAIL: expansion bank 0 reads {got} after the CPC "
+                      "wrote bank 4: the disc was not fitted")
+                return False
+            if not send(ipc, f'sdisc save {saved}'):
+                return False
+            with open(saved, 'rb') as f:
+                data = f.read()
+            if data[8:10] != b'\x5a\xa5':
+                print(f"FAIL: the disc holds {data[8:10].hex()} where the "
+                      "CPC wrote 5aa5 to bank 4")
+                return False
+
+            # Taken out, bank 4 is no longer there; put back, the battery
+            # kept what the CPC wrote.
+            if not send(ipc, 'config set silicon_disc 0'):
+                return False
+            got = word(ipc, read_bank4)
+            if got == '5AA5':
+                print("FAIL: bank 4 still reads the disc after it was "
+                      "switched off")
+                return False
+            if not send(ipc, 'config set silicon_disc 1'):
+                return False
+            got = word(ipc, read_bank4)
+            if got != '5AA5':
+                print(f"FAIL: the re-fitted disc reads {got}, expected 5AA5")
+                return False
+
+            # `sdisc load` on a switched-off disc fits it too.
+            if not send(ipc, 'config set silicon_disc 0') or \
+                    not send(ipc, f'sdisc load {saved}'):
+                return False
+            got = word(ipc, read_bank4)
+            if got != '5AA5':
+                print(f"FAIL: after sdisc load on a disabled disc bank 4 "
+                      f"reads {got}, expected 5AA5")
+                return False
+            ok, resp = ipc.send_command('status')
+            if not ok or 'paused=1' not in resp:
+                print(f"FAIL: the sets ran the machine: {resp}")
+                return False
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+    print("PASS: sdisc enabled at run time is fitted")
+    return True
+
+
 def test_wait_pc_timeout_ends_stopped():
     """`wait pc` that times out must answer only once the machine HAS stopped.
 
@@ -4914,6 +5023,7 @@ def main():
         test_pause_replies_once_stopped,
         test_config_set_machine_keys_on_a_running_machine,
         test_sdisc_commands_reach_the_running_machine,
+        test_sdisc_enabled_at_run_time_is_fitted,
         test_wait_pc_timeout_ends_stopped,
         test_wait_pc_is_exact,
         test_wait_pc_aborts_on_shutdown,

@@ -1939,7 +1939,15 @@ void DevToolsUI::render_silicon_disc() {
     return;
   }
 
-  ImGui::Checkbox("Enabled", &g_silicon_disc.enabled);
+  // Fitted on, or taken off, the running board (beads-t9vs)
+  bool fitted = g_silicon_disc.enabled;
+  if (ImGui::Checkbox("Enabled", &fitted)) {
+    sd_with_machine([fitted] {
+      subcycle_bridge_silicon_disc_fit(fitted);
+      ga_memory_manager();
+    });
+    sd_usage_dirty_ = true;
+  }
   ImGui::Separator();
 
   // Bank usage bars (% non-zero bytes per 64K bank) — cached to avoid 256K scan
@@ -1972,7 +1980,7 @@ void DevToolsUI::render_silicon_disc() {
     }
     if (ImGui::SmallButton("Refresh Usage")) sd_usage_dirty_ = true;
   } else {
-    ImGui::TextDisabled("Not initialized (enable and reset to allocate)");
+    ImGui::TextDisabled("Not initialized (enable to allocate)");
   }
 
   ImGui::Separator();

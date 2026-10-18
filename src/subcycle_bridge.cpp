@@ -760,6 +760,18 @@ void subcycle_bridge_silicon_disc_copy_in(const uint8_t* src) {
     b.machine.silicon_disc_load(g_silicon_disc.data, SILICON_DISC_SIZE);
 }
 
+void subcycle_bridge_silicon_disc_fit(bool on) {
+  Bridge& b = g_bridge;
+  if (on) silicon_disc_init(g_silicon_disc);  // idempotent
+  if (b.active && b.machine.silicon_disc_enabled() != on) {
+    if (!on && g_silicon_disc.data != nullptr)
+      b.machine.silicon_disc_save(g_silicon_disc.data, SILICON_DISC_SIZE);
+    b.machine.enable_silicon_disc(on);
+    if (on) b.machine.silicon_disc_load(g_silicon_disc.data, SILICON_DISC_SIZE);
+  }
+  g_silicon_disc.enabled = on;
+}
+
 const Device* subcycle_bridge_fdc() {
   return g_bridge.active ? g_bridge.machine.fdc() : nullptr;
 }

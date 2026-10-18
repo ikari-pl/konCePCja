@@ -169,6 +169,13 @@ const Device* subcycle_bridge_fdc();
 void subcycle_bridge_silicon_disc_copy_out(uint8_t* dst);
 void subcycle_bridge_silicon_disc_copy_in(const uint8_t* src);
 
+/* Fits the Silicon Disc on the running board, or takes it out (beads-t9vs),
+ * and sets g_silicon_disc.enabled to match. Fitted, the board's banks 4-7
+ * get g_silicon_disc.data (allocated here); taken out, the board's copy goes
+ * back to it first, as the battery keeps it. The caller holds the machine
+ * still and alone (CpcPauseLease::change_alone): the CPU banks that RAM. */
+void subcycle_bridge_silicon_disc_fit(bool on);
+
 // --- Run-tier policy (F9, beads-3wyl; user decision 2026-07-10) -----------
 // Auto = RunTier::Fast, dropping to Wake for as long as the debugger is
 // engaged (any breakpoint / watchpoint / IO breakpoint set — the per-cycle

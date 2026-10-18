@@ -813,10 +813,7 @@ IpcConfigStatus ipc_config_set(const std::string& key, const std::string& value,
       return IpcConfigStatus::BadValue;
     }
     bool const changed = config_change_machine(hold, [v] {
-      g_silicon_disc.enabled = (v != 0);
-      if (g_silicon_disc.enabled && !g_silicon_disc.data) {
-        silicon_disc_init(g_silicon_disc);
-      }
+      subcycle_bridge_silicon_disc_fit(v != 0);
       ga_memory_manager();
     });
     return changed ? IpcConfigStatus::Ok : IpcConfigStatus::NotIdle;
@@ -5585,10 +5582,6 @@ std::string handle_command(const std::string& line) {
         for (const auto& comp : std::filesystem::path(parts[2])) {
           if (comp == "..") return "ERR 403 path-traversal\n";
         }
-        if (!g_silicon_disc.enabled) {
-          g_silicon_disc.enabled = true;
-          silicon_disc_init(g_silicon_disc);
-        }
         SiliconDisc image;  // read before the lease, copied in under it
         if (!silicon_disc_load(image, parts[2])) {
           silicon_disc_free(image);
@@ -5596,6 +5589,7 @@ std::string handle_command(const std::string& line) {
         }
         bool const loaded =
             config_change_machine(IpcConfigHold::Lease, [&image] {
+              subcycle_bridge_silicon_disc_fit(true);  // a disabled disc too
               subcycle_bridge_silicon_disc_copy_in(image.data);
               ga_memory_manager();
             });
