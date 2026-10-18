@@ -435,8 +435,9 @@ handled at once; beyond that a refused connection is simply closed.
 
 Every request that changes the machine runs on the client's reader thread
 under a `CpcPauseLease`, the same way the text IPC's `reg set` and `reset`
-do (the one exception is a write beside reads of a running machine, which
-the runner takes at a frame boundary: see *Writes beside reads* below):
+do (the one exception is a write to a running machine that clients read or
+that runs unpaced, which the runner takes at a frame boundary: see *Writes
+beside reads* and *Writes made together* below):
 
 1. Take the lease. If `idle()` is false, call `restore_run_state()` and
    answer `BUSY`.
@@ -517,11 +518,29 @@ can hold the machine. A write costs one frame then, and the machine is never
 paused for it (beads-df1x; three readers of 64 KiB and a writer, paced: 19
 writes a second before, 41 to 48 after; unpaced: 146 to 174 writes and 637
 to 791 frames a second before, 2728 to 2803 of both after). With nobody
-reading, and on a paused machine, the write takes its lease at once, which
-waits for no boundary at all (thousands of writes a second). A write the
-runner has not taken within 50 ms (the machine paused under it, or no frame
-came) takes its lease after all. A client with a lot to write puts it in one
-`MEM_WRITE`. The other changes (media, the tape deck, snapshots,
+reading, on a paced machine, and on a paused one, the write takes its lease
+at once, which waits for no boundary at all (thousands of writes a second).
+A write the runner has not taken within 50 ms (the machine paused under it,
+or no frame came) takes its lease after all. A client with a lot to write
+puts it in one `MEM_WRITE`.
+
+**Writes made together.** On an unpaced machine a lease per write stops a
+runner that has no sleep to give: a controller writing back to back with
+nobody reading cut it from ~3000 to ~150 frames a second (beads-dws9). So an
+unpaced running machine takes its writes at the frame boundary too, read or
+not (`subcycle_bridge_paced()` says which), and the reader thread makes the
+writes that have arrived together as one change: when a `REGS_SET` or
+`MEM_WRITE` of the controller is read, the ones that follow it in what the
+socket has already delivered (up to 256 requests or 1 MiB of payload) join
+it, are checked one by one as on their own, made in order at one boundary
+or under one lease, and then answered one by one, in request order; a
+request behind them is served after their replies. Nothing is held back
+waiting for a write that has not arrived. Measured under `-H`, unpaced, a
+write-only controller: 22000 writes and 143 frames a second before, ~2930
+of both after when it waits for each reply, and 32 writes sent together
+are one change (~54000 writes and ~2900 frames a second, against 90000 and
+131). Paced, a lease per run, unchanged (~2000-4500 writes a second, the
+same spread before and after). The other changes (media, the tape deck, snapshots,
 configuration) do file I/O or more, and stay off the runner: one that finds
 reads waiting on a running machine lets one frame boundary pass first, at
 most 50 ms, and then takes its lease.
@@ -666,7 +685,7 @@ has stalled (`frame_pacer.h`).
 
 When the server stops, it logs where the gate took the reads of that run
 (`KCPC: reads served: N at a frame boundary, N while paused, N by fallback,
-N busy`), so "did a client cost the machine pauses?" can be answered from a
+N busy; N writes at a frame boundary in N changes`), so "did a client cost the machine pauses?" can be answered from a
 log: only the last two numbers are leases.
 
 ### Seam 3: the bridge probe and `debug_sync`, for events

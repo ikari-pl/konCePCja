@@ -1254,6 +1254,90 @@ TEST_F(KcpcControlTest, ObserversWritesAnswerNotControllerAndReachNothing) {
   EXPECT_EQ(writes_.mem_writes.load(), 1);
 }
 
+// Writes the controller sends together are made together, in one call of
+// `writes` (one frame boundary or one pause lease in the core), and each is
+// answered in the order it came: a refused one among them included, and the
+// request that follows the run after all of them (beads-dws9).
+TEST_F(KcpcControlTest, WritesSentTogetherAreMadeTogetherAndAnsweredInOrder) {
+  kcpc::ServerConfig config = test_config();
+  reads_.attach(config);
+  writes_.attach(config);
+  std::mutex mutex;
+  std::vector<std::vector<std::uint16_t>> runs;  // the HL of each REGS_SET
+  config.writes = [&](std::vector<kcpc::WriteOp>& ops) {
+    std::vector<std::uint16_t> run;
+    for (kcpc::WriteOp& op : ops) {
+      op.status = Status::kOk;
+      op.stamp = {77, false};
+      if (!op.mem) {
+        op.after = FakeReads::regs();
+        op.after.hl = op.regs.regs.hl;
+        run.push_back(op.regs.regs.hl);
+      } else {
+        run.push_back(static_cast<std::uint16_t>(op.len));
+      }
+    }
+    std::scoped_lock const lock(mutex);
+    runs.push_back(run);
+  };
+  start(config);
+  kcpc::HelloReply hello;
+  auto controller = join(kcpc::Role::kController, hello);
+  ASSERT_EQ(hello.role, kcpc::Role::kController);
+
+  constexpr std::uint32_t kHl = 1U << 3;  // AF, BC, DE, HL, ...
+  kcpc::Regs one = FakeReads::regs();
+  one.hl = 0x1111;
+  kcpc::Regs two = FakeReads::regs();
+  two.hl = 0x2222;
+  auto frame_of = [](Opcode opcode, std::uint32_t id,
+                     const std::vector<std::uint8_t>& payload) {
+    return kcpc::encode_frame(kcpc::Kind::kRequest,
+                              static_cast<std::uint16_t>(opcode), id, payload);
+  };
+  std::vector<std::uint8_t> together;
+  for (const auto& f :
+       {frame_of(Opcode::kRegsSet, 2, regs_set_payload(kHl, one)),
+        frame_of(Opcode::kMemWrite, 3,
+                 mem_write_payload(kcpc::MemSpace::kCpuRam, 0x4000, {1, 2, 3})),
+        frame_of(Opcode::kMemWrite, 4,
+                 mem_write_payload(kcpc::MemSpace::kCpu, 0x4000, {9})),
+        frame_of(Opcode::kRegsSet, 5, regs_set_payload(kHl, two)),
+        frame_of(Opcode::kPing, 6, {})}) {
+    together.insert(together.end(), f.begin(), f.end());
+  }
+  ASSERT_TRUE(controller->send(together));
+
+  Status const expected[] = {Status::kOk, Status::kOk, Status::kBadPayload,
+                             Status::kOk, Status::kOk};
+  for (std::uint32_t id = 2; id <= 6; ++id) {
+    Frame frame;
+    ASSERT_TRUE(controller->receive(frame)) << "reply " << id;
+    EXPECT_EQ(frame.header.id, id) << "the replies come in request order";
+    EXPECT_EQ(frame.status(), expected[id - 2]) << "reply " << id;
+    if (id == 5) {
+      kcpc::Reader r(frame.payload);
+      r.skip(4);
+      kcpc::Stamp stamp;
+      kcpc::Regs after;
+      ASSERT_TRUE(kcpc::read_stamp(r, stamp));
+      ASSERT_TRUE(kcpc::read_regs(r, after));
+      EXPECT_EQ(stamp.frame, 77U);
+      EXPECT_EQ(after.hl, 0x2222);
+    }
+  }
+  // The request read behind the run was answered once.
+  ASSERT_TRUE(controller->request(Opcode::kPing, 7));
+  Frame frame;
+  ASSERT_TRUE(controller->receive(frame));
+  EXPECT_EQ(frame.header.id, 7U);
+  std::scoped_lock const lock(mutex);
+  ASSERT_EQ(runs.size(), 1U) << "the three writes that pass are one change";
+  EXPECT_EQ(runs[0], (std::vector<std::uint16_t>{0x1111, 3, 0x2222}));
+  EXPECT_EQ(writes_.regs_sets.load(), 0) << "not one by one";
+  EXPECT_EQ(writes_.mem_writes.load(), 0);
+}
+
 TEST_F(KcpcControlTest, ControlIsAcquiredOnlyWhenFreeUnlessForced) {
   start_writable();
   kcpc::HelloReply a_hello;

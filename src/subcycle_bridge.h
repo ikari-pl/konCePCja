@@ -67,6 +67,11 @@ const std::vector<int16_t>& subcycle_bridge_frame(const uint8_t rows[16],
  * auto frameskip. */
 bool subcycle_bridge_frame_was_late();
 
+/* Whether the last subcycle_bridge_frame() call was paced to 50 Hz (true
+ * before the first). Any thread: a socket thread reads it to judge what a
+ * pause of the machine costs it. */
+bool subcycle_bridge_paced();
+
 /* The frame runner found the machine in an announced stop: the pacer does not
  * make up the time (FramePacer::stopped()). Frame runner only, like the frame
  * itself. */
