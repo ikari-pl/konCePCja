@@ -100,6 +100,8 @@ class Gate {
     // boundary and without a stopped machine.
     std::uint64_t fallback = 0;
     std::uint64_t busy = 0;  // the lease was refused
+    // at_boundary() work, run by the runner.
+    std::uint64_t writes = 0;
   };
 
   explicit Gate(GateHost host, GateTuning tuning = {});
@@ -110,6 +112,14 @@ class Gate {
   // returns when it has run. `cost` is the number of bytes it copies. Call
   // from a reader thread, never from the runner.
   GateResult read(std::size_t cost, const Work& work);
+
+  // Queues `work` for the runner, behind the reads already queued, and waits
+  // up to `timeout_ms` for the frame boundary that runs it. Unlike a read's,
+  // this work may change the machine: it only ever runs on the runner, between
+  // two frames. False, with work not run, when the machine is paused, pauses
+  // before the boundary, or no boundary comes in time: the caller takes it
+  // another way. Not counted in waiting(). Call from a reader thread.
+  bool at_boundary(std::size_t cost, int timeout_ms, const Work& work);
 
   // The runner's half, called once per completed frame from the shared frame
   // epilogue: counts the frame and runs queued reads within the budget. With
@@ -129,6 +139,14 @@ class Gate {
   // machine. A writer looks at this to let them in between two writes.
   std::size_t waiting() const {
     return waiting_.load(std::memory_order_acquire);
+  }
+  // Whether clients are reading: a read is waiting, or the runner served one
+  // at one of the last kReadingFrames boundaries. A reader that has just been
+  // answered is not waiting, but its next read is on its way.
+  static constexpr std::uint64_t kReadingFrames = 4;
+  bool reading() const {
+    std::uint64_t const last = last_read_frame_.load(std::memory_order_acquire);
+    return waiting() != 0 || (last != 0 && frame() - last <= kReadingFrames);
   }
   Counters counters() const;
 
@@ -151,6 +169,9 @@ class Gate {
   GateTuning tuning_;
 
   std::atomic<std::uint64_t> frame_{0};
+  // The boundary at which the runner last served a read; 0 until it has
+  // served one (the first boundary is frame 1).
+  std::atomic<std::uint64_t> last_read_frame_{0};
   // Mirrors the length of the list below so the runner can skip the mutex.
   std::atomic<std::size_t> queued_{0};
   std::atomic<std::size_t> waiting_{0};
@@ -167,6 +188,7 @@ class Gate {
   std::atomic<std::uint64_t> while_paused_{0};
   std::atomic<std::uint64_t> fallback_{0};
   std::atomic<std::uint64_t> busy_{0};
+  std::atomic<std::uint64_t> writes_{0};
 };
 
 }  // namespace kcpc

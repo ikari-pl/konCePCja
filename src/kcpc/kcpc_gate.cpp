@@ -19,6 +19,7 @@ constexpr auto kSettlePoll = std::chrono::microseconds(100);
 struct Gate::Job {
   const Work* work = nullptr;
   std::size_t cost = 0;
+  bool write = false;  // queued by at_boundary(), not read()
   std::atomic<JobState> state{JobState::kQueued};
   Job* prev = nullptr;
   Job* next = nullptr;
@@ -140,6 +141,17 @@ GateResult Gate::read(std::size_t cost, const Work& work) {
   }
 }
 
+bool Gate::at_boundary(std::size_t cost, int timeout_ms, const Work& work) {
+  if (host_.paused()) return false;
+  Job job;
+  job.work = &work;
+  job.cost = cost;
+  job.write = true;
+  WaitEnd end = WaitEnd::kTimedOut;
+  return wait_at_boundary(
+      job, Clock::now() + std::chrono::milliseconds(timeout_ms), end);
+}
+
 void Gate::service_frame() {
   // Single writer: only the runner counts frames.
   std::uint64_t const frame = frame_.load(std::memory_order_relaxed) + 1;
@@ -164,7 +176,12 @@ void Gate::service_frame() {
     lock.unlock();
     (*job.work)(stamp);
     spent += job.cost;
-    at_boundary_.fetch_add(1, std::memory_order_relaxed);
+    if (job.write) {
+      writes_.fetch_add(1, std::memory_order_relaxed);
+    } else {
+      at_boundary_.fetch_add(1, std::memory_order_relaxed);
+      last_read_frame_.store(frame, std::memory_order_release);
+    }
     lock.lock();
     // Stored and announced under the mutex, so the reader cannot miss it
     // between its check and its wait. Once the mutex is released the job may
@@ -193,6 +210,7 @@ Gate::Counters Gate::counters() const {
   c.while_paused = while_paused_.load(std::memory_order_relaxed);
   c.fallback = fallback_.load(std::memory_order_relaxed);
   c.busy = busy_.load(std::memory_order_relaxed);
+  c.writes = writes_.load(std::memory_order_relaxed);
   return c;
 }
 
