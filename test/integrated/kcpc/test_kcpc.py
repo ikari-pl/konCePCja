@@ -1098,9 +1098,29 @@ def text_reg(core: Core, field: str) -> int:
     return int(resp[3:], 16)
 
 
-def controller(core: Core, name: str) -> KcpcClient:
+class Controller(KcpcClient):
+    """A client that holds control and gives it back before it closes.
+
+    A closed socket is not a release the server sees in order: its EOF
+    reaches the old connection's reader on one thread while the next
+    client's HELLO reaches a new reader on another, and the HELLO can come
+    first and be made an observer (beads-5t1v). CONTROL release is answered
+    after control is free, so the next controller() finds it free."""
+
+    def __exit__(self, exc_type, *exc) -> None:
+        try:
+            # Not when the test closed it already, or failed in the block.
+            if exc_type is None and self.sock.fileno() != -1:
+                self.release_control()
+        except (KcpcClosed, ConnectionError):
+            pass  # the core ended the connection, and freed control first
+        finally:
+            self.close()
+
+
+def controller(core: Core, name: str) -> Controller:
     """A client that asked for control in HELLO and got it."""
-    c = core.client()
+    c = Controller(core.binary_port, timeout=IO_TIMEOUT_S)
     hello = c.hello(name, role=kc.ROLE_CONTROLLER)
     assert hello.role == kc.ROLE_CONTROLLER, 'control was not free'
     assert hello.caps & kc.CAP_MACHINE_WRITE, f'caps {hello.caps:#x}'
@@ -2203,6 +2223,19 @@ def test_subscribers_do_not_change_what_the_machine_computes() -> None:
             f'RAM differs after the same {frames} frames')
         print(f'    2 subscribers, {frames} frame events each: registers '
               'and RAM identical')
+
+
+def test_each_controller_finds_control_free() -> None:
+    """beads-5t1v: a controller() opened right after the previous one's
+    with-block closed must be given control. A closed socket is only seen by
+    the server when the old connection's reader reads EOF, so the next HELLO
+    could overtake it and be made an observer ('control was not free')."""
+    turns = 200
+    with Core() as core:
+        for turn in range(turns):
+            with controller(core, f'turn {turn}') as c:
+                c.ping()
+        print(f'    {turns} controllers in a row, each given control')
 
 
 # -- beads-pja3: another actor's pause lease is not a stop -----------------
@@ -4860,6 +4893,7 @@ TESTS: List[Callable[[], None]] = [
     test_a_client_that_stops_reading_is_told_what_it_missed,
     test_control_changes_reach_every_client,
     test_subscribers_do_not_change_what_the_machine_computes,
+    test_each_controller_finds_control_free,
     test_a_lease_does_not_end_a_text_ipc_walk,
     test_a_run_for_a_frame_step_is_not_lost_to_a_lease,
     test_a_breakpoint_hit_is_pushed_to_both_clients,
