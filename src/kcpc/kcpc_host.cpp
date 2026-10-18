@@ -126,22 +126,20 @@ kcpc::GateHost gate_host() {
 kcpc::Gate g_gate{gate_host()};
 kcpc::Server g_kcpc_server;
 
-// Runs change(stamp) with nothing clocking the machine and no other pause
-// lease held, then puts the run state back. The stamp says what the run
-// state was, and is, around the change.
-// Every write pauses the machine between two frames, and reads of a running
-// machine are taken at a frame boundary. A controller that sends its next
-// write as soon as the last is answered would leave the runner no frame at
-// all, and every read beside it would wait out the gate's fallback and take a
-// pause lease (measured on CI: 15 reads in 1.5 s from three clients). So a
-// write that finds reads waiting on a running machine lets one frame boundary
-// pass first. With nobody reading, and on a paused machine, it waits for
-// nothing.
+// How long a change waits for a frame boundary. A paced frame is 20 ms; this
+// is that and room for a late wake-up. A runner that turns out no frame in
+// that time does not hold the change up any longer.
+constexpr int kBoundaryWaitMs = 50;
+
+// Every change under a lease pauses the machine between two frames, and reads
+// of a running machine are taken at a frame boundary. A client that sends its
+// next change as soon as the last is answered would leave the runner no frame
+// at all, and every read beside it would wait out the gate's fallback and take
+// a pause lease (measured on CI: 15 reads in 1.5 s from three clients). So a
+// change that finds reads waiting on a running machine lets one frame
+// boundary pass first. With nobody reading, and on a paused machine, it waits
+// for nothing.
 void let_waiting_reads_in() {
-  // A paced frame is 20 ms; this is that and room for a late wake-up. A
-  // runner that turns out no frame in that time does not hold the write up
-  // any longer.
-  constexpr int kBoundaryWaitMs = 50;
   if (g_gate.waiting() == 0) return;
   std::uint64_t const frame = g_gate.frame();
   auto const deadline = std::chrono::steady_clock::now() +
@@ -153,9 +151,11 @@ void let_waiting_reads_in() {
   }
 }
 
+// Runs change(stamp) with nothing clocking the machine and no other pause
+// lease held, then puts the run state back. The stamp says what the run
+// state was, and is, around the change.
 template <typename Change>
-Status changed(Change&& change) {
-  let_waiting_reads_in();
+Status alone_changed(Change&& change) {
   Status status = Status::kInternal;
   bool const ran = alone_under_lease([&](bool was_paused) {
     kcpc::Stamp stamp;
@@ -164,6 +164,34 @@ Status changed(Change&& change) {
     status = change(stamp);
   });
   return ran ? status : Status::kBusy;
+}
+
+// changed() with the boundary wait, for every change but the two writes.
+template <typename Change>
+Status changed(Change&& change) {
+  let_waiting_reads_in();
+  return alone_changed(std::forward<Change>(change));
+}
+
+// changed() for a write of registers or memory, the requests a controller
+// sends back to back. While clients read a running machine the write is
+// queued behind their reads and the runner takes it at the same frame
+// boundary: it costs one frame and no pause, where letting a boundary pass and
+// then taking a lease cost two to three, and the leases took the frames the
+// reads were waiting for (beads-df1x). With nobody reading, or on a paused
+// machine, the lease is quicker: it waits for no boundary at all.
+// `change` runs on the runner then, so it must only touch the machine.
+template <typename Change>
+Status written(std::size_t cost, Change&& change) {
+  if (g_gate.reading()) {
+    Status status = Status::kInternal;
+    if (g_gate.at_boundary(
+            cost, kBoundaryWaitMs,
+            [&](const kcpc::Stamp& stamp) { status = change(stamp); })) {
+      return status;
+    }
+  }
+  return alone_changed(std::forward<Change>(change));
 }
 
 void to_wire(const Z80Regs& z, kcpc::Regs& regs) {
@@ -1058,7 +1086,7 @@ Status kcpc_host_regs_set(std::uint32_t mask, const kcpc::Regs& values,
   request.mask = mask;
   request.regs = values;
   if (kcpc::regs_set_refusal(request) != nullptr) return Status::kBadPayload;
-  return changed([&](const kcpc::Stamp& taken) {
+  return written(sizeof(kcpc::Regs), [&](const kcpc::Stamp& taken) {
     if (subcycle_bridge_machine() == nullptr) return Status::kInternal;
     Z80Regs z{};
     z.af = values.af;
@@ -1098,7 +1126,7 @@ Status kcpc_host_mem_write(const kcpc::MemWriteRequest& request,
       !kcpc::mem_range_ok(request.addr, len32, kcpc::kCpuSpaceSize)) {
     return Status::kOutOfRange;
   }
-  Status const status = changed([&](const kcpc::Stamp& taken) {
+  Status const status = written(len, [&](const kcpc::Stamp& taken) {
     subcycle::Machine* machine = subcycle_bridge_machine();
     if (machine == nullptr) return Status::kInternal;
     if (space == kcpc::MemSpace::kCpuRam) {
@@ -1755,10 +1783,10 @@ void kcpc_host_stop() {
   // Where the reads of this run were taken: the answer to "did a client cost
   // the machine pauses?" without a debugger.
   kcpc::Gate::Counters const c = g_gate.counters();
-  LOG_INFO("KCPC: reads served: " << c.at_boundary << " at a frame boundary, "
-                                  << c.while_paused << " while paused, "
-                                  << c.fallback << " by fallback, " << c.busy
-                                  << " busy");
+  LOG_INFO("KCPC: reads served: "
+           << c.at_boundary << " at a frame boundary, " << c.while_paused
+           << " while paused, " << c.fallback << " by fallback, " << c.busy
+           << " busy; " << c.writes << " writes at a frame boundary");
 }
 
 int kcpc_host_port() { return g_kcpc_server.port(); }

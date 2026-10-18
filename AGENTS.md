@@ -444,7 +444,11 @@ binary_port_enabled=1      # 0 = do not open the port (manifest: `binary: null`)
   under a `CpcPauseLease` while it is the only lease held
   (`change_alone()`, so a write never runs beside a machine rebuild) and
   ended with `restore_run_state()`. A read callback must only copy:
-  it runs on the frame runner. **Do not call anything that takes
+  it runs on the frame runner. The one change that may run there too is a
+  `REGS_SET`/`MEM_WRITE` while clients read a running machine
+  (`written()`, `Gate::at_boundary()`): it is made at the frame boundary
+  behind the reads, with no lease (beads-df1x); keep anything with file
+  I/O or a lease of its own off that path. **Do not call anything that takes
   `g_pause_mutex` (`cpc_stopped()`, a lease) from a path a running machine
   hits per read**: the runner holds that mutex for the whole of every
   machine frame, and on an unpaced machine a socket thread then waits about

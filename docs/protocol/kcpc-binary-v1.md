@@ -435,7 +435,8 @@ handled at once; beyond that a refused connection is simply closed.
 
 Every request that changes the machine runs on the client's reader thread
 under a `CpcPauseLease`, the same way the text IPC's `reg set` and `reset`
-do:
+do (the one exception is a write beside reads of a running machine, which
+the runner takes at a frame boundary: see *Writes beside reads* below):
 
 1. Take the lease. If `idle()` is false, call `restore_run_state()` and
    answer `BUSY`.
@@ -499,19 +500,31 @@ under a lease of its own and reallocates the expansion RAM, and a
 are short (a 1 MiB write is a copy; a register write lets at most one
 instruction finish), so nothing waits for that mutex for long.
 
-**Writes give way to reads.** Every write pauses the machine between two
-frames, and reads of a running machine are taken at a frame boundary. A
+**Writes beside reads.** A write under a lease pauses the machine between
+two frames, and reads of a running machine are taken at a frame boundary. A
 controller that sends its next write as soon as the last one is answered
 would leave the runner no frame at all: measured on the CI hosts, three
 clients reading beside such a controller got 15 reads through in 1.5 s, each
-one by the gate's 250 ms fallback and so under a pause lease. So a write
-that finds reads waiting on a running machine first lets one frame boundary
-pass (it waits at most 50 ms for it). With nobody reading, and on a paused
-machine, a write waits for nothing. Beside clients that read all the time a
-write therefore costs up to two paced frames, about 25 writes a second,
-where the readers get their 50 boundaries a second; whether that can be
-made cheaper is tracked as beads-df1x. A client with a lot to write puts it
-in one `MEM_WRITE`.
+one by the gate's 250 ms fallback and so under a pause lease. So while
+clients read a running machine (a read is waiting at the gate, or the runner
+served one at one of the last four boundaries) a `REGS_SET` or `MEM_WRITE`
+takes no lease: it is queued at the gate behind the reads
+(`Gate::at_boundary()`) and the runner makes it at the same boundary, right
+after them. That is the moment a lease would have had too, between two
+frames, so a register write still lets the instruction in flight finish;
+and while the runner is at a boundary no lease, and so no machine rebuild,
+can hold the machine. A write costs one frame then, and the machine is never
+paused for it (beads-df1x; three readers of 64 KiB and a writer, paced: 19
+writes a second before, 41 to 48 after; unpaced: 146 to 174 writes and 637
+to 791 frames a second before, 2728 to 2803 of both after). With nobody
+reading, and on a paused machine, the write takes its lease at once, which
+waits for no boundary at all (thousands of writes a second). A write the
+runner has not taken within 50 ms (the machine paused under it, or no frame
+came) takes its lease after all. A client with a lot to write puts it in one
+`MEM_WRITE`. The other changes (media, the tape deck, snapshots,
+configuration) do file I/O or more, and stay off the runner: one that finds
+reads waiting on a running machine lets one frame boundary pass first, at
+most 50 ms, and then takes its lease.
 
 **Leases do not exclude one another.** Two holders both find the runner idle
 and both go ahead. That is deliberate: the text IPC's `profile load` holds a
