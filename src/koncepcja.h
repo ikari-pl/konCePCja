@@ -587,6 +587,9 @@ void ga_memory_manager();
 void memory_set_read_bank(int slot, byte* ptr);
 void memory_set_write_bank(int slot, byte* ptr);
 bool driveAltered();
+// What the quit dialog asks about: driveAltered(), or a Symbiface II IDE
+// image with unsaved writes (beads-nfz8). The other prompts use driveAltered().
+bool quitLosesWrites();
 
 // True once koncpc_main() has read the configuration file into CPC.  Guards
 // every write-back of the real config, so a process that never loaded it --
@@ -1027,6 +1030,9 @@ void mouse_init();
 int video_init();
 void video_shutdown();
 void cleanExit(int returnCode, bool askIfUnsaved = true);
+// Main thread only: the user answered a quit dialog of the UI's own with
+// "Quit anyway", so the unsaved disc and IDE writes are dropped.
+void cleanExitQuitAnyway(int returnCode);
 
 extern bool g_headless;
 

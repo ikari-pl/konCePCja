@@ -54,6 +54,7 @@ bool g_speedtest_open = false;
 #include "menu_bridge.h"
 #include "plotter.h"
 #include "plotter_view.h"
+#include "quit_policy.h"
 #include "rom_identify.h"
 #include "serial_interface.h"
 #include "slotshandler.h"
@@ -747,12 +748,15 @@ void imgui_render_ui() {
   }
   if (ImGui::BeginPopupModal("Confirm Quit", nullptr,
                              ImGuiWindowFlags_AlwaysAutoResize)) {
-    // P0: warn about unsaved disk changes here, since this GUI quit path passes
-    // askIfUnsaved=false to cleanExit() and so skips the native unsaved-disk
-    // guard that the OS window-close path enforces (beads-bgs).
-    if (driveAltered()) {
-      ImGui::TextColored(ImVec4(0.95f, 0.75f, 0.2f, 1.0f),
-                         "You have unsaved changes to a disk.");
+    // P0: warn about unsaved disk and IDE changes here, since this GUI quit
+    // path does not go through the native unsaved-changes guard that the OS
+    // window-close path enforces (beads-bgs, beads-nfz8).
+    bool const loses_writes = quitLosesWrites();
+    if (loses_writes) {
+      ImGui::TextColored(ImVec4(0.95f, 0.75f, 0.2f, 1.0f), "%s",
+                         koncpc_quit_unsaved_message(
+                             driveAltered(), subcycle_bridge_ide_altered())
+                             .c_str());
       ImGui::TextUnformatted("Quit anyway? Those changes will be lost.");
     } else {
       ImGui::TextUnformatted("Are you sure you want to quit?");
@@ -763,7 +767,12 @@ void imgui_render_ui() {
     ImGui::SetItemDefaultFocus();  // focus the safe button by default
     ImGui::SameLine();
     if (ImGui::Button("Quit", ImVec2(ui_dpi_px(90), ui_dpi_px(0)))) {
-      cleanExit(0, false);
+      // The warning said the changes will be lost: they are.
+      if (loses_writes) {
+        cleanExitQuitAnyway(0);
+      } else {
+        cleanExit(0, false);
+      }
     }
     if (cancel || ImGui::IsKeyPressed(ImGuiKey_Escape)) {
       ImGui::CloseCurrentPopup();
