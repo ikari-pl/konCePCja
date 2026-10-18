@@ -48,6 +48,11 @@ void subcycle_bridge_stop();
  * runner must be gone or between frames. No-op when the engine is inactive. */
 void subcycle_bridge_write_back_discs();
 
+/* Whether a Symbiface IDE image has writes not yet in its file, as of the last
+ * subcycle_bridge_debug_sync(): the host copy of the board's flag, which any
+ * thread may read (the quit dialog does, beside driveAltered()). */
+bool subcycle_bridge_ide_altered();
+
 /* Run one emulated frame: rows[16] is the published keyboard matrix (bit
  * clear = pressed); dst receives the picture (scaled blit, may be null);
  * limit paces to the 50 Hz wall clock with drift correction. Returns the

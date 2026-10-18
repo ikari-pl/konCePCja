@@ -26,6 +26,26 @@ inline bool koncpc_quit_should_prompt(bool headless, bool ask_if_unsaved,
   return !headless && !dialogs_suppressed && ask_if_unsaved && drive_altered;
 }
 
+// What a quit with nothing written back would lose: a disc in either drive
+// with unsaved writes, or a Symbiface II IDE image with them (the board works
+// on a copy of each image). Quit only: driveAltered() alone still gates the
+// other prompts (reset, an Options restart), which leave the IDE image's
+// writes alone or write them back on the rebuild (beads-nfz8).
+inline bool koncpc_quit_has_unsaved(bool disc_altered, bool ide_altered) {
+  return disc_altered || ide_altered;
+}
+
+// The first line of the quit dialog, naming what has unsaved writes.
+inline std::string koncpc_quit_unsaved_message(bool disc_altered,
+                                               bool ide_altered) {
+  const char* what = "a disk";
+  if (ide_altered) {
+    what = disc_altered ? "a disk and to the Symbiface II IDE hard disk image"
+                        : "the Symbiface II IDE hard disk image";
+  }
+  return std::string("You have unsaved changes to ") + what + ".";
+}
+
 // Whether an exit writes a disc's unsaved writes back to its file, as an
 // eject does. Every exit nobody was asked about does: a real CPC's writes are
 // on the disc. Only a user who was shown the dialog and answered "Quit

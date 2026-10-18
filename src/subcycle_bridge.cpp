@@ -213,6 +213,9 @@ struct Bridge {
   std::atomic<uint8_t> swap_unit{0};
 };
 Bridge g_bridge;
+// The board's "IDE image written" flag as of the last frame boundary, for
+// threads that must not read the board (subcycle_bridge_ide_altered()).
+std::atomic<bool> g_ide_altered{false};
 
 // A breakpoint stop shows the halted instruction's address (probe spec §3),
 // not the machine's PC, which is already past the opcode it just fetched.
@@ -1328,6 +1331,7 @@ int subcycle_bridge_debug_sync() {
   // "disc altered" indicators read driveA.altered.
   driveA.altered = b.machine.disk_dirty();
   driveB.altered = fdc_media_dirty_unit(b.machine.fdc(), 1) != 0;
+  g_ide_altered.store(b.machine.symbiface_dirty(), std::memory_order_relaxed);
   // Each peripheral's once-per-frame host<->Device sync, named (each inlines
   // at -O2). Order is independent — they touch disjoint Devices.
   sync_peripheral_flags(b);  // enable/plugged flags from the legacy UI toggles
@@ -1552,8 +1556,13 @@ void flush_sf2_ide(Bridge& b) {
       LOG_ERROR("subcycle engine: short write saving IDE " << b.ide_path[d]);
   }
   b.machine.symbiface_mark_clean();
+  g_ide_altered.store(false, std::memory_order_relaxed);
 }
 }  // namespace
+
+bool subcycle_bridge_ide_altered() {
+  return g_ide_altered.load(std::memory_order_relaxed);
+}
 
 void subcycle_bridge_write_back_discs() {
   Bridge& b = g_bridge;

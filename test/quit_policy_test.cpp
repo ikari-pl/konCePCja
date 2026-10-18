@@ -5,6 +5,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <string>
 #include <thread>
 
 TEST(QuitPolicy, PromptsOnlyForAGestureWithADirtyDiskInTheGui) {
@@ -197,4 +198,27 @@ TEST(QuitMailbox, PostIsObservedAsAWholeRequest) {
 
   EXPECT_GT(taken, 0) << "the racers never landed a request; test is vacuous";
   EXPECT_EQ(torn, 0);
+}
+
+TEST(QuitPolicy, AnUnsavedIdeImageCountsAsMuchAsADisc) {
+  // The board keeps the Symbiface II IDE image in memory: quitting without a
+  // write-back loses the sectors the CPC wrote, just as for a floppy
+  // (beads-nfz8).
+  EXPECT_FALSE(koncpc_quit_has_unsaved(/*disc=*/false, /*ide=*/false));
+  EXPECT_TRUE(koncpc_quit_has_unsaved(/*disc=*/true, /*ide=*/false));
+  EXPECT_TRUE(koncpc_quit_has_unsaved(/*disc=*/false, /*ide=*/true));
+  // IDE dirty, both floppies clean: the gesture is asked about.
+  EXPECT_TRUE(koncpc_quit_should_prompt(
+      false, true, koncpc_quit_has_unsaved(false, true), false));
+}
+
+TEST(QuitPolicy, TheDialogNamesWhatWouldBeLost) {
+  std::string const disc = koncpc_quit_unsaved_message(true, false);
+  std::string const ide = koncpc_quit_unsaved_message(false, true);
+  std::string const both = koncpc_quit_unsaved_message(true, true);
+  EXPECT_EQ("You have unsaved changes to a disk.", disc);
+  EXPECT_NE(std::string::npos, ide.find("Symbiface II IDE"));
+  EXPECT_EQ(std::string::npos, ide.find("a disk "));
+  EXPECT_NE(std::string::npos, both.find("a disk"));
+  EXPECT_NE(std::string::npos, both.find("Symbiface II IDE"));
 }

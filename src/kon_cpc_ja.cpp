@@ -3555,9 +3555,11 @@ void set_cursor_visibility(bool show) {
 
 namespace {
 bool userConfirmsQuitWithoutSaving() {
-  auto result = pfd::message("Unsaved Changes",
-                             "You have unsaved changes to a disk. Quit anyway?",
-                             pfd::choice::yes_no, pfd::icon::warning)
+  std::string const text = koncpc_quit_unsaved_message(
+                               driveAltered(), subcycle_bridge_ide_altered()) +
+                           " Quit anyway?";
+  auto result = pfd::message("Unsaved Changes", text, pfd::choice::yes_no,
+                             pfd::icon::warning)
                     .result();
   return result == pfd::button::yes;
 }
@@ -4025,6 +4027,10 @@ void loadSnapshot() {
 
 bool driveAltered() { return driveA.altered || driveB.altered; }
 
+bool quitLosesWrites() {
+  return koncpc_quit_has_unsaved(driveAltered(), subcycle_bridge_ide_altered());
+}
+
 namespace {
 void doCleanUp(bool write_back_discs, bool save_config) {
 #ifdef _WIN32
@@ -4141,6 +4147,12 @@ void doCleanUp(bool write_back_discs, bool save_config) {
 }
 }  // namespace
 
+namespace {
+// The main thread's teardown: writes back every unsaved write unless the user
+// was asked and chose to drop them.
+[[noreturn]] void quitNow(int returnCode, bool user_was_asked);
+}  // namespace
+
 void cleanExit(int returnCode, bool askIfUnsaved) {
   // Only the main (render) thread is allowed to run SDL_Quit(): it's the
   // thread that owns the video subsystem and lives inside SDL_PumpEvents().
@@ -4188,19 +4200,27 @@ void cleanExit(int returnCode, bool askIfUnsaved) {
 
   // Main thread (or early-init pre-capture): safe to prompt and tear down.
   const bool asked = koncpc_quit_should_prompt(g_headless, askIfUnsaved,
-                                               driveAltered(), g_no_dialogs);
+                                               quitLosesWrites(), g_no_dialogs);
   if (asked && !userConfirmsQuitWithoutSaving()) {
     return;
   }
+  quitNow(returnCode, asked);
+}
+
+void cleanExitQuitAnyway(int returnCode) { quitNow(returnCode, true); }
+
+namespace {
+[[noreturn]] void quitNow(int returnCode, bool user_was_asked) {
   // Persist settings on a clean exit, so a change survives without an
   // explicit Options▸Save.  Restricted to a successful GUI exit: that is the
   // state worth recording.  printer / scr_window are restored to the
   // captured intent (refreshed by Options▸Save via
   // koncpc_capture_config_intent) so runtime mutations cannot poison the file.
-  doCleanUp(koncpc_quit_writes_back_discs(asked),
+  doCleanUp(koncpc_quit_writes_back_discs(user_was_asked),
             returnCode == 0 && !g_headless && g_config_loaded);
   _exit(returnCode);
 }
+}  // namespace
 
 #ifdef KONCPC_SDL
 namespace {
