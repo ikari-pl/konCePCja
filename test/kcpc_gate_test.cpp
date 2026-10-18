@@ -291,6 +291,98 @@ TEST(KcpcGate, AnEmptyQueueOnlyCountsTheFrame) {
   EXPECT_EQ(gate.counters().at_boundary, 0U);
 }
 
+// beads-df1x: a write queued behind a waiting read is run by the runner at
+// the same boundary, after the read, and takes no lease.
+TEST(KcpcGate, AWriteIsRunAtTheBoundaryBehindTheReads) {
+  FakeMachine machine;
+  Gate gate(machine.host(), tuning(/*fallback_ms=*/60000));
+
+  std::vector<int> order;  // touched by the runner only
+  std::thread::id wrote_on;
+  Stamp seen{99, true};
+  std::thread reader([&] {
+    EXPECT_EQ(gate.read(64, [&](const Stamp&) { order.push_back(1); }),
+              GateResult::kDone);
+  });
+  ASSERT_TRUE(wait_for_queued(gate, 1));
+  EXPECT_TRUE(gate.reading()) << "a read is waiting";
+  bool wrote = false;
+  std::thread writer([&] {
+    wrote = gate.at_boundary(2, /*timeout_ms=*/60000, [&](const Stamp& stamp) {
+      order.push_back(2);
+      seen = stamp;
+      wrote_on = std::this_thread::get_id();
+    });
+  });
+  ASSERT_TRUE(wait_for_queued(gate, 2));
+  EXPECT_EQ(gate.waiting(), 1U) << "a write is not a waiting read";
+
+  machine.run_frame(gate);
+  std::uint64_t const boundary = gate.frame();
+  reader.join();
+  writer.join();
+
+  EXPECT_TRUE(wrote);
+  EXPECT_EQ(order, (std::vector<int>{1, 2}));
+  EXPECT_EQ(wrote_on, std::this_thread::get_id()) << "the runner writes";
+  EXPECT_FALSE(seen.paused);
+  EXPECT_EQ(seen.frame, boundary);
+  EXPECT_EQ(machine.leases.load(), 0);
+  Gate::Counters const c = gate.counters();
+  EXPECT_EQ(c.at_boundary, 1U);
+  EXPECT_EQ(c.writes, 1U);
+}
+
+// A write the runner does not take is handed back unrun, for the caller's
+// lease: at once on a paused machine, after its timeout on one that turns out
+// no frames.
+TEST(KcpcGate, AWriteNoBoundaryTakesIsHandedBack) {
+  FakeMachine machine;
+  Gate gate(machine.host(), tuning(/*fallback_ms=*/60000));
+  int runs = 0;
+  auto const write = [&runs](const Stamp&) { ++runs; };
+
+  machine.paused.store(true);
+  auto begin = Clock::now();
+  EXPECT_FALSE(gate.at_boundary(2, /*timeout_ms=*/60000, write));
+  EXPECT_LT(Clock::now() - begin, std::chrono::seconds(5));
+
+  machine.paused.store(false);
+  begin = Clock::now();
+  EXPECT_FALSE(gate.at_boundary(2, /*timeout_ms=*/30, write));
+  EXPECT_GE(Clock::now() - begin, std::chrono::milliseconds(30));
+  EXPECT_EQ(gate.queued(), 0U) << "the job was taken back off the queue";
+
+  machine.run_frame(gate);
+  EXPECT_EQ(runs, 0);
+  EXPECT_EQ(machine.leases.load(), 0) << "the lease is the caller's to take";
+  EXPECT_EQ(gate.counters().writes, 0U);
+}
+
+// Between two reads of a client nothing is waiting; a read served in the last
+// few frames still counts as clients reading.
+TEST(KcpcGate, ReadingLastsAFewFramesAfterARead) {
+  FakeMachine machine;
+  Gate gate(machine.host(), tuning(/*fallback_ms=*/60000));
+  EXPECT_FALSE(gate.reading()) << "nobody has read yet";
+  machine.run_frame(gate);
+  EXPECT_FALSE(gate.reading());
+
+  std::thread reader(
+      [&] { EXPECT_EQ(gate.read(8, [](const Stamp&) {}), GateResult::kDone); });
+  ASSERT_TRUE(wait_for_queued(gate, 1));
+  machine.run_frame(gate);
+  reader.join();
+  ASSERT_EQ(gate.waiting(), 0U);
+  for (std::uint64_t i = 0; i < Gate::kReadingFrames; ++i) {
+    EXPECT_TRUE(gate.reading()) << i << " frames after the read";
+    machine.run_frame(gate);
+  }
+  EXPECT_TRUE(gate.reading());
+  machine.run_frame(gate);
+  EXPECT_FALSE(gate.reading());
+}
+
 // The tier is too slow to finish a frame, or the runner is gone: the reader
 // stops waiting and runs the read itself under a lease.
 TEST(KcpcGate, AReadNoBoundaryServesFallsBackToTheLease) {

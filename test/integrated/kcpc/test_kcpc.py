@@ -203,16 +203,19 @@ class Core:
     def reads_served(self) -> Dict[str, int]:
         """Where the machine gate took this core's reads, from the line the
         server logs when it stops: {'boundary', 'paused', 'fallback',
-        'busy'}. Call after the core has exited."""
+        'busy'}, and 'writes' (writes the runner took at a frame boundary)
+        when the line says. Call after the core has exited."""
         deadline = time.monotonic() + 2.0
         while True:
             for line in self.stderr_lines:
                 m = re.search(r'KCPC: reads served: (\d+) at a frame '
                               r'boundary, (\d+) while paused, (\d+) by '
-                              r'fallback, (\d+) busy', line)
+                              r'fallback, (\d+) busy(?:; (\d+) writes at a '
+                              r'frame boundary)?', line)
                 if m:
-                    return dict(zip(('boundary', 'paused', 'fallback',
-                                     'busy'), map(int, m.groups())))
+                    return {key: int(value) for key, value in zip(
+                        ('boundary', 'paused', 'fallback', 'busy', 'writes'),
+                        m.groups()) if value is not None}
             # The pump thread may still be draining the pipe.
             assert time.monotonic() < deadline, (
                 'the core did not log where its reads were served:\n'
@@ -1620,9 +1623,8 @@ def test_readers_and_a_writer_at_once() -> None:
         assert readers.running_reads == readers.calls, (
             f'{readers.calls - readers.running_reads} of {readers.calls} '
             'reads were stamped paused: a write\'s lease leaked into a read')
-        # The writer gives way to the readers: beside waiting reads a write
-        # lets a frame boundary pass first, so it gets a few dozen in, not
-        # thousands.
+        # Beside the readers a write is taken at a frame boundary, behind
+        # their reads, so it gets a few dozen in, not thousands.
         assert writes >= 2, f'only {writes} rounds of writes in 1.5 s'
         last = 0x4000 + writes - 1
         assert c.regs_get().hl == last
@@ -1631,6 +1633,50 @@ def test_readers_and_a_writer_at_once() -> None:
         wait_running(c, before.frame + 5)
         print(f'    {writes * 2} writes beside {readers.calls} reads from 3 '
               f'observers; slowest read {readers.slowest * 1000:.0f} ms')
+
+
+def test_writes_beside_readers_are_taken_at_the_frame_boundary() -> None:
+    """While clients read a running machine, the controller's writes are
+    queued behind their reads and taken by the runner at the frame boundary,
+    with no pause lease: about one write a frame. One that let a boundary
+    pass and then took a lease cost two to three frames, and paused the
+    machine each time (beads-df1x). Unpaced, so that a boundary comes every
+    millisecond or so: a paced frame that overslept on a busy host is caught
+    up in a burst, and a write that waited out such a gap took its lease
+    after all, which is right but says nothing about this."""
+    with Core('-O', 'system.limit_speed=0') as core:
+        with controller(core, 'test_kcpc writer') as c:
+            assert core.ipc('wait vbl 60 20000').startswith('OK')
+            spin(core, c)
+            writes = 0
+            with Readers(core, 3, 'memory') as readers:
+                # Until the runner has served a read, nobody is reading yet.
+                deadline = time.monotonic() + IO_TIMEOUT_S
+                while readers.calls < 3:
+                    assert time.monotonic() < deadline, readers.errors
+                    time.sleep(0.01)
+                first = c.machine_info().stamp.frame
+                begin = time.monotonic()
+                while time.monotonic() - begin < 1.5:
+                    value = 0x4000 + writes
+                    assert c.regs_set(hl=value).hl == value
+                    writes += 1
+                frames = c.machine_info().stamp.frame - first
+            assert not readers.errors, readers.errors
+            assert c.regs_get().hl == 0x4000 + writes - 1
+        core.ipc_quit()
+        assert core.wait_exit() == 0
+        served = core.reads_served()
+        # The two writes of spin() ran on a paused machine, under a lease.
+        assert 'writes' in served, f'the core did not count them: {served}'
+        # A write finds no read waiting and none served in the last four
+        # boundaries only when the readers stall; then it takes a lease.
+        assert served['writes'] >= 0.9 * writes, (
+            f'{served["writes"]} of {writes} writes beside {readers.calls} '
+            f'reads were taken at a frame boundary')
+        print(f'    {served["writes"]} of {writes} writes taken at a frame '
+              f'boundary, {writes / max(frames, 1):.2f} a frame, beside '
+              f'{readers.calls} reads')
 
 
 def test_quit_while_clients_read() -> None:
@@ -4882,6 +4928,7 @@ TESTS: List[Callable[[], None]] = [
     test_mem_write_lands_in_the_ram_it_names,
     test_writes_leave_the_run_state_alone,
     test_readers_and_a_writer_at_once,
+    test_writes_beside_readers_are_taken_at_the_frame_boundary,
     test_pause_and_run_are_pushed_to_every_subscriber,
     test_stops_from_the_text_ipc_are_pushed,
     test_reads_and_writes_are_not_run_state_events,
