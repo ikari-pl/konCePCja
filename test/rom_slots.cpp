@@ -39,8 +39,22 @@ constexpr size_t kBankSize = 16 * 1024;
 // Forward-declare the server so send_command can query its actual port
 static KoncepcjaIpcServer* g_test_server = nullptr;
 
+// The port the server has bound, or 0 if it has not within 10 s.  port() is
+// 0 until the listener thread is up, so this waits for that signal rather
+// than trusting a fixed delay: a slow Windows runner has taken more than
+// 200 ms to bind (beads-00tl).
+int listening_port(const KoncepcjaIpcServer& server) {
+  for (int i = 0; i < 400; i++) {
+    if (int const port = server.port(); port > 0) return port;
+    std::this_thread::sleep_for(std::chrono::milliseconds(25));
+  }
+  return 0;
+}
+
 std::string send_command(const std::string& command) {
-  int port = g_test_server ? g_test_server->port() : 6543;
+  int port = g_test_server ? listening_port(*g_test_server) : 6543;
+  EXPECT_GT(port, 0) << "test IPC server never bound a port";
+  if (port <= 0) return "";
 #ifdef _WIN32
   SOCKET fd = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
   EXPECT_NE(fd, INVALID_SOCKET);
@@ -131,7 +145,8 @@ class RomSlotsTest : public testing::Test {
     CPC.snd_enabled = 0;
     g_test_server = &server;
     server.start();
-    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    ASSERT_GT(listening_port(server), 0)
+        << "test IPC server never bound a port";
   }
 
   static void TearDownTestSuite() {
@@ -328,6 +343,20 @@ TEST_F(RomSlotsTest, BackwardCompatibility16SlotConfig) {
   for (int i = 0; i < MAX_ROM_SLOTS; i++) {
     CPC.rom_file[i] = "";
   }
+}
+
+// beads-00tl: a command sent the moment a server is started must reach it.
+// send_command used to read port() once, before the listener had bound, and
+// then retried port 0 for its whole budget; the suite's fixed 200 ms sleep
+// hid that until a Windows runner took longer than that to bind.
+TEST_F(RomSlotsTest, CommandSentRightAfterStartReachesTheServer) {
+  KoncepcjaIpcServer late;
+  late.start();
+  g_test_server = &late;
+  auto resp = send_command("rom list");
+  g_test_server = &server;
+  late.stop();
+  EXPECT_EQ(resp.find("OK"), 0u) << resp;
 }
 
 TEST_F(RomSlotsTest, RomBadSubcommand) {
