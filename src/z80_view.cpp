@@ -301,6 +301,12 @@ Z80RunUntilResult run_until_ephemeral(
       z80_remove_ephemeral_breakpoints();
       return Z80RunUntilResult::OtherBreak;
     }
+    // Read before the hit is looked for: a breakpoint latches its hit before
+    // its stop is announced, so a stop seen here has its hit found below. In
+    // the other order a stop announced between the two reads was taken for
+    // an arrival with no hit, and the caller could not tell it was its own
+    // breakpoint at `target` (beads-1meo).
+    bool const stopped = cpc_announced_stopped();
     if (consume_hit) {
       uint16_t hit_pc = 0;
       bool watch = false;
@@ -320,7 +326,7 @@ Z80RunUntilResult run_until_ephemeral(
     // taking that for the stop ended the walk short of its target with the
     // machine about to run on (beads-pja3). The announced state is settled
     // only by a stop somebody asked for, once the frame runner has parked.
-    if (cpc_announced_stopped()) {
+    if (stopped) {
       landed = z80.PC.w.l == target;
       break;
     }
