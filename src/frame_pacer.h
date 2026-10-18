@@ -62,3 +62,35 @@ class FramePacer {
   bool late_ = false;
   bool stopped_ = false;
 };
+
+// Whether the frame runner should be a pacing thread (host_pacing_thread,
+// beads-fijd): while it runs paced frames that leave it time to sleep. A
+// macOS host that coalesces an ordinary thread's timers ends the 19 ms sleep
+// to the deadline up to 140 ms late; a pacing thread is woken on time.
+//
+// An unpaced frame never sleeps, and a frame that computes for a whole period
+// means the runner cannot keep up and would never block: the OS demotes a
+// time-constraint thread that does that, and it crowds out other threads
+// meanwhile. Such a frame turns pacing off, and kRetryFrames frames that fit
+// turn it back on. Every tier fits on a healthy host: Faithful computes about
+// 14 ms of the 20. Pure, like FramePacer: the caller measures the frame.
+class PacingThreadRule {
+ public:
+  static constexpr uint32_t kPeriodUs = 20000;
+  static constexpr unsigned kRetryFrames = 50;
+
+  // A frame that computed for `busy_us` has finished; `paced` says whether it
+  // is about to sleep to its deadline. Returns whether the runner should be a
+  // pacing thread for that sleep.
+  bool frame(bool paced, uint64_t busy_us) {
+    if (busy_us >= kPeriodUs) {
+      fit_ = 0;
+    } else if (fit_ < kRetryFrames) {
+      ++fit_;
+    }
+    return paced && fit_ >= kRetryFrames;
+  }
+
+ private:
+  unsigned fit_ = kRetryFrames;
+};

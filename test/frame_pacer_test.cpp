@@ -103,3 +103,44 @@ TEST(FramePacer, AnUnpacedFrameRestartsPacing) {
 }
 
 }  // namespace
+
+// PacingThreadRule: when the frame runner asks the OS to wake it on time
+// (host_pacing_thread, beads-fijd).
+
+TEST(PacingThreadRule, PacedFramesThatFitArePacedFromTheFirst) {
+  PacingThreadRule r;
+  EXPECT_TRUE(r.frame(true, 500));    // Fast
+  EXPECT_TRUE(r.frame(true, 14000));  // Faithful
+  EXPECT_TRUE(r.frame(true, 19999));
+}
+
+TEST(PacingThreadRule, AnUnpacedFrameIsNeverPaced) {
+  PacingThreadRule r;
+  EXPECT_FALSE(r.frame(false, 500));
+  EXPECT_TRUE(r.frame(true, 500));  // pacing back on: nothing was owed
+}
+
+TEST(PacingThreadRule, AFrameThatFillsThePeriodStopsPacingForAWhile) {
+  PacingThreadRule r;
+  ASSERT_TRUE(r.frame(true, 500));
+  // The runner cannot keep up: it would never block.
+  EXPECT_FALSE(r.frame(true, PacingThreadRule::kPeriodUs));
+  // It stays off until kRetryFrames frames in a row fit again.
+  for (unsigned i = 1; i < PacingThreadRule::kRetryFrames; ++i) {
+    EXPECT_FALSE(r.frame(true, 500)) << i;
+  }
+  EXPECT_TRUE(r.frame(true, 500));
+}
+
+TEST(PacingThreadRule, ALongFrameRestartsTheWait) {
+  PacingThreadRule r;
+  r.frame(true, 30000);
+  for (unsigned i = 0; i + 1 < PacingThreadRule::kRetryFrames; ++i) {
+    r.frame(true, 500);
+  }
+  EXPECT_FALSE(r.frame(true, 25000));  // one frame short of the retry
+  for (unsigned i = 1; i < PacingThreadRule::kRetryFrames; ++i) {
+    EXPECT_FALSE(r.frame(true, 500)) << i;
+  }
+  EXPECT_TRUE(r.frame(true, 500));
+}

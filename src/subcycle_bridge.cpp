@@ -18,6 +18,7 @@
 #include <fstream>
 #include <mutex>
 #include <string>
+#include <thread>
 
 #include "amdrum.h"        // legacy g_amdrum: the UI toggles its enabled flag
 #include "amx_mouse.h"     // legacy g_amx_mouse: SDL events fill its counters
@@ -82,6 +83,12 @@ namespace {
 // let the next frame carry on, which is exactly the old behaviour and so can
 // only be as slow as before, never slower.
 constexpr int kMaxProbeContinues = 20000;
+
+// What the frame runner tells the OS it computes of each 20 ms period while
+// it is a pacing thread (host_pacing_thread). Wake computes ~5 ms, Faithful
+// ~14 and Soldered ~17: a frame past it was measured neither demoted nor late
+// (40 s of each), so this is a hint, not a limit.
+constexpr uint32_t kPacingBusyUs = 10000;
 }  // namespace
 
 namespace {
@@ -175,6 +182,12 @@ struct Bridge {
   std::vector<uint8_t> tape_media;  // cassette in the deck (owner)
   FramePacer pacer;                 // 50 Hz pacing (performance-counter ticks)
   uint64_t sleep_ticks = 0;         // pacer sleep since the last take
+  // Whether the frame runner is a pacing thread (host_pacing_thread), the
+  // rule that decides it, and which thread was asked: a new runner thread
+  // starts as an ordinary one.
+  PacingThreadRule pacing_rule;
+  bool pacing_thread = false;
+  std::thread::id pacing_owner;
   bool active = false;
 
   // Tape host-side mirror (engine=1): each frame debug_sync mirrors the deck's
@@ -2025,6 +2038,26 @@ void subcycle_bridge_apply_pending_media() {
   apply_pending_media(g_bridge);
 }
 
+namespace {
+
+// Applies PacingThreadRule to the frame runner, the calling thread: the GUI's
+// Z80 thread in one loop and the main thread in the other. Calls the host
+// only when the answer changes.
+void pacing_thread(Bridge& b, bool paced, uint64_t busy_us) {
+  std::thread::id const self = std::this_thread::get_id();
+  if (b.pacing_owner != self) {
+    b.pacing_owner = self;
+    b.pacing_rule = PacingThreadRule{};
+    b.pacing_thread = false;
+  }
+  bool const want = b.pacing_rule.frame(paced, busy_us);
+  if (want == b.pacing_thread) return;
+  b.pacing_thread = want;
+  host_pacing_thread(want, PacingThreadRule::kPeriodUs, kPacingBusyUs);
+}
+
+}  // namespace
+
 // NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other
 // translation units/tests; internal linkage would break the link
 const std::vector<int16_t>& subcycle_bridge_frame(const uint8_t rows[16],
@@ -2032,6 +2065,8 @@ const std::vector<int16_t>& subcycle_bridge_frame(const uint8_t rows[16],
                                                   bool limit) {
   Bridge& b = g_bridge;
   if (!b.active) return g_empty_audio;
+  // When the frame began, for pacing_thread (a paced frame only).
+  const uint64_t frame_start = limit ? host_perf_counter() : 0;
 
   // Tier benchmark slice (before the real frame: last frame's audio is
   // consumed, and the real frame repaints the whole framebuffer after us).
@@ -2147,6 +2182,7 @@ const std::vector<int16_t>& subcycle_bridge_frame(const uint8_t rows[16],
   if (limit) {  // drift-corrected 50 Hz deadline (the emulation's only pacer)
     const uint64_t freq = host_perf_frequency();
     uint64_t now = host_perf_counter();
+    pacing_thread(b, true, (now - frame_start) * 1000000ULL / freq);
     const uint64_t release = b.pacer.arrive(now, freq);
     const uint64_t sleep_start = now;
     while (now < release) {
@@ -2157,6 +2193,7 @@ const std::vector<int16_t>& subcycle_bridge_frame(const uint8_t rows[16],
     }
     b.sleep_ticks += now - sleep_start;
   } else {
+    if (b.pacing_thread) pacing_thread(b, false, 0);
     b.pacer.unpaced();
   }
 

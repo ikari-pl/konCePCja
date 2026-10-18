@@ -1,5 +1,13 @@
 #include "host_clock.h"
 
+#if defined(__APPLE__)
+#include <mach/mach.h>
+#include <mach/mach_time.h>
+#include <mach/thread_policy.h>
+#elif defined(__linux__)
+#include <sys/prctl.h>
+#endif
+
 #ifdef KONCPC_SDL
 
 #include <SDL3/SDL_timer.h>
@@ -48,5 +56,46 @@ void host_delay_ms(uint32_t ms) {
   }
   std::this_thread::sleep_for(std::chrono::milliseconds(ms));
 }
+
+#endif
+
+#if defined(__APPLE__)
+
+void host_pacing_thread(bool on, uint32_t period_us, uint32_t busy_us) {
+  thread_port_t const self = mach_thread_self();
+  if (on) {
+    mach_timebase_info_data_t tb;
+    mach_timebase_info(&tb);
+    auto const ticks = [&tb](uint32_t us) {
+      return static_cast<uint32_t>(static_cast<uint64_t>(us) * 1000U *
+                                   tb.denom / tb.numer);
+    };
+    thread_time_constraint_policy_data_t policy;
+    policy.period = ticks(period_us);
+    policy.computation = ticks(busy_us);
+    policy.constraint = ticks(period_us);
+    policy.preemptible = 1;
+    thread_policy_set(self, THREAD_TIME_CONSTRAINT_POLICY,
+                      reinterpret_cast<thread_policy_t>(&policy),
+                      THREAD_TIME_CONSTRAINT_POLICY_COUNT);
+  } else {
+    thread_standard_policy_data_t policy{};
+    thread_policy_set(self, THREAD_STANDARD_POLICY,
+                      reinterpret_cast<thread_policy_t>(&policy),
+                      THREAD_STANDARD_POLICY_COUNT);
+  }
+  mach_port_deallocate(mach_task_self(), self);
+}
+
+#elif defined(__linux__)
+
+void host_pacing_thread(bool on, uint32_t, uint32_t) {
+  // 1 ns is the least slack there is; 0 puts back the thread's default.
+  prctl(PR_SET_TIMERSLACK, on ? 1UL : 0UL, 0UL, 0UL, 0UL);
+}
+
+#else
+
+void host_pacing_thread(bool, uint32_t, uint32_t) {}
 
 #endif
