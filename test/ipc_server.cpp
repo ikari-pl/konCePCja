@@ -1423,7 +1423,10 @@ TEST_F(IpcServerTest, ARestoringCommandNeverLooksLikeAStop) {
 TEST_F(IpcServerTest, AStepStaysStoppedWhenAnotherHolderLetsGo) {
   cpc_resume();
   ASSERT_FALSE(CPC.paused);
-  CpcPauseLease other;  // e.g. a DevTools disk operation, a KCPC request
+  // A holder that has paused the machine without taking it (a window
+  // screenshot waiting for the render). One that had taken it would keep the
+  // step out until it let go (beads-nhfy).
+  CpcPauseLease other(CpcPauseLeaseMode::PauseOnly);
   EXPECT_OK(send_command("step"));
   other.restore_run_state();
   EXPECT_TRUE(cpc_stopped())

@@ -842,6 +842,14 @@ host_chords=1     # Cmd/Ctrl+K/O/S drive the host UI (palette, Load Disk A,
   cpc_resume();` by hand: it resumes over a breakpoint that fired meanwhile
   and does nothing while another lease is held. A lease that only reads uses
   `read_alone()`.
+- Lease holders on different threads take turns with the machine: an idle
+  lease has it until it lets go, and one on another thread waits (bounded,
+  then not idle: fail closed). Nesting on one thread is fine. **A holder that
+  waits for another thread which takes a lease of its own must `lend()` the
+  machine for that wait** (IPC `profile load` waiting for the main thread's
+  rebuild), or the two wait for each other until the bound runs out
+  (beads-nhfy). A `PauseOnly` lease that never calls `wait()` (a window
+  screenshot) pauses without taking the machine.
 - Reset: `emulator_reset()`
 - A cartridge goes into a built machine through `cpc_cartridge_insert()`
   (`src/koncepcja.h`), never `file_load(CPC.cartridge)`: the load frees the

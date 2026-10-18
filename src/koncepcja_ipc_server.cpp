@@ -5419,7 +5419,11 @@ std::string handle_command(const std::string& line) {
           // the live CPC.model, and ipc_drain_rebuild would otherwise
           // overwrite it with a stale pending value.
           g_pending_model.store(-1);
-          std::string const rebuild_err = ipc_request_rebuild_and_wait();
+          // The rebuild takes a lease of its own on the main thread, which
+          // would wait for this one to let go of the machine (beads-nhfy).
+          std::string rebuild_err;
+          bool const held_again =
+              lease.lend([&] { rebuild_err = ipc_request_rebuild_and_wait(); });
           if (!rebuild_err.empty()) {
             // An in-flight rebuild may still finish after 504
             // rebuild-still-running. Leave the target identity in CPC.*
@@ -5429,8 +5433,12 @@ std::string handle_command(const std::string& line) {
             const bool in_flight =
                 rebuild_err.find("rebuild-still-running") != std::string::npos;
             if (!in_flight) {
-              CPC.model = old_model;
-              CPC.ram_size = old_ram;
+              // Not while another holder has the machine: the board reads
+              // CPC.model.
+              if (held_again) {
+                CPC.model = old_model;
+                CPC.ram_size = old_ram;
+              }
               lease.restore_run_state();
             }
             return rebuild_err;
