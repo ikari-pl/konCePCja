@@ -6291,7 +6291,10 @@ std::string handle_command(const std::string& line) {
         return "OK\n";
       }
       if (parts[1] == "assemble") {
-        AsmResult r = g_assembler.assemble(g_asm_source.text());
+        // One change, never beside a running frame or a rebuild (beads-tddf).
+        AsmResult r =
+            g_assembler.assemble(g_asm_source.text(), kcpc_host_write_machine);
+        if (r.machine_busy) return err_with_context(409, "z80-not-idle");
         if (r.success) {
           char buf[128];
           snprintf(buf, sizeof(buf), "OK bytes=%d start=%04X end=%04X\n",

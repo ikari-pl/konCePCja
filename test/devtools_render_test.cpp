@@ -22,9 +22,11 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <filesystem>
 #include <functional>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "asm_source.h"
@@ -847,5 +849,166 @@ TEST_F(DevToolsRenderTest, AssemblerMirrorsTheHostSourceWithoutEchoingIt) {
   gui_.settled_frames([this] { dt_.render(); });
   EXPECT_EQ(ipc, g_asm_source.generation());
   EXPECT_EQ("nop\n", g_asm_source.text());
+  g_asm_source.set("");
+}
+
+// -----------------------------------------------
+// DevTools writes to memory wait their turn with the machine (beads-tddf)
+// -----------------------------------------------
+
+namespace {
+
+// The 64 KiB the CPU sees, read the way the windows read it.
+std::vector<byte> memory_image() {
+  std::vector<byte> image(0x10000);
+  for (unsigned a = 0; a < image.size(); ++a)
+    image[a] = z80_read_mem(static_cast<word>(a));
+  return image;
+}
+
+// Holds the machine on another thread, alone, the way a KCPC write or the
+// text IPC's `mem write` holds it, long enough for a write made beside it to
+// show. seen() is memory as it was just before this holder let go: a DevTools
+// write that waited its turn has not landed in it yet.
+class OtherHolder {
+ public:
+  OtherHolder() {
+    thread_ = std::thread([this] {
+      CpcPauseLease lease;
+      lease.change_alone(
+          [this] {
+            entered_.store(true);
+            std::this_thread::sleep_for(std::chrono::milliseconds(150));
+            seen_ = memory_image();
+          },
+          /*timeout_ms=*/1000);
+      lease.restore_run_state();
+      done_.store(true);
+    });
+    while (!entered_.load() && !done_.load()) std::this_thread::yield();
+  }
+  OtherHolder(const OtherHolder&) = delete;
+  OtherHolder& operator=(const OtherHolder&) = delete;
+  OtherHolder(OtherHolder&&) = delete;
+  OtherHolder& operator=(OtherHolder&&) = delete;
+  ~OtherHolder() {
+    if (thread_.joinable()) thread_.join();
+  }
+
+  bool holding() const { return entered_.load(); }
+  const std::vector<byte>& seen() {
+    if (thread_.joinable()) thread_.join();
+    return seen_;
+  }
+
+ private:
+  std::thread thread_;
+  std::atomic<bool> entered_{false};
+  std::atomic<bool> done_{false};
+  std::vector<byte> seen_;
+};
+
+// Sweeps the mouse over `win`, one frame per position, until the item `id`
+// is hovered. Leaves the mouse there; false when it never was.
+bool hover_item(HeadlessImGui& gui, DevToolsUI& dt, const char* window,
+                const char* label) {
+  gui.settled_frames([&dt] { dt.render(); });
+  ImGuiWindow* win = ImGui::FindWindowByName(window);
+  if (win == nullptr) return false;
+  ImGuiID const target = ImHashStr(label, 0, win->ID);
+  for (float y = win->Pos.y + 2.0f; y < win->Pos.y + win->Size.y; y += 6.0f) {
+    for (float x = win->Pos.x + 2.0f; x < win->Pos.x + win->Size.x; x += 6.0f) {
+      ImGui::GetIO().AddMousePosEvent(x, y);
+      gui.frame([&dt] { dt.render(); });
+      if (ImGui::GetCurrentContext()->HoveredId == target) return true;
+    }
+  }
+  return false;
+}
+
+// Double-clicks along the first row of the Memory Hex view until a byte
+// opens for editing. False when none did.
+bool open_memhex_cell(HeadlessImGui& gui, DevToolsUI& dt) {
+  gui.settled_frames([&dt] { dt.render(); });
+  ImGuiWindow* hex = ImGui::FindWindowByName("Memory Hex");
+  if (hex == nullptr) return false;
+  ImGuiWindow* view = nullptr;
+  for (ImGuiWindow* w : ImGui::GetCurrentContext()->Windows) {
+    if (w->ParentWindow == hex && (w->Flags & ImGuiWindowFlags_ChildWindow))
+      view = w;
+  }
+  if (view == nullptr) return false;
+  ImGuiIO& io = ImGui::GetIO();
+  float const y = view->DC.CursorStartPos.y + ImGui::GetTextLineHeight() / 2;
+  auto const render = [&dt] { dt.render(); };
+  for (float x = view->Pos.x + 4.0f; x < view->Pos.x + view->Size.x;
+       x += 8.0f) {
+    io.AddMousePosEvent(x, y);
+    for (int click = 0; click < 2; ++click) {
+      io.AddMouseButtonEvent(0, true);
+      gui.frame(render);
+      io.AddMouseButtonEvent(0, false);
+      gui.frame(render);
+    }
+    gui.frame(render);  // the editor takes keyboard focus
+    gui.frame(render);
+    ImGuiContext const& g = *ImGui::GetCurrentContext();
+    if (g.ActiveId != 0 && g.InputTextState.ID == g.ActiveId) return true;
+  }
+  return false;
+}
+
+}  // namespace
+
+TEST_F(DevToolsRenderTest, MemoryHexEditWaitsForAnotherHolder) {
+  membank_read[0] = membank_write[0];  // no ROM overlay: row 0 is editable
+  dt_.toggle_window("memory_hex");
+  ASSERT_TRUE(open_memhex_cell(gui_, dt_)) << "no byte opened for editing";
+  ImGui::GetIO().AddInputCharacter('5');
+  ImGui::GetIO().AddInputCharacter('A');
+  gui_.frame([this] { dt_.render(); });
+
+  std::vector<byte> const before = memory_image();
+  OtherHolder other;
+  ASSERT_TRUE(other.holding());
+  ImGui::GetIO().AddKeyEvent(ImGuiKey_Enter, true);
+  gui_.frame([this] { dt_.render(); });
+  ImGui::GetIO().AddKeyEvent(ImGuiKey_Enter, false);
+  EXPECT_TRUE(before == other.seen())
+      << "the edit was written while another holder had the machine alone";
+  EXPECT_FALSE(before == memory_image()) << "the edit was never written";
+}
+
+TEST_F(DevToolsRenderTest, GraphicsFinderPaintWaitsForAnotherHolder) {
+  dt_.toggle_window("gfx_finder");
+  ASSERT_TRUE(hover_item(gui_, dt_, "Graphics Finder", "##gfxcanvas"));
+
+  std::vector<byte> const before = memory_image();
+  OtherHolder other;
+  ASSERT_TRUE(other.holding());
+  ImGui::GetIO().AddMouseButtonEvent(0, true);
+  gui_.frame([this] { dt_.render(); });
+  ImGui::GetIO().AddMouseButtonEvent(0, false);
+  EXPECT_TRUE(before == other.seen())
+      << "the paint was written while another holder had the machine alone";
+  EXPECT_FALSE(before == memory_image()) << "the paint was never written";
+}
+
+TEST_F(DevToolsRenderTest, AssembleWaitsForAnotherHolder) {
+  g_asm_source.set("org &8000\nld a,&42\nld (&c000),a\nret\n");
+  dt_.toggle_window("assembler");
+  ASSERT_TRUE(hover_item(gui_, dt_, "Assembler##devtools", "Assemble"));
+  ImGui::GetIO().AddMouseButtonEvent(0, true);
+  gui_.frame([this] { dt_.render(); });
+
+  std::vector<byte> const before = memory_image();
+  OtherHolder other;
+  ASSERT_TRUE(other.holding());
+  ImGui::GetIO().AddMouseButtonEvent(0, false);  // a button fires on release
+  gui_.frame([this] { dt_.render(); });
+  EXPECT_TRUE(before == other.seen())
+      << "the program was written while another holder had the machine alone";
+  EXPECT_EQ(0x3E, z80_read_mem(0x8000)) << "the program was never written";
+  EXPECT_EQ(0x42, z80_read_mem(0x8001));
   g_asm_source.set("");
 }

@@ -147,7 +147,11 @@ class Z80AssemblerTest : public ::testing::Test {
   }
 
   AsmResult assemble(const std::string& source) {
-    return asm_.assemble(source);
+    return asm_.assemble(source,
+                         [](std::size_t, const std::function<void()>& write) {
+                           write();
+                           return true;
+                         });
   }
 
   AsmResult check(const std::string& source) { return asm_.check(source); }

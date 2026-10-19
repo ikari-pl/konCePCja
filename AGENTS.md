@@ -263,13 +263,13 @@ Both loops run each frame through `emu_run_frame()` (`src/emu_frame.h`).
 **Always pause before touching Z80 state.**  `reg set`, `step in` and
 `snapshot save/load` take a `CpcPauseLease` (the machine is idle between two
 frames while they run, and its run state is put back after). `mem write`,
-`mem fill`, `mem cpu-write` and `poke write` are one change made the way KCPC
-`MEM_WRITE` is (`kcpc_host_write_machine()`): at a frame boundary on a running
-machine that KCPC clients read or that runs unpaced, otherwise under a lease
-held alone; `poke apply`/`unapply` under a lease alone (beads-nlho). None of
-them pauses the machine for you, so from the test side call `ipc.pause()`
-first when the test needs it stopped. The server is idempotent on
-double-pause.
+`mem fill`, `mem cpu-write`, `poke write` and `asm assemble` are one change
+made the way KCPC `MEM_WRITE` is (`kcpc_host_write_machine()`): at a frame
+boundary on a running machine that KCPC clients read or that runs unpaced,
+otherwise under a lease held alone; `poke apply`/`unapply` under a lease
+alone (beads-nlho). None of them pauses the machine for you, so from the test
+side call `ipc.pause()` first when the test needs it stopped. The server is
+idempotent on double-pause.
 
 **Use `wait bp <timeout_ms>` as a deadlock detector.**  This command blocks
 until a breakpoint fires *or* the timeout expires.  If it times out when a
@@ -859,6 +859,11 @@ host_chords=1     # Cmd/Ctrl+K/O/S drive the host UI (palette, Load Disk A,
   (beads-nhfy). A `PauseOnly` lease that never calls `wait()` (a window
   screenshot) pauses without taking the machine.
 - Reset: `emulator_reset()`
+- A DevTools window changes the machine, a byte of memory included, through
+  `change_machine_alone()` (`src/devtools_ui.cpp`): a lease held alone, never
+  a bare `z80_write_mem()` from the render thread beside a running frame
+  (beads-tddf). `Z80Assembler::assemble()` takes the caller's way of making
+  that one change (`AsmCommit`).
 - A cartridge goes into a built machine through `cpc_cartridge_insert()`
   (`src/koncepcja.h`), never `file_load(CPC.cartridge)`: the load frees the
   image the board reads through a raw pointer. A caller that holds the

@@ -1,8 +1,11 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "types.h"
@@ -19,12 +22,20 @@ struct AsmResult {
   word start_addr;  // lowest address written
   word end_addr;    // highest address written + 1
   int bytes_written;
+  bool machine_busy = false;  // the commit could not have the machine
 };
+
+// How assemble() puts its bytes into the machine: runs write(), which writes
+// `bytes` bytes, as one change, held the way the calling thread has to hold
+// the machine (beads-tddf). False when the machine could not be had; write()
+// did not run then.
+using AsmCommit =
+    std::function<bool(std::size_t bytes, const std::function<void()>& write)>;
 
 class Z80Assembler {
  public:
-  // Assemble source text, write to CPC memory
-  AsmResult assemble(const std::string& source);
+  // Assemble source text and write it to CPC memory through `commit`
+  AsmResult assemble(const std::string& source, const AsmCommit& commit);
 
   // Assemble but don't write to memory (dry run)
   AsmResult check(const std::string& source);
@@ -50,7 +61,8 @@ class Z80Assembler {
 
   bool pass2(const std::vector<Line>& lines,
              const std::map<std::string, word>& symbols,
-             std::vector<AsmError>& errors, bool write_memory, word& start_addr,
+             std::vector<AsmError>& errors,
+             std::vector<std::pair<word, byte>>* writes, word& start_addr,
              word& end_addr, int& bytes_written);
 
   // Instruction size calculation (pass 1) — returns byte count, 0 on error

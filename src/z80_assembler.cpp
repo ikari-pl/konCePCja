@@ -1188,7 +1188,8 @@ bool Z80Assembler::pass1(std::vector<Line>& lines,
 
 bool Z80Assembler::pass2(const std::vector<Line>& lines,
                          const std::map<std::string, word>& symbols,
-                         std::vector<AsmError>& errors, bool write_memory,
+                         std::vector<AsmError>& errors,
+                         std::vector<std::pair<word, byte>>* writes,
                          word& start_addr, word& end_addr, int& bytes_written) {
   // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated
   // (out-param/compound-assign/loop/reference)
@@ -1255,9 +1256,7 @@ bool Z80Assembler::pass2(const std::vector<Line>& lines,
         first_byte = false;
       }
       for (byte const b : output) {
-        if (write_memory) {
-          z80_write_mem(current_addr, b);
-        }
+        if (writes != nullptr) writes->emplace_back(current_addr, b);
         current_addr++;
         bytes_written++;
       }
@@ -1270,7 +1269,8 @@ bool Z80Assembler::pass2(const std::vector<Line>& lines,
 
 // ── Public API ──
 
-AsmResult Z80Assembler::assemble(const std::string& source) {
+AsmResult Z80Assembler::assemble(const std::string& source,
+                                 const AsmCommit& commit) {
   z80_opcode_table_init();
 
   AsmResult result;
@@ -1290,11 +1290,20 @@ AsmResult Z80Assembler::assemble(const std::string& source) {
     return result;
   }
 
-  // Pass 2: encode and write
-  if (!pass2(lines, result.symbols, result.errors, true, result.start_addr,
-             result.end_addr, result.bytes_written)) {
+  // Pass 2: encode, then write what was encoded as one change
+  std::vector<std::pair<word, byte>> writes;
+  bool const encoded =
+      pass2(lines, result.symbols, result.errors, &writes, result.start_addr,
+            result.end_addr, result.bytes_written);
+  if (!writes.empty() && !commit(writes.size(), [&writes] {
+        for (auto const& [addr, b] : writes) z80_write_mem(addr, b);
+      })) {
+    result.bytes_written = 0;
+    result.machine_busy = true;
+    result.errors.push_back({0, "the machine is busy: nothing was written"});
     return result;
   }
+  if (!encoded) return result;
 
   result.success = true;
   return result;
@@ -1319,7 +1328,7 @@ AsmResult Z80Assembler::check(const std::string& source) {
     return result;
   }
 
-  if (!pass2(lines, result.symbols, result.errors, false, result.start_addr,
+  if (!pass2(lines, result.symbols, result.errors, nullptr, result.start_addr,
              result.end_addr, result.bytes_written)) {
     return result;
   }
