@@ -64,6 +64,21 @@ bool has_path_traversal(const char* path) {
 }
 }  // namespace
 
+// Runs change() with the machine held still and alone (beads-mtfy): the way
+// every DevTools window changes the machine, a write to memory included
+// (beads-tddf). False, with a toast, when that could not be had and change()
+// was not called.
+namespace {
+bool change_machine_alone(const std::function<void()>& change) {
+  constexpr int kAloneWaitMs = 250;
+  CpcPauseLease lease;
+  if (!imgui_lease_ready(lease)) return false;
+  bool const changed = lease.change_alone(change, kAloneWaitMs);
+  lease.restore_run_state();
+  return changed;
+}
+}  // namespace
+
 // Consistent link color for all navigable addresses
 namespace {
 constexpr ImVec4 kLinkColor(0.4f, 0.8f, 1.0f, 1.0f);
@@ -1247,7 +1262,8 @@ void DevToolsUI::render_memory_hex() {
               if (committed) {
                 unsigned long nv;
                 if (parse_hex(memhex_edit_buf_, &nv, 0xFF)) {
-                  z80_write_mem(a, static_cast<byte>(nv));
+                  change_machine_alone(
+                      [a, nv] { z80_write_mem(a, static_cast<byte>(nv)); });
                 }
                 memhex_edit_addr_ = -1;
                 memhex_sel_addr_ = -1;
@@ -1914,19 +1930,6 @@ void DevToolsUI::render_symbols() {
 // Debug Window 7: Silicon Disc
 // -----------------------------------------------
 
-namespace {
-// Runs change() with the machine held still and alone (beads-mtfy). False,
-// with a toast, when that could not be had and change() was not called.
-bool sd_with_machine(const std::function<void()>& change) {
-  constexpr int kAloneWaitMs = 250;
-  CpcPauseLease lease;
-  if (!imgui_lease_ready(lease)) return false;
-  bool const changed = lease.change_alone(change, kAloneWaitMs);
-  lease.restore_run_state();
-  return changed;
-}
-}  // namespace
-
 void DevToolsUI::render_silicon_disc() {
   apply_default_window_layout(6, 380, 280);
 
@@ -1942,7 +1945,7 @@ void DevToolsUI::render_silicon_disc() {
   // Fitted on, or taken off, the running board (beads-t9vs)
   bool fitted = g_silicon_disc.enabled;
   if (ImGui::Checkbox("Enabled", &fitted)) {
-    sd_with_machine([fitted] {
+    change_machine_alone([fitted] {
       subcycle_bridge_silicon_disc_fit(fitted);
       ga_memory_manager();
     });
@@ -1957,7 +1960,7 @@ void DevToolsUI::render_silicon_disc() {
       // What the CPC sees, read off the board (beads-mtfy)
       SiliconDisc seen;
       silicon_disc_init(seen);
-      bool const read = sd_with_machine(
+      bool const read = change_machine_alone(
           [&seen] { subcycle_bridge_silicon_disc_copy_out(seen.data); });
       for (int bank = 0; read && bank < SILICON_DISC_BANKS; bank++) {
         const uint8_t* ptr = seen.bank_ptr(bank);
@@ -1994,7 +1997,7 @@ void DevToolsUI::render_silicon_disc() {
   if (ImGui::Button("Save") && sd_path_[0] != '\0' && g_silicon_disc.data) {
     SiliconDisc image;
     silicon_disc_init(image);
-    if (sd_with_machine(
+    if (change_machine_alone(
             [&image] { subcycle_bridge_silicon_disc_copy_out(image.data); }))
       silicon_disc_save(image, sd_path_);
     silicon_disc_free(image);
@@ -2003,14 +2006,14 @@ void DevToolsUI::render_silicon_disc() {
   if (ImGui::Button("Load") && sd_path_[0] != '\0' && g_silicon_disc.data) {
     SiliconDisc image;
     if (silicon_disc_load(image, sd_path_))
-      sd_with_machine(
+      change_machine_alone(
           [&image] { subcycle_bridge_silicon_disc_copy_in(image.data); });
     silicon_disc_free(image);
     sd_usage_dirty_ = true;
   }
   ImGui::SameLine();
   if (ImGui::Button("Clear") && g_silicon_disc.data) {
-    sd_with_machine([] { subcycle_bridge_silicon_disc_copy_in(nullptr); });
+    change_machine_alone([] { subcycle_bridge_silicon_disc_copy_in(nullptr); });
     sd_usage_dirty_ = true;
   }
 
@@ -3165,10 +3168,16 @@ void DevToolsUI::render_gfx_finder() {
         int const byte_col = mx / ppb;
         size_t const byte_offset =
             (static_cast<size_t>(my) * gfx_width_) + byte_col;
+        uint8_t const was =
+            byte_offset < mem_buf.size() ? mem_buf[byte_offset] : 0;
+        // Only a byte that changed is written: the button held still paints
+        // the same pixel every frame, and each write takes the machine.
         if (gfx_paint(mem_buf.data(), mem_buf.size(), params, mx, my,
-                      static_cast<uint8_t>(gfx_paint_color_))) {
-          z80_write_mem(static_cast<word>((base_addr + byte_offset) & 0xFFFF),
-                        mem_buf[byte_offset]);
+                      static_cast<uint8_t>(gfx_paint_color_)) &&
+            mem_buf[byte_offset] != was) {
+          word const at = static_cast<word>((base_addr + byte_offset) & 0xFFFF);
+          byte const painted = mem_buf[byte_offset];
+          change_machine_alone([at, painted] { z80_write_mem(at, painted); });
         }
       }
     }
@@ -4054,7 +4063,10 @@ void DevToolsUI::render_assembler() {
   if (ImGui::Button("Assemble")) {
     size_t const orig_len = source_len();
     std::string const src = get_source();
-    AsmResult const r = g_assembler.assemble(src);
+    AsmResult const r = g_assembler.assemble(
+        src, [](std::size_t, const std::function<void()>& write) {
+          return change_machine_alone(write);
+        });
     asm_errors_ = r.errors;
     // Adjust line numbers if we prepended org
     if (src.size() > orig_len && !asm_errors_.empty()) {

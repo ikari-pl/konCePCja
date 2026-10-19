@@ -2238,6 +2238,74 @@ def test_a_text_ipc_fill_is_one_change_beside_reads() -> None:
                   'torn')
 
 
+def test_a_text_ipc_assemble_is_one_change_beside_reads() -> None:
+    """`asm assemble` wrote its bytes into a running machine one by one from
+    the IPC socket thread, as `mem fill` did before beads-nlho, and the
+    DevTools Assembler did the same from the render thread (beads-tddf): a
+    read taken at a frame boundary in the middle saw half a program. Each
+    assemble must be one change, so every read of the block sees one fill.
+    Unpaced, so that boundaries come often."""
+    addr, length = 0x9000, 0x3000
+    tmp = Path(tempfile.mkdtemp(prefix='kcpc-asm-'))
+    sources = []
+    for fill in (0x55, 0xAA):
+        src = tmp / f'fill{fill:02x}.asm'
+        src.write_text(f'org &{addr:04X}\ndefs &{length:04X},&{fill:02X}\n')
+        sources.append(src)
+    try:
+        with Core('-O', 'system.limit_speed=0') as core:
+            with controller(core, 'test_kcpc spinner') as c:
+                assert core.ipc('wait vbl 60 20000').startswith('OK')
+                spin(core, c)
+                # The block holds one fill before the first read.
+                assert core.ipc(f'asm load {sources[1]}').startswith('OK')
+                assert core.ipc('asm assemble').startswith('OK')
+                assembled = 0
+                torn: List[str] = []
+                stop = threading.Event()
+                errors: List[str] = []
+
+                def assemble() -> None:
+                    nonlocal assembled
+                    try:
+                        while not stop.is_set():
+                            src = sources[assembled % 2]
+                            resp = core.ipc(f'asm load {src}')
+                            assert resp.startswith('OK'), resp
+                            resp = core.ipc('asm assemble')
+                            assert resp.startswith('OK'), resp
+                            assembled += 1
+                    except Exception as e:  # pylint: disable=broad-except
+                        errors.append(repr(e))
+
+                writer = threading.Thread(target=assemble)
+                writer.start()
+                reads = 0
+                try:
+                    with core.client() as r:
+                        r.hello('test_kcpc block reader')
+                        begin = time.monotonic()
+                        while time.monotonic() - begin < 2.0 and not errors:
+                            data = r.mem_read(kc.SPACE_CPU, addr, length)
+                            reads += 1
+                            if data.count(data[0]) != length:
+                                torn.append(f'read {reads}: {data[0]:02X} '
+                                            f'then {len(set(data))} values')
+                finally:
+                    stop.set()
+                    writer.join(timeout=30)
+                assert not errors, errors
+                assert assembled > 10 and reads > 10, (assembled, reads)
+                assert not torn, (f'{len(torn)} of {reads} reads beside '
+                                  f'{assembled} assembles saw a program half '
+                                  f'written: {torn[:3]}')
+                wait_running(c)
+                print(f'    {reads} reads beside {assembled} text IPC '
+                      'assembles, none torn')
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def test_frame_events_arrive_at_the_interval() -> None:
     """Acceptance 5, first half: with frame_interval 5, EVT_FRAME arrives
     for every fifth frame and the events on the connection are numbered
@@ -5112,6 +5180,7 @@ TESTS: List[Callable[[], None]] = [
     test_reset_is_pushed,
     test_run_is_not_lost_to_another_actors_lease,
     test_a_text_ipc_fill_is_one_change_beside_reads,
+    test_a_text_ipc_assemble_is_one_change_beside_reads,
     test_frame_events_arrive_at_the_interval,
     test_a_client_that_stops_reading_is_told_what_it_missed,
     test_control_changes_reach_every_client,
