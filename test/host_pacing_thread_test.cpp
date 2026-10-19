@@ -20,6 +20,7 @@
 #if defined(__APPLE__)
 #include <mach/mach.h>
 #include <mach/thread_policy.h>
+#include <sys/resource.h>
 #elif defined(__linux__)
 #include <sys/prctl.h>
 #endif
@@ -67,6 +68,15 @@ bool time_constraint(thread_time_constraint_policy_data_t& policy) {
   mach_port_deallocate(mach_task_self(), self);
   return kr == KERN_SUCCESS && !get_default;
 }
+
+// Whether the OS runs the calling thread in the background band
+// (`taskpolicy -b`, `make e2e_test_slow` style, or a background thread). The
+// band throttles timers, and a time-constraint policy does not lift that:
+// measured ~195 ms late paced or not (beads-py5c).
+bool in_background_band() {
+  return getpriority(PRIO_DARWIN_PROCESS, 0) > 0 ||
+         getpriority(PRIO_DARWIN_THREAD, 0) > 0;
+}
 #endif
 
 // Runs `body` on a thread of its own: a new thread starts as an ordinary one,
@@ -112,6 +122,11 @@ TEST(HostPacingThread, APacedSleepEndsOnTime) {
     host_pacing_thread(false, PacingThreadRule::kPeriodUs, kBusyUs);
     print("pacing thread  ", paced);
 #if defined(__APPLE__)
+    if (in_background_band()) {
+      GTEST_SKIP() << "the process runs in the macOS background band, which "
+                      "throttles timers whatever the thread's policy: the "
+                      "measurement above is the record (beads-py5c)";
+    }
     // Measured 0.01 ms paced, against ~100 ms on a coalescing host. A virtual
     // machine (CI) does not coalesce but has its own jitter: 5 ms paced or not.
     EXPECT_LT(paced[paced.size() / 2], 15000u);
