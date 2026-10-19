@@ -260,11 +260,16 @@ Both loops run each frame through `emu_run_frame()` (`src/emu_frame.h`).
 
 #### Key patterns
 
-**Always pause before touching Z80 state.**  `reg set`, `mem write`, `step in`,
-`snapshot save/load` all call `cpc_pause_and_wait()` internally (which spins
-until the Z80 thread exits `z80_execute()`).  From the test side, call
-`ipc.pause()` first anyway — it keeps intent explicit and the server is
-idempotent on double-pause.
+**Always pause before touching Z80 state.**  `reg set`, `step in` and
+`snapshot save/load` take a `CpcPauseLease` (the machine is idle between two
+frames while they run, and its run state is put back after). `mem write`,
+`mem fill`, `mem cpu-write` and `poke write` are one change made the way KCPC
+`MEM_WRITE` is (`kcpc_host_write_machine()`): at a frame boundary on a running
+machine that KCPC clients read or that runs unpaced, otherwise under a lease
+held alone; `poke apply`/`unapply` under a lease alone (beads-nlho). None of
+them pauses the machine for you, so from the test side call `ipc.pause()`
+first when the test needs it stopped. The server is idempotent on
+double-pause.
 
 **Use `wait bp <timeout_ms>` as a deadlock detector.**  This command blocks
 until a breakpoint fires *or* the timeout expires.  If it times out when a

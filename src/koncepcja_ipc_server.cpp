@@ -63,6 +63,7 @@
 #include "imgui_ui_testable.h"
 #include "ipc_mru.h"
 #include "iui_host.h"
+#include "kcpc/kcpc_host.h"
 #include "keyboard.h"
 #include "koncepcja.h"
 #include "m4board.h"
@@ -2721,11 +2722,17 @@ std::string handle_command(const std::string& line) {
       std::string hex;
       for (size_t i = 3; i < parts.size(); i++) hex += parts[i];
       if (hex.size() % 2 != 0) return "ERR 400 bad-hex\n";
+      std::vector<byte> bytes;
       for (size_t i = 0; i < hex.size(); i += 2) {
         std::string const byte_str = hex.substr(i, 2);
-        byte const v = static_cast<byte>(std::stoul(byte_str, nullptr, 16));
-        z80_write_mem(static_cast<word>(addr + (i / 2)), v);
+        bytes.push_back(static_cast<byte>(std::stoul(byte_str, nullptr, 16)));
       }
+      // One change, never beside a running frame or a rebuild (beads-nlho).
+      if (!kcpc_host_write_machine(bytes.size(), [&] {
+            for (size_t i = 0; i < bytes.size(); i++)
+              z80_write_mem(static_cast<word>(addr + i), bytes[i]);
+          }))
+        return err_with_context(409, "z80-not-idle");
       ui_host().debugger_memory_changed();
       return ok_with_context();
     }
@@ -2740,9 +2747,12 @@ std::string handle_command(const std::string& line) {
         pattern.push_back(
             static_cast<byte>(std::stoul(hex.substr(i, 2), nullptr, 16)));
       }
-      for (unsigned int i = 0; i < len; i++) {
-        z80_write_mem(static_cast<word>(addr + i), pattern[i % pattern.size()]);
-      }
+      if (!kcpc_host_write_machine(len, [&] {
+            for (unsigned int i = 0; i < len; i++)
+              z80_write_mem(static_cast<word>(addr + i),
+                            pattern[i % pattern.size()]);
+          }))
+        return err_with_context(409, "z80-not-idle");
       ui_host().debugger_memory_changed();
       return ok_with_context();
     }
@@ -2817,11 +2827,16 @@ std::string handle_command(const std::string& line) {
         for (size_t i = 3; i < parts.size(); i++) hex += parts[i];
         if (hex.size() % 2 != 0) return "ERR 400 bad-hex\n";
         if (hex.size() / 2 > 0x10000) return "ERR 400 len exceeds 64K\n";
+        std::vector<byte> bytes;
         for (size_t i = 0; i < hex.size(); i += 2) {
           std::string const byte_str = hex.substr(i, 2);
-          byte const v = static_cast<byte>(std::stoul(byte_str, nullptr, 16));
-          z80_cpu_write_mem(static_cast<word>(addr + (i / 2)), v);
+          bytes.push_back(static_cast<byte>(std::stoul(byte_str, nullptr, 16)));
         }
+        if (!kcpc_host_write_machine(bytes.size(), [&] {
+              for (size_t i = 0; i < bytes.size(); i++)
+                z80_cpu_write_mem(static_cast<word>(addr + i), bytes[i]);
+            }))
+          return err_with_context(409, "z80-not-idle");
         return "OK\n";
       } catch (const std::exception&) {
         return "ERR 400 bad-number\n";
@@ -5297,15 +5312,20 @@ std::string handle_command(const std::string& line) {
         }
         if (parts.size() >= 4 && parts[3] == "all") {
           int total_vals = 0;
-          int const n = g_poke_manager.apply_all(
-              game_idx,
-              [](uint16_t a, uint8_t v) {
-                z80_write_mem(static_cast<word>(a), v);
-              },
-              [](uint16_t a) -> uint8_t {
-                return z80_read_mem(static_cast<word>(a));
-              },
-              &total_vals);
+          int n = 0;
+          // Under a lease alone, like every write (beads-nlho).
+          if (!config_change_machine(IpcConfigHold::Lease, [&] {
+                n = g_poke_manager.apply_all(
+                    game_idx,
+                    [](uint16_t a, uint8_t v) {
+                      z80_write_mem(static_cast<word>(a), v);
+                    },
+                    [](uint16_t a) -> uint8_t {
+                      return z80_read_mem(static_cast<word>(a));
+                    },
+                    &total_vals);
+              }))
+            return err_with_context(409, "z80-not-idle");
           if (n < 0) return "ERR invalid game index\n";
           return "OK applied " + std::to_string(n) + " pokes (" +
                  std::to_string(total_vals) + " values total)\n";
@@ -5319,14 +5339,18 @@ std::string handle_command(const std::string& line) {
           } catch (const std::out_of_range&) {
             return "ERR 400 poke index out of range\n";
           }
-          int const n = g_poke_manager.apply(
-              game_idx, poke_idx,
-              [](uint16_t a, uint8_t v) {
-                z80_write_mem(static_cast<word>(a), v);
-              },
-              [](uint16_t a) -> uint8_t {
-                return z80_read_mem(static_cast<word>(a));
-              });
+          int n = 0;
+          if (!config_change_machine(IpcConfigHold::Lease, [&] {
+                n = g_poke_manager.apply(
+                    game_idx, poke_idx,
+                    [](uint16_t a, uint8_t v) {
+                      z80_write_mem(static_cast<word>(a), v);
+                    },
+                    [](uint16_t a) -> uint8_t {
+                      return z80_read_mem(static_cast<word>(a));
+                    });
+              }))
+            return err_with_context(409, "z80-not-idle");
           if (n < 0) return "ERR invalid index\n";
           return "OK applied " + std::to_string(n) + " values\n";
         }
@@ -5342,10 +5366,14 @@ std::string handle_command(const std::string& line) {
         } catch (const std::out_of_range&) {
           return "ERR 400 index out of range\n";
         }
-        int const n = g_poke_manager.unapply(
-            game_idx, poke_idx, [](uint16_t a, uint8_t v) {
-              z80_write_mem(static_cast<word>(a), v);
-            });
+        int n = 0;
+        if (!config_change_machine(IpcConfigHold::Lease, [&] {
+              n = g_poke_manager.unapply(
+                  game_idx, poke_idx, [](uint16_t a, uint8_t v) {
+                    z80_write_mem(static_cast<word>(a), v);
+                  });
+            }))
+          return err_with_context(409, "z80-not-idle");
         if (n < 0) return "ERR unapply failed (not applied or invalid index)\n";
         return "OK restored " + std::to_string(n) + " values\n";
       }
@@ -5361,7 +5389,10 @@ std::string handle_command(const std::string& line) {
           return "ERR 400 bad-args (poke write <addr> <value>)\n";
         }
         if (val > 255) return "ERR 400 value must be 0-255\n";
-        z80_write_mem(static_cast<word>(addr), static_cast<byte>(val));
+        if (!kcpc_host_write_machine(1, [addr, val] {
+              z80_write_mem(static_cast<word>(addr), static_cast<byte>(val));
+            }))
+          return err_with_context(409, "z80-not-idle");
         return "OK\n";
       }
       return "ERR 400 bad-poke-cmd (load|list|apply|unapply|write)\n";
