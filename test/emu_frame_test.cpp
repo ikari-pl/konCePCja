@@ -361,6 +361,18 @@ class BackToBackRunner {
   std::thread runner_;
   std::thread watchdog_;
 };
+
+// Runs the machine for a BackToBackRunner test. A stray g_emu_paused that an
+// earlier (shuffled) test left beside a clear CPC.paused makes cpc_resume()
+// return early, and the runner then never enters a turn: the test hung until
+// its watchdog fired instead of saying why (beads-uykx). As in
+// EmuFrameTurnTest::SetUp(). Returns whether the machine was paused before.
+bool run_the_machine() {
+  bool const was_paused = CPC.paused;
+  if (!CPC.paused) g_emu_paused.store(false);
+  cpc_resume();
+  return was_paused;
+}
 }  // namespace
 
 // beads-b0bj: under -H the main thread runs the frames, and it never marked
@@ -368,8 +380,9 @@ class BackToBackRunner {
 // load, disk swap...) reported the machine idle at once and mutated it under
 // a running frame. With the lease held, no frame may complete.
 TEST_F(EmuFramePacingTest, HeadlessTurnHoldsOffAPauseLease) {
-  bool const was_paused = g_emu_paused.load();
-  cpc_resume();
+  bool const was_paused = run_the_machine();
+  ASSERT_FALSE(g_emu_paused.load())
+      << "a previous test left the machine paused (a pause lease held?)";
   BackToBackRunner runner(std::chrono::seconds(60));
   int overlaps = 0;
   for (int i = 0; i < 50; ++i) {
@@ -401,8 +414,9 @@ TEST_F(EmuFramePacingTest, HeadlessTurnHoldsOffAPauseLease) {
 // MSVC runner until CI cancelled it, and took up to 0.9 s per lease on an
 // M-series Mac. A pauser must get the mutex within a frame or two.
 TEST_F(EmuFramePacingTest, ALeaseBesideBackToBackFramesIsGrantedPromptly) {
-  bool const was_paused = g_emu_paused.load();
-  cpc_resume();
+  bool const was_paused = run_the_machine();
+  ASSERT_FALSE(g_emu_paused.load())
+      << "a previous test left the machine paused (a pause lease held?)";
   BackToBackRunner runner(std::chrono::seconds(20));
   double worst_ms = 0;
   for (int i = 0; i < 50; ++i) {

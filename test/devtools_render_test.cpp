@@ -354,11 +354,13 @@ bool disasm_menubar_has_item(HeadlessImGui& gui, DevToolsUI& dt,
 // Stops or runs the machine for the test and puts it back. Through
 // cpc_pause() / cpc_resume(), not g_emu_paused: the buttons follow the
 // announced run state, which a bare flag does not change (beads-wwz8).
+// Saves CPC.paused, the flag those two act on: the announced state can
+// disagree with it (a test that writes CPC.paused announces nothing), and
+// putting that back paused a machine that had been running for every test
+// after this one (beads-uykx).
 class PausedFlag {
  public:
-  explicit PausedFlag(bool paused) : saved_(cpc_announced_stopped()) {
-    set(paused);
-  }
+  explicit PausedFlag(bool paused) : saved_(CPC.paused) { set(paused); }
   PausedFlag(const PausedFlag&) = delete;
   PausedFlag& operator=(const PausedFlag&) = delete;
   PausedFlag(PausedFlag&&) = delete;
@@ -395,6 +397,23 @@ TEST_F(DevToolsRenderTest, DisassemblyRunPauseFollowsTheMachine) {
   dt_.toggle_window("disassembly");
   EXPECT_TRUE(disasm_menubar_has_item(gui_, dt_, "Pause"));
   EXPECT_FALSE(disasm_menubar_has_item(gui_, dt_, "Run"));
+}
+
+// beads-uykx: a running machine whose last announcement was a stop (a test
+// that cleared CPC.paused itself announces nothing) must be left running.
+// PausedFlag put back the announced state, so it paused the machine for the
+// tests after it, and a pause lease test hung for its whole budget.
+TEST_F(DevToolsRenderTest, PausedFlagPutsBackTheMachineItFound) {
+  bool const saved = CPC.paused;
+  cpc_pause();
+  CPC.paused = false;
+  g_emu_paused.store(false);
+  {
+    PausedFlag const running(false);
+  }
+  EXPECT_FALSE(CPC.paused);
+  EXPECT_FALSE(g_emu_paused.load());
+  if (saved) cpc_pause();
 }
 
 // -----------------------------------------------
