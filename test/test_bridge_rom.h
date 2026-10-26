@@ -10,6 +10,7 @@
 #include <string>
 #include <vector>
 
+#include "autotype.h"
 #include "koncepcja.h"
 #include "subcycle_bridge.h"
 
@@ -37,10 +38,15 @@ class TestBridgeRom {
     CPC.ram_size = 128;
     CPC.limit_speed = 0;
     saved_ = true;
+    // A queue another (shuffled) test left behind would be typed, by the
+    // frames this test runs, through CPC.InputMapper, which the test binary
+    // never builds.
+    g_autotype_queue.clear();
     started_ = subcycle_bridge_start();
   }
   ~TestBridgeRom() {
     if (started_) subcycle_bridge_stop();
+    g_autotype_queue.clear();
     if (saved_) {
       CPC.rom_path = saved_rom_path_;
       CPC.model = saved_model_;
