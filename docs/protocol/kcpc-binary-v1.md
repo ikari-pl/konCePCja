@@ -2046,8 +2046,8 @@ Source layout the slices should follow:
   `mem_lower_rom()`, `mem_upper_rom()`: whole views and ROMs for
   `MEM_READ`, through the same banking decisions as the per-byte peeks.
 - `src/net_socket.{h,cpp}` — the one place with `#ifdef _WIN32` around
-  sockets. The text IPC keeps its own two copies of `run()` for now; moving
-  it onto the shim is a separate clean-up.
+  sockets. The text IPC's acceptor and client loop run on it too
+  (beads-o3j0).
 - `test/integrated/kcpc/kcpc_client.py`, `test/integrated/kcpc/test_kcpc.py`,
   `test/integrated/kcpc/test_exit_criterion.py`
   — standard library only (`socket`, `struct`, `threading`), so the Windows
