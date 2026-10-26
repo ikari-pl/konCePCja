@@ -1904,6 +1904,8 @@ bool g_walk_verdict_other = true;
 void cpc_reconcile_run_state_locked();
 }  // namespace
 
+bool cpc_in_frame_turn() { return t_frame_turn; }
+
 // External API consumed by other translation units (the step-out walk in
 // z80_view.cpp waits here after each callee skip); internal linkage would
 // break the link.

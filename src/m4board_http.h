@@ -120,20 +120,11 @@ class M4HttpServer {
   mutable std::mutex port_mutex_;
   std::vector<M4PortMapping> port_mappings_;
 
-  // Surface snapshot for preview — updated by main thread, read by HTTP thread.
-  mutable std::mutex preview_mutex_;
-  std::vector<uint8_t> preview_bmp_;  // BMP-encoded snapshot
-
   // Status snapshots — written by main thread in drain_pending(), read by HTTP
   // thread.
   std::atomic<bool> snapshot_paused{false};
-  std::atomic<int> snapshot_screen_w{0};
-  std::atomic<int> snapshot_screen_h{0};
 
  public:
-  // Called from main thread to update the preview snapshot.
-  void update_preview_snapshot();
-
   // Deferred actions — set by HTTP thread, consumed by main loop.
   // These ensure thread-unsafe CPC operations happen on the main thread.
   std::atomic<bool> pending_reset{false};

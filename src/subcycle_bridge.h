@@ -159,6 +159,12 @@ class Machine;
 }
 /* The live machine, or null when the engine is inactive. */
 subcycle::Machine* subcycle_bridge_machine();
+/* The machine's canonical frame: RGB24, subcycle::kFbWidth x kFbHeight, stride
+ * kFbWidth * 3, every row of the monitor window (FB_INFO describes it). Null
+ * when the engine is inactive. The frame runner writes it during each frame
+ * and a rebuild reallocates it: read it only where no frame runs, which off
+ * the runner means through kcpc_host_frame_copy(). */
+const uint8_t* subcycle_bridge_framebuffer();
 
 /* The live FDC Device (drive media truth for Save-As), or null when the engine
  * is inactive. A lean handle so flux_save.cpp need not pull in machine.h. */

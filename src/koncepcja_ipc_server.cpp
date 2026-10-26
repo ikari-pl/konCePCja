@@ -60,6 +60,7 @@
 #include "expr_parser.h"
 #include "flux_save.h"
 #include "gif_recorder.h"
+#include "host_surface.h"
 #include "imgui_ui_testable.h"
 #include "ipc_mru.h"
 #include "iui_host.h"
@@ -96,7 +97,6 @@ extern t_CPC CPC;
 extern t_CRTC CRTC;
 extern t_GateArray GateArray;
 extern t_PSG PSG;
-extern HostSurface* back_surface;
 extern byte* pbRAM;
 extern video_plugin* vid_plugin;
 
@@ -1719,10 +1719,15 @@ void init_command_registry() {
                    "  list: Show all registered events.");
 
   register_command("hash", "DEBUG",
-                   "hash vram | hash mem <addr> <len> | hash regs",
+                   "hash frame | hash vram | hash mem <addr> <len> | hash regs",
                    "CRC32 hashes for CI assertions",
-                   "Compute CRC32 of screen surface, memory range, or packed "
-                   "register state.\n"
+                   "Compute CRC32 of the machine's frame, a memory range, or "
+                   "packed register state.\n"
+                   "frame: the canonical frame (RGB24 768x272, stride 2304), "
+                   "the bytes FB_INFO\n"
+                   "describes, copied between two frames; the reply names the "
+                   "frame it was taken\n"
+                   "after. vram: the same hash, in the one-field reply.\n"
                    "Useful for deterministic regression testing.");
 
   register_command(
@@ -1961,14 +1966,36 @@ std::string handle_command(const std::string& line) {
     }
     if (cmd == "hash" && parts.size() >= 2) {
       char buf[64];
-      if (parts[1] == "vram") {
-        // Hash the visible video memory (back_surface pixels)
-        if (!back_surface) return "ERR 503 no-surface\n";
+      if (parts[1] == "frame" || parts[1] == "vram") {
+        // The machine's own frame, copied between two frames (beads-0ir.1):
+        // never the host surface the runner blits it into, which is scaled
+        // to the window and written beside this thread.
+        std::vector<uint8_t> rgb;
+        kcpc::Stamp stamp;
+        switch (kcpc_host_frame_copy(rgb, stamp)) {
+          case kcpc::Status::kOk:
+            break;
+          case kcpc::Status::kNotPresent:
+            return "ERR 503 no-machine\n";
+          case kcpc::Status::kShuttingDown:
+            return "ERR 503 shutting-down\n";
+          default:
+            return "ERR 503 busy\n";
+        }
         uLong crc = crc32(0L, nullptr, 0);
-        crc = crc32(crc, static_cast<const Bytef*>(back_surface->pixels),
-                    static_cast<uInt>(back_surface->h * back_surface->pitch));
-        snprintf(buf, sizeof(buf), "OK crc32=%08lX\n", crc);
-        return {buf};
+        crc = crc32(crc, rgb.data(), static_cast<uInt>(rgb.size()));
+        if (parts[1] == "vram") {
+          snprintf(buf, sizeof(buf), "OK crc32=%08lX\n", crc);
+          return {buf};
+        }
+        char reply[160];
+        snprintf(reply, sizeof(reply),
+                 "OK crc32=%08lX frame=%llu paused=%d width=%d height=%d "
+                 "stride=%d format=rgb24\n",
+                 crc, static_cast<unsigned long long>(stamp.frame),
+                 stamp.paused ? 1 : 0, subcycle::kFbWidth, subcycle::kFbHeight,
+                 subcycle::kFbWidth * 3);
+        return {reply};
       }
       if (parts[1] == "mem" && parts.size() >= 4) {
         unsigned int addr, len;
@@ -2035,7 +2062,7 @@ std::string handle_command(const std::string& line) {
         snprintf(buf, sizeof(buf), "OK crc32=%08lX\n", crc);
         return {buf};
       }
-      return "ERR 400 bad-args (hash vram|mem|regs)\n";
+      return "ERR 400 bad-args (hash frame|vram|mem|regs)\n";
     }
 
     if (cmd == "pause") {
@@ -3519,19 +3546,32 @@ std::string handle_command(const std::string& line) {
         return err_with_context(409, "frame-step-busy");
       }
       if (is_gif) {
-        // Animated GIF output
-        if (!back_surface) return "ERR 503 no-surface\n";
+        // Animated GIF of the machine's own frame, each row shown twice so
+        // the picture keeps its shape (768x544), copied once the step has
+        // stopped the machine (beads-0ir.1). Not the host surface: that is
+        // the window's size, and the runner has moved on to its next buffer.
         int delay_cs = 2;  // default: 50fps (matches CPC VBL rate)
         if (parts.size() >= 5) delay_cs = parse_int(parts[4]);
+        int const gif_w = subcycle::kFbWidth;
+        int const gif_h = subcycle::kFbHeight * 2;
+        std::vector<uint8_t> rgb;
+        std::vector<uint8_t> rgba(static_cast<size_t>(gif_w) * gif_h * 4);
+        kcpc::Stamp stamp;
+        if (kcpc_host_frame_copy(rgb, stamp) == kcpc::Status::kNotPresent) {
+          return "ERR 503 no-machine\n";
+        }
         GifRecorder gif;
-        if (!gif.begin(back_surface->w, back_surface->h, delay_cs)) {
+        if (!gif.begin(gif_w, gif_h, delay_cs)) {
           return "ERR 500 gif-begin-failed\n";
         }
         int recorded = 0;
         for (int i = 0; i < frame_count; i++) {
           if (!step_one_frame()) break;
-          gif.add_frame(static_cast<const uint8_t*>(back_surface->pixels),
-                        back_surface->pitch);
+          if (kcpc_host_frame_copy(rgb, stamp) != kcpc::Status::kOk) break;
+          host_blit_rgb24_to_rgba32_nearest(
+              rgb.data(), subcycle::kFbWidth, subcycle::kFbWidth * 3, 0,
+              subcycle::kFbHeight, rgba.data(), gif_w, gif_h, gif_w * 4);
+          gif.add_frame(rgba.data(), gif_w * 4);
           ++recorded;
         }
         if (gif.end(pattern)) {

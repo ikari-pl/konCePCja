@@ -983,6 +983,27 @@ Status kcpc_host_fb_info(kcpc::FbInfo& info) {
   return Status::kOk;
 }
 
+Status kcpc_host_frame_copy(std::vector<std::uint8_t>& rgb,
+                            kcpc::Stamp& stamp) {
+  constexpr std::size_t kBytes =
+      static_cast<std::size_t>(subcycle::kFbWidth) * subcycle::kFbHeight * 3;
+  rgb.resize(kBytes);  // the copy itself must not allocate
+  auto copy = [&rgb, &stamp](const kcpc::Stamp& taken) {
+    std::uint8_t const* fb = subcycle_bridge_framebuffer();
+    if (fb == nullptr) return Status::kNotPresent;
+    std::memcpy(rgb.data(), fb, kBytes);
+    stamp = taken;
+    return Status::kOk;
+  };
+  if (cpc_in_frame_turn()) {
+    kcpc::Stamp now;
+    now.frame = g_gate.frame();
+    now.paused = g_emu_paused.load(std::memory_order_acquire);
+    return copy(now);
+  }
+  return gated(kBytes, copy);
+}
+
 Status kcpc_host_regs_get(kcpc::Stamp& stamp, kcpc::Regs& regs) {
   return gated(kcpc::kRegsSize, [&](const kcpc::Stamp& taken) {
     if (subcycle_bridge_machine() == nullptr) return Status::kInternal;
