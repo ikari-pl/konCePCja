@@ -6,6 +6,7 @@
 #include "z80_view.h"
 
 TraceRecorder g_trace;
+int g_trace_default_size = 65536;
 
 void TraceRecorder::enable(int buffer_size) {
   buffer.resize(buffer_size);
