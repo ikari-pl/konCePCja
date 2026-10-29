@@ -54,3 +54,5 @@ koncepcja.cfg
 
 # Python bytecode cache from the IPC harness
 __pycache__/
+/.vs
+/koncepcja.exe
