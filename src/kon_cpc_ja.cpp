@@ -53,6 +53,7 @@
 #include "hw_views.h"
 #include "io_bus.h"
 #include "io_dispatch.h"
+#include "kcpc/fb_publish.h"
 #include "kcpc/kcpc_host.h"
 #include "keyboard.h"
 #include "keyboard_manager.h"
@@ -4228,6 +4229,12 @@ void doCleanUp(bool write_back_discs, bool save_config) {
     g_z80_thread.detach();
   }
 
+  // The frame runner has ended (or is this thread): nothing publishes now.
+  // The ring's name goes here on every exit path that cleans up, a signal's
+  // included; one that skips cleanup leaves a name the next process with
+  // this pid replaces.
+  fb_publish_stop();
+
   // The machine is stopped for good: the eject below is only queued and is
   // never applied, so a disc's unsaved writes are written back here or not
   // at all (beads-lgul).
@@ -5435,6 +5442,9 @@ int koncpc_main(int argc, char** argv) {
             CPC.rom_path.c_str());
     cleanExit(ERR_CPC_ROM_MISSING, false);
   }
+  // The frame ring (beads-0ir.2): up before the frame runner publishes into
+  // it, and before the manifest, so a harness that read the pid finds it.
+  fb_publish_start();
   // Re-seed the IPC `input mouse`/`input gun` gates from the flags the built
   // machine is actually running with, before the Z80 starts and before the
   // main loop's first drain publishes them. loadConfiguration() seeds them

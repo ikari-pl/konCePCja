@@ -47,6 +47,7 @@ import threading
 import time
 import traceback
 import zipfile
+import zlib
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
 
@@ -4713,6 +4714,174 @@ def test_fb_info_describes_the_frame() -> None:
         c.request(kc.OP_FB_INFO, b'from a later version')
 
 
+# -- the frame ring (beads-0ir.2) -------------------------------------------
+
+FB_RING_MAGIC = b'FBUF'
+FB_RING_HEADER = 256
+
+
+class FbRing:
+    """A read-only mapping of the frame ring a core publishes
+    (src/kcpc/fb_ring.h): its fixed header fields and the latest frame,
+    read the way the header says a reader must."""
+
+    def __init__(self, pid: int):
+        self.name = f'kcpc-fb-{pid}'
+        self._close: Callable[[], None] = lambda: None
+        if os.name == 'nt':
+            self.buf = self._map_windows()
+        else:
+            self.buf = self._map_posix()
+
+    def _map_posix(self) -> memoryview:
+        import mmap
+        import _posixshmem  # pylint: disable=import-error
+        fd = _posixshmem.shm_open('/' + self.name, os.O_RDONLY, 0)
+        try:
+            size = os.fstat(fd).st_size
+            m = mmap.mmap(fd, size, mmap.MAP_SHARED, mmap.PROT_READ)
+        finally:
+            os.close(fd)
+        self._close = m.close
+        return memoryview(m)
+
+    def _map_windows(self) -> memoryview:
+        import ctypes
+        from ctypes import wintypes
+        k32 = ctypes.WinDLL('kernel32', use_last_error=True)
+        k32.OpenFileMappingW.restype = wintypes.HANDLE
+        k32.OpenFileMappingW.argtypes = [wintypes.DWORD, wintypes.BOOL,
+                                         wintypes.LPCWSTR]
+        k32.MapViewOfFile.restype = ctypes.c_void_p
+        k32.MapViewOfFile.argtypes = [wintypes.HANDLE, wintypes.DWORD,
+                                      wintypes.DWORD, wintypes.DWORD,
+                                      ctypes.c_size_t]
+        k32.UnmapViewOfFile.argtypes = [ctypes.c_void_p]
+        k32.CloseHandle.argtypes = [wintypes.HANDLE]
+        file_map_read = 0x0004
+        handle = k32.OpenFileMappingW(file_map_read, False,
+                                      'Local\\' + self.name)
+        if not handle:
+            raise FileNotFoundError(
+                f'OpenFileMapping({self.name}): {ctypes.get_last_error()}')
+        addr = k32.MapViewOfFile(handle, file_map_read, 0, 0, 0)
+        if not addr:
+            k32.CloseHandle(handle)
+            raise OSError(f'MapViewOfFile: {ctypes.get_last_error()}')
+        head = ctypes.string_at(addr, FB_RING_HEADER)
+        slots, = struct.unpack_from('<I', head, 28)
+        slot_stride, slots_offset = struct.unpack_from('<QQ', head, 40)
+        size = slots_offset + slots * slot_stride
+        if head[:4] != FB_RING_MAGIC or not 0 < size < (1 << 31):
+            size = FB_RING_HEADER
+
+        def close() -> None:
+            k32.UnmapViewOfFile(addr)
+            k32.CloseHandle(handle)
+        self._close = close
+        return memoryview((ctypes.c_char * size).from_address(addr)).cast('B')
+
+    @staticmethod
+    def exists(pid: int) -> bool:
+        try:
+            FbRing(pid).close()
+        except FileNotFoundError:
+            return False
+        return True
+
+    def close(self) -> None:
+        self.buf.release()
+        self._close()
+
+    def header(self) -> Dict[str, int]:
+        (version, header_bytes, fmt, width, height, stride, slots) = \
+            struct.unpack_from('<7I', self.buf, 4)
+        slot_bytes, slot_stride, slots_offset, pid = struct.unpack_from(
+            '<4Q', self.buf, 32)
+        return {'magic': bytes(self.buf[0:4]), 'version': version,
+                'header_bytes': header_bytes, 'format': fmt,
+                'width': width, 'height': height, 'stride': stride,
+                'ring_slots': slots, 'slot_bytes': slot_bytes,
+                'slot_stride': slot_stride, 'slots_offset': slots_offset,
+                'producer_pid': pid, 'mapped': len(self.buf)}
+
+    def latest_seq(self) -> int:
+        return struct.unpack_from('<Q', self.buf, 64)[0]
+
+    def read_latest(self) -> Tuple[int, bytes]:
+        """(frame number, pixels) of the latest whole frame: the slot's
+        stamp is read before and after the copy, and a copy the producer
+        lapped is thrown away."""
+        h = self.header()
+        for _ in range(100):
+            slot = struct.unpack_from('<Q', self.buf, 72)[0]
+            stamp_at = 80 + 8 * slot
+            before = struct.unpack_from('<Q', self.buf, stamp_at)[0]
+            if before == 0 or before % 2:
+                continue
+            start = h['slots_offset'] + slot * h['slot_stride']
+            pixels = bytes(self.buf[start:start + h['slot_bytes']])
+            if struct.unpack_from('<Q', self.buf, stamp_at)[0] == before:
+                return before // 2, pixels
+        raise AssertionError('no whole frame in 100 tries')
+
+
+def test_the_frame_ring_is_published() -> None:
+    """beads-0ir.2: the core publishes its canonical frame to a shared-memory
+    ring named after its pid, one slot a frame, every frame, whether or not
+    anybody reads it; the frame there is the one `hash frame` hashes, and the
+    ring is gone once the core has quit."""
+    with Core() as core:
+        ring = FbRing(core.pid)
+        try:
+            h = ring.header()
+            assert h['magic'] == FB_RING_MAGIC, h
+            assert (h['version'], h['header_bytes'], h['format']) == \
+                (1, FB_RING_HEADER, 1), h
+            assert (h['width'], h['height'], h['stride']) == \
+                (768, 272, 2304), h
+            assert h['ring_slots'] == 4 and h['slot_bytes'] == 2304 * 272, h
+            assert h['producer_pid'] == core.pid, h
+            assert h['slots_offset'] + 4 * h['slot_stride'] <= h['mapped'], h
+            # Five frames, then stopped: each one was published.
+            assert core.ipc('wait vbl 5 10000').startswith('OK')
+            first = ring.latest_seq()
+            assert first >= 5, first
+            # From a stopped machine `wait vbl` runs exactly that many.
+            assert core.ipc('wait vbl 10 10000').startswith('OK')
+            assert ring.latest_seq() == first + 10, (first,
+                                                     ring.latest_seq())
+            seq, pixels = ring.read_latest()
+            assert seq == first + 10, seq
+            reply = core.ipc('hash frame')
+            m = re.search(r'crc32=([0-9A-Fa-f]{8})', reply)
+            assert m, reply
+            assert zlib.crc32(pixels) == int(m.group(1), 16), (
+                f'ring frame crc32={zlib.crc32(pixels):08X}, core: {reply}')
+            # Running again, it keeps publishing with nobody waiting on it.
+            assert core.ipc('run').startswith('OK')
+            assert core.ipc('wait vbl 3 10000').startswith('OK')
+            assert ring.latest_seq() >= first + 13
+        finally:
+            ring.close()
+        core.ipc_quit()
+        assert core.wait_exit() == 0
+        assert not FbRing.exists(core.pid), 'the ring outlived the core'
+
+
+def test_the_frame_ring_goes_with_a_signal_exit() -> None:
+    """beads-0ir.2: SIGTERM takes the ring's name with it (on Windows the
+    mapping goes with the process whatever ends it)."""
+    with Core() as core:
+        assert FbRing.exists(core.pid)
+        if os.name == 'posix':
+            core.proc.send_signal(signal.SIGTERM)
+        else:
+            core.proc.terminate()
+        core.wait_exit()
+        assert not FbRing.exists(core.pid), 'the ring outlived the core'
+
+
 def test_a_rebuilt_machine_is_announced() -> None:
     """Acceptance 4, second half: `config set model 3` and `config apply` on
     the text IPC push EVT_MACHINE_CHANGED with the new model, and from then
@@ -5293,6 +5462,8 @@ TESTS: List[Callable[[], None]] = [
     test_configuration_is_read_set_and_applied,
     test_a_stop_is_not_caught_up,
     test_quit_while_clients_read,
+    test_the_frame_ring_is_published,
+    test_the_frame_ring_goes_with_a_signal_exit,
     test_bad_frames_close_the_connection,
     test_recoverable_errors_keep_the_connection,
     test_every_opcode_has_a_documented_refusal,
