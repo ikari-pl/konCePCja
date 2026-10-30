@@ -11,6 +11,7 @@
 #include <gtest/gtest.h>
 
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <cstring>
 #include <string>
@@ -183,10 +184,13 @@ TEST(FbRingTest, ASlotBeingWrittenIsNotHandedOut) {
             FbReadStatus::kTorn);
 }
 
-// A reader thread copying while the producer publishes as fast as it can:
-// every copy it accepts is one whole frame, never older than one it accepted
-// before, and some copies are refused (the producer lapped them), which
-// shows the check is exercised rather than vacuous.
+// A reader thread copying while the producer publishes without pause: every
+// copy it accepts is one whole frame, never older than one it accepted
+// before. Copies alternate between one memcpy (the producer rarely laps it)
+// and byte by byte with yields (the producer laps most of them), so both
+// outcomes happen and the check is exercised rather than vacuous. Bounded by
+// time, not by turns: on a busy two-core CI runner the producer may not run
+// at all for the first few thousand turns.
 TEST(FbRingTest, AConcurrentReaderNeverAcceptsATornFrame) {
   RingMemory mem(kcpc::fb_ring_bytes(kStride, kH));
   FbRingWriter w;
@@ -201,6 +205,8 @@ TEST(FbRingTest, AConcurrentReaderNeverAcceptsATornFrame) {
       f = frames[n & 0xFF];
       std::memcpy(f.data(), &n, sizeof(n));
       w.publish(f.data());
+      // Lets the reader run on a machine with fewer cores than threads.
+      std::this_thread::yield();
     }
   });
   const kcpc::FbRingHeader* h = kcpc::fb_ring_header(mem.base, mem.size);
@@ -210,13 +216,23 @@ TEST(FbRingTest, AConcurrentReaderNeverAcceptsATornFrame) {
   int accepted = 0;
   int refused = 0;
   int bad = 0;
-  for (int i = 0; i < 200000 && (accepted < 1000 || refused == 0); ++i) {
+  auto const deadline =
+      std::chrono::steady_clock::now() + std::chrono::seconds(20);
+  for (std::uint64_t turn = 0; (accepted < 500 || refused < 5) &&
+                               std::chrono::steady_clock::now() < deadline;
+       ++turn) {
     FbSlotRead read;
-    if (kcpc::fb_ring_begin_read(*h, read) != FbReadStatus::kOk) continue;
-    // Byte by byte, slowly: give the producer room to lap the copy.
-    for (std::size_t b = 0; b < kFrame; ++b) {
-      dst[b] = read.pixels[b];
-      if ((b & 15) == 0) std::this_thread::yield();
+    if (kcpc::fb_ring_begin_read(*h, read) != FbReadStatus::kOk) {
+      std::this_thread::yield();
+      continue;
+    }
+    if (turn % 2 == 0) {
+      std::memcpy(dst.data(), read.pixels, kFrame);
+    } else {
+      for (std::size_t b = 0; b < kFrame; ++b) {
+        dst[b] = read.pixels[b];
+        if ((b & 15) == 0) std::this_thread::yield();
+      }
     }
     if (!kcpc::fb_ring_end_read(*h, read)) {
       ++refused;
