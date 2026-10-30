@@ -146,6 +146,12 @@ kcpc::Status kcpc_host_text(const std::string& text, std::uint32_t& pending,
 kcpc::Status kcpc_host_mouse(int dx, int dy, bool set_buttons,
                              std::uint8_t buttons);
 kcpc::Status kcpc_host_input_state(kcpc::KeyMatrix& rows);
+// GUN: the light gun's aim, in frame pixels, and its trigger, staged for
+// ipc_drain_input() like a mouse movement (ipc_stage_gun(), the staging the
+// text IPC's `input gun` uses). No lease either. kNotPresent when no light
+// gun is enabled (`input.lightgun`).
+kcpc::Status kcpc_host_gun(bool aim, std::uint16_t x, std::uint16_t y,
+                           bool set_trigger, bool pulled);
 
 // Chip state (section 12): the block of state.chip, read off the Devices
 // through the gate like the other machine reads. kNotPresent for the ASIC of

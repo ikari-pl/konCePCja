@@ -194,6 +194,19 @@ bool ipc_gun_gate_open();
 // fitted.
 bool ipc_stage_mouse(int dx, int dy, std::optional<uint32_t> buttons);
 
+// Stages, for ipc_drain_input() to apply at the next frame, the light gun's
+// aim when `frame_aim` is given, in pixels of the machine's frame (the units
+// of CPC.phazer_x/y, which the text IPC's `input gun move` reaches by mapping
+// window pixels), and its trigger when `pulled` is given. Callable from any
+// thread: it is how KCPC's GUN aims. False, and nothing staged, when no gun
+// is enabled.
+struct IpcGunAim {
+  int32_t x = 0;
+  int32_t y = 0;
+};
+bool ipc_stage_gun(std::optional<IpcGunAim> frame_aim,
+                   std::optional<bool> pulled);
+
 // Main thread: publish the host keymap in use and the directory its *.map
 // files live in, for `config get|set kbd_layout(s)` to answer from without
 // touching CPC.kbd_layout / CPC.resources_path off-thread. Called every time
