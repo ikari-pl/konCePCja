@@ -261,7 +261,7 @@ CRC32 hashes for CI regression testing.
 
 | Command | Description |
 |---------|-------------|
-| `screenshot [path]` | Save the CPC screen as PNG (default path when omitted) |
+| `screenshot [path]` | Save the machine's canonical frame (the bytes `hash frame` hashes) as a PNG, each row shown twice: 768x544 RGBA in every build, whatever the window scale, scanline setting or video plugin. Copied between two frames, so a running machine gives one whole frame, never rows of two. With no path, the file goes to the screenshot directory under a timestamped name (as F3). `ERR 503 <why>` when the frame cannot be copied (`no-machine`, `shutting-down` or `busy`, as for `hash frame`), `ERR 500 write-failed` when the file cannot be written |
 | `screenshot window <path>` | Capture the emulator window on the next rendered frame. The UI-free build has no window: `ERR 503 no-window` |
 | `snapshot save <path>` | Save emulator state (.sna) |
 | `snapshot load <path>` | Load emulator state (.sna). A successful load goes on the snapshot Recent list, as `load` does |
@@ -400,7 +400,7 @@ Ring-buffer recording of Z80 instruction execution.
 
 | Command | Description |
 |---------|-------------|
-| `frames dump <pattern> <count> [delay_cs]` | Advance N frames, saving output. If pattern ends in `.gif`, produces an animated GIF of the machine's canonical frame (the bytes `hash frame` hashes), each row shown twice: 768x544 in every build. Otherwise, saves a PNG per frame, as `screenshot` does. Max 10000 frames. A breakpoint that fires mid-recording ends it there: the reply counts the frames actually recorded (`OK frames=N` / `OK saved=N`) and the machine stays stopped for `wait bp`. A GIF frame that cannot be copied is a failure, not a short recording: no GIF is written and the reply is `ERR 503 <why> frames=N of M` (N frames recorded of the M asked for; `<why>` is `no-machine`, `shutting-down` or `busy`, as for `hash frame`), and the same reasons without the count refuse a recording before its first frame. `ERR 409 frame-step-busy` while another frame step runs (see `step frame`); one that takes the counter mid-recording ends the recording there. |
+| `frames dump <pattern> <count> [delay_cs]` | Advance N frames, saving output. If pattern ends in `.gif`, produces an animated GIF of the machine's canonical frame (the bytes `hash frame` hashes), each row shown twice: 768x544 in every build. Otherwise, saves a PNG per frame, as `screenshot` does (768x544, the frame that step stopped on). Max 10000 frames. A breakpoint that fires mid-recording ends it there: the reply counts the frames actually recorded (`OK frames=N` / `OK saved=N`) and the machine stays stopped for `wait bp`. A frame that cannot be copied is a failure, not a short recording: no GIF is written (the PNGs already saved stay) and the reply is `ERR 503 <why> frames=N of M` (N frames recorded of the M asked for; `<why>` is `no-machine`, `shutting-down` or `busy`, as for `hash frame`), and the same reasons without the count refuse a recording before its first frame. `ERR 409 frame-step-busy` while another frame step runs (see `step frame`); one that takes the counter mid-recording ends the recording there. |
 
 **PNG mode** (default): Pattern uses printf `%d`/`%04d` for frame number, or `_NNNN.png` is appended. Returns `OK saved=N`.
 

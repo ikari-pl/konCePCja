@@ -968,6 +968,9 @@ bool cpc_wait_announced_stopped(const std::function<bool()>& should_abort = {});
 bool cpc_commit_breakpoint_stop(uint64_t hit_epoch, uint64_t arming_generation,
                                 const CpcRunCause& hit, word hook_pc,
                                 bool watchpoint);
+namespace kcpc {
+enum class Status : std::uint16_t;
+}  // namespace kcpc
 enum class BinLoadResult : std::uint8_t {
   Ok,
   FileError,  // missing, unreadable, empty or too big
@@ -976,7 +979,13 @@ enum class BinLoadResult : std::uint8_t {
 // Copy a raw binary into RAM at `offset` and launch it through MC START
 // PROGRAM.
 BinLoadResult bin_load(const std::string& filename, const size_t offset);
-bool dumpScreenTo(const std::string& path);
+// Save the machine's canonical frame to `path` as a PNG, each row shown twice
+// (768x544 RGBA), copied through the KCPC gate like `hash frame`
+// (kcpc_host_frame_copy()), so it is one whole frame from any thread and the
+// same picture in every build (beads-2hoi). kOk when saved, kInternal when the
+// file could not be written, else why the copy was refused (kNotPresent with
+// no machine, kBusy, kShuttingDown).
+kcpc::Status dumpScreenTo(const std::string& path);
 void dumpScreen();
 int emulator_init();
 

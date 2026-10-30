@@ -117,11 +117,6 @@ SDL_Surface* video_ring_publish();
 void video_ring_present();
 // The displayed front-end surface (for OSD text, dock preview).
 SDL_Surface* video_render_surface();
-// The most recently PUBLISHED frame (the emulation's actual output),
-// independent of the render thread — screenshots must not go stale when the
-// present path stalls (occluded macOS window / remote desktop). May tear
-// unless the emulation is paused; null when the ring is inactive.
-SDL_Surface* video_ring_published_peek();
 // Free the ring's write buffers (called from video_shutdown / restyle).
 void video_ring_shutdown();
 

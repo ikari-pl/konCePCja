@@ -10,6 +10,7 @@
 #include <unistd.h>
 #endif
 
+#include <png.h>
 #include <zlib.h>
 
 #include <algorithm>
@@ -1708,14 +1709,6 @@ TEST_F(IpcServerTest, AWindowScreenshotResumesUnderAnothersLease) {
   cpc_resume();
 }
 
-TEST_F(IpcServerTest, ScreenshotReturnsErrorWithoutSurface) {
-  back_surface = nullptr;
-  auto screenshotPath =
-      (std::filesystem::temp_directory_path() / "kaprys_test.png").string();
-  auto resp = send_command("screenshot " + screenshotPath);
-  EXPECT_EQ(resp, "ERR 503 no-surface\n");
-}
-
 TEST_F(IpcServerTest, DiskNewCanCreateFluxBacking) {
   auto const path =
       std::filesystem::temp_directory_path() / "koncepcja-ipc-flux.scp";
@@ -2907,4 +2900,167 @@ TEST_F(IpcServerTest, HashFrameWithoutAMachineIsRefused) {
   EXPECT_EQ("ERR 503 no-machine\n", send_command("hash vram"));
   CPC.paused = saved_paused;
   g_emu_paused.store(saved_emu_paused);
+}
+
+// beads-2hoi: `screenshot <path>` and the PNG series of `frames dump` save the
+// machine's own frame, each row shown twice (768x544), copied through the
+// KCPC gate like `hash frame`. Not the host surface: the frame runner blits
+// into that beside the IPC thread (-H) or takes the published ring buffer
+// back as its next target (GUI), so a running machine gave torn pictures.
+namespace {
+
+// The RGB24 frame a 768x544 screenshot shows, or empty when `path` is not
+// such a PNG or an odd row is not the row above it.
+std::vector<uint8_t> screenshot_frame(const std::filesystem::path& path) {
+  png_image image{};
+  image.version = PNG_IMAGE_VERSION;
+  if (png_image_begin_read_from_file(&image, path.string().c_str()) == 0)
+    return {};
+  image.format = PNG_FORMAT_RGB;
+  std::vector<uint8_t> rgb(PNG_IMAGE_SIZE(image));
+  bool const read =
+      png_image_finish_read(&image, nullptr, rgb.data(), 0, nullptr) != 0;
+  if (!read || image.width != static_cast<png_uint_32>(subcycle::kFbWidth) ||
+      image.height != static_cast<png_uint_32>(subcycle::kFbHeight * 2))
+    return {};
+  size_t const row = static_cast<size_t>(subcycle::kFbWidth) * 3;
+  std::vector<uint8_t> frame(row * subcycle::kFbHeight);
+  for (int y = 0; y < subcycle::kFbHeight; ++y) {
+    const uint8_t* even = rgb.data() + (static_cast<size_t>(y) * 2 * row);
+    if (!std::equal(even, even + row, even + row)) return {};
+    std::copy(even, even + row, frame.data() + (static_cast<size_t>(y) * row));
+  }
+  return frame;
+}
+
+std::string frame_crc(const std::vector<uint8_t>& frame) {
+  if (frame.empty()) return "not-a-screenshot";
+  uLong crc = crc32(0L, nullptr, 0);
+  crc = crc32(crc, frame.data(), static_cast<uInt>(frame.size()));
+  char buf[16];
+  snprintf(buf, sizeof(buf), "%08lX", crc);
+  return buf;
+}
+
+std::filesystem::path shot_path(const char* name) {
+  return std::filesystem::temp_directory_path() / name;
+}
+
+}  // namespace
+
+TEST_F(IpcCanonicalFrameTest, ScreenshotIsTheMachineFrameRowsDoubled) {
+  stop_machine();
+  std::filesystem::path const png = shot_path("koncepcja-test-shot.png");
+  std::error_code ec;
+  std::filesystem::remove(png, ec);
+  EXPECT_EQ("OK\n", send_command("screenshot " + png.string()));
+  EXPECT_EQ(machine_frame_crc(), frame_crc(screenshot_frame(png)));
+  std::filesystem::remove(png, ec);
+}
+
+TEST_F(IpcServerTest, ScreenshotWithoutAMachineIsRefused) {
+  ASSERT_EQ(nullptr, subcycle_bridge_framebuffer());
+  bool const saved_paused = CPC.paused;
+  bool const saved_emu_paused = g_emu_paused.load();
+  CPC.paused = true;
+  g_emu_paused.store(true);
+  std::filesystem::path const png = shot_path("koncepcja-test-none.png");
+  EXPECT_EQ("ERR 503 no-machine\n", send_command("screenshot " + png.string()));
+  EXPECT_FALSE(std::filesystem::exists(png));
+  CPC.paused = saved_paused;
+  g_emu_paused.store(saved_emu_paused);
+}
+
+// Each PNG of the series is the frame its step stopped on: this ROM flips the
+// border every frame, so a picture of any other frame does not match.
+TEST_F(IpcFlashingFrameTest, FramesDumpPngSeriesIsEachStepsFrame) {
+  stop_machine();
+  std::filesystem::path const dir =
+      std::filesystem::temp_directory_path() / "koncepcja-test-series";
+  std::error_code ec;
+  std::filesystem::remove_all(dir, ec);
+  std::filesystem::create_directories(dir);
+  std::string reply;
+  std::thread client([&] {
+    reply = send_command("frames dump " + (dir / "f_%d.png").string() + " 3");
+  });
+  // This thread is the frame runner: it turns each step's frame, and notes
+  // the picture the machine stopped on.
+  std::vector<std::string> stopped_on;
+  for (int i = 0; i < 3; ++i) {
+    if (!wait_until_running() || !finish_frame_step()) break;
+    stopped_on.push_back(machine_frame_crc());
+  }
+  client.join();
+  ASSERT_EQ(3u, stopped_on.size()) << reply;
+  EXPECT_EQ("OK saved=3\n", reply);
+  EXPECT_NE(stopped_on[0], stopped_on[1]);
+  for (int i = 0; i < 3; ++i) {
+    EXPECT_EQ(
+        stopped_on[i],
+        frame_crc(screenshot_frame(dir / ("f_" + std::to_string(i) + ".png"))))
+        << "frame " << i;
+  }
+  std::filesystem::remove_all(dir, ec);
+}
+
+// A frame the series cannot copy fails the dump, as for the GIF: the machine
+// goes away between frame 1 and frame 2 of 3.
+TEST_F(IpcCanonicalFrameTest, FramesDumpPngThatLosesTheMachineSaysHowFarItGot) {
+  stop_machine();
+  std::filesystem::path const base = shot_path("koncepcja-test-lost");
+  std::error_code ec;
+  std::string reply;
+  std::thread client(
+      [&] { reply = send_command("frames dump " + base.string() + " 3"); });
+  bool const first_armed = wait_until_running();
+  bool const first_ran = first_armed && finish_frame_step();
+  bool const second_armed = first_ran && wait_until_running();
+  bridge_->stop();
+  stop_machine();
+  client.join();
+  ASSERT_TRUE(first_armed && first_ran && second_armed) << reply;
+  EXPECT_EQ("ERR 503 no-machine frames=1 of 3\n", reply);
+  std::filesystem::remove(base.string() + "_0000.png", ec);
+}
+
+// A copy of a running machine's frame is one whole frame, never rows of two.
+TEST_F(IpcFlashingFrameTest, ScreenshotOfARunningMachineIsOneWholeFrame) {
+  std::set<std::string> whole;
+  for (int i = 0; i < 4; ++i) {
+    ASSERT_EQ(EmuFrameResult::kFrameComplete, emu_run_frame());
+    whole.insert(machine_frame_crc());
+  }
+  ASSERT_GE(whole.size(), 2u);
+
+  CPC.paused = false;
+  g_emu_paused.store(false);
+  std::atomic<bool> stop{false};
+  std::atomic<unsigned> turns{0};
+  std::thread runner([&] {
+    while (!stop.load()) {
+      if (emu_headless_turn())
+        turns.fetch_add(1);
+      else
+        std::this_thread::yield();
+    }
+  });
+  std::filesystem::path const png = shot_path("koncepcja-test-running.png");
+  std::vector<std::string> shots;
+  for (int i = 0; i < 12; ++i) {
+    std::string const reply = send_command("screenshot " + png.string());
+    shots.push_back(reply == "OK\n" ? frame_crc(screenshot_frame(png)) : reply);
+  }
+  unsigned const turned = turns.load();
+  stop.store(true);
+  runner.join();
+  ASSERT_GE(turned, 12u) << "the runner did not run beside the screenshots";
+  std::set<std::string> seen;
+  for (const std::string& shot : shots) {
+    EXPECT_EQ(1u, whole.count(shot)) << "a torn screenshot: " << shot;
+    seen.insert(shot);
+  }
+  EXPECT_GE(seen.size(), 2u);
+  std::error_code ec;
+  std::filesystem::remove(png, ec);
 }
