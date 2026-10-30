@@ -279,6 +279,23 @@ std::string err_with_context(int code, const std::string& msg) {
 }
 }  // namespace
 
+// Why a copy of the machine's frame (kcpc_host_frame_copy()) was refused, as
+// the `ERR 503` replies name it, or nullptr when it was taken.
+namespace {
+const char* frame_copy_refusal(kcpc::Status status) {
+  switch (status) {
+    case kcpc::Status::kOk:
+      return nullptr;
+    case kcpc::Status::kNotPresent:
+      return "no-machine";
+    case kcpc::Status::kShuttingDown:
+      return "shutting-down";
+    default:
+      return "busy";
+  }
+}
+}  // namespace
+
 // A pause lease whose bounded wait timed out: the Z80 thread is stuck inside a
 // frame, so the command must not touch machine state. Give the machine back
 // in the run state the lease found it in and say why.
@@ -1965,15 +1982,9 @@ std::string handle_command(const std::string& line) {
         // to the window and written beside this thread.
         std::vector<uint8_t> rgb;
         kcpc::Stamp stamp;
-        switch (kcpc_host_frame_copy(rgb, stamp)) {
-          case kcpc::Status::kOk:
-            break;
-          case kcpc::Status::kNotPresent:
-            return "ERR 503 no-machine\n";
-          case kcpc::Status::kShuttingDown:
-            return "ERR 503 shutting-down\n";
-          default:
-            return "ERR 503 busy\n";
+        if (const char* why =
+                frame_copy_refusal(kcpc_host_frame_copy(rgb, stamp))) {
+          return std::string("ERR 503 ") + why + "\n";
         }
         uLong crc = crc32(0L, nullptr, 0);
         crc = crc32(crc, rgb.data(), static_cast<uInt>(rgb.size()));
@@ -3550,8 +3561,9 @@ std::string handle_command(const std::string& line) {
         std::vector<uint8_t> rgb;
         std::vector<uint8_t> rgba(static_cast<size_t>(gif_w) * gif_h * 4);
         kcpc::Stamp stamp;
-        if (kcpc_host_frame_copy(rgb, stamp) == kcpc::Status::kNotPresent) {
-          return "ERR 503 no-machine\n";
+        if (const char* why =
+                frame_copy_refusal(kcpc_host_frame_copy(rgb, stamp))) {
+          return std::string("ERR 503 ") + why + "\n";
         }
         GifRecorder gif;
         if (!gif.begin(gif_w, gif_h, delay_cs)) {
@@ -3560,7 +3572,16 @@ std::string handle_command(const std::string& line) {
         int recorded = 0;
         for (int i = 0; i < frame_count; i++) {
           if (!step_one_frame()) break;
-          if (kcpc_host_frame_copy(rgb, stamp) != kcpc::Status::kOk) break;
+          // A frame that could not be copied is not a short recording: the
+          // GIF is dropped and the reply says how far it got.
+          if (const char* why =
+                  frame_copy_refusal(kcpc_host_frame_copy(rgb, stamp))) {
+            gif.abort();
+            char buf[96];
+            snprintf(buf, sizeof(buf), "ERR 503 %s frames=%d of %d\n", why,
+                     recorded, frame_count);
+            return {buf};
+          }
           host_blit_rgb24_to_rgba32_nearest(
               rgb.data(), subcycle::kFbWidth, subcycle::kFbWidth * 3, 0,
               subcycle::kFbHeight, rgba.data(), gif_w, gif_h, gif_w * 4);

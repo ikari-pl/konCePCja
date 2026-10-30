@@ -61,6 +61,13 @@ class TestBridgeRom {
 
   bool started() const { return started_; }
 
+  // Takes the machine down before the test ends (a rebuild, a quit), so a
+  // reader finds no frame to copy.
+  void stop() {
+    if (started_) subcycle_bridge_stop();
+    started_ = false;
+  }
+
  private:
   std::filesystem::path dir_;
   std::string saved_rom_path_;
@@ -94,5 +101,42 @@ inline std::vector<unsigned char> test_rom_red_border() {
       0x20, 0xF0,        // JR NZ,loop
       0x18, 0xFE,        // JR $
       63,   40,   46,   0x8E, 38, 0, 25, 30, 0, 7,
+  };
+}
+
+// The same screen, but the border flips between bright red (&4C) and blue
+// (&44) at the start of every VSYNC (PPI port B bit 0), so every two
+// consecutive frames differ on every row and a copy that takes rows of two
+// frames is none of them.
+inline std::vector<unsigned char> test_rom_flashing_border() {
+  return {
+      0xF3,              // &00 DI
+      0x01, 0x10, 0x7F,  // &01 LD BC,&7F10   select pen 16 (border)
+      0xED, 0x49,        // &04 OUT (C),C
+      0x0E, 0x4C,        // &06 LD C,&4C      bright red
+      0xED, 0x49,        // &08 OUT (C),C
+      0x21, 0x37, 0x00,  // &0A LD HL,&0037   the CRTC table below
+      0x16, 0x00,        // &0D LD D,0
+      0x06, 0xBC,        // &0F loop: LD B,&BC
+      0xED, 0x51,        // &11 OUT (C),D     register number
+      0x7E, 0x23,        // &13 LD A,(HL) : INC HL
+      0x06, 0xBD,        // &15 LD B,&BD
+      0xED, 0x79,        // &17 OUT (C),A     register value
+      0x14, 0x7A,        // &19 INC D : LD A,D
+      0xFE, 0x0A,        // &1B CP 10
+      0x20, 0xF0,        // &1D JR NZ,loop
+      0x1E, 0x4C,        // &1F LD E,&4C      the colour shown
+      0x06, 0xF5,        // &21 frame: LD B,&F5
+      0xED, 0x78,        // &23 low: IN A,(C)
+      0x1F, 0x38, 0xFB,  // &25 RRA : JR C,low     wait for VSYNC to end
+      0xED, 0x78,        // &28 high: IN A,(C)
+      0x1F, 0x30, 0xFB,  // &2A RRA : JR NC,high   then for the next one
+      0x7B,              // &2D LD A,E
+      0xEE, 0x08,        // &2E XOR 8          red <-> blue
+      0x5F,              // &30 LD E,A
+      0x06, 0x7F,        // &31 LD B,&7F
+      0xED, 0x59,        // &33 OUT (C),E
+      0x18, 0xEA,        // &35 JR frame
+      63,   40,   46,   0x8E, 38, 0, 25, 30, 0, 7,  // &37
   };
 }

@@ -21,6 +21,7 @@
 #include <filesystem>
 #include <fstream>
 #include <optional>
+#include <set>
 #include <string>
 #include <thread>
 #include <vector>
@@ -2652,7 +2653,7 @@ class IpcCanonicalFrameTest : public IpcServerTest {
     IpcServerTest::SetUp();
     saved_paused_ = CPC.paused;
     saved_emu_paused_ = g_emu_paused.load();
-    bridge_.emplace(test_rom_red_border());
+    bridge_.emplace(rom());
     ASSERT_TRUE(bridge_->started());
     // The first frame after reset is a short warm-up; after it every frame
     // of this ROM is the same picture.
@@ -2665,6 +2666,10 @@ class IpcCanonicalFrameTest : public IpcServerTest {
     CPC.paused = saved_paused_;
     g_emu_paused.store(saved_emu_paused_);
     IpcServerTest::TearDown();
+  }
+
+  virtual std::vector<unsigned char> rom() const {
+    return test_rom_red_border();
   }
 
   // Stopped the way cpc_pause() leaves it, without announcing anything.
@@ -2683,6 +2688,35 @@ class IpcCanonicalFrameTest : public IpcServerTest {
     char buf[16];
     snprintf(buf, sizeof(buf), "%08lX", crc);
     return buf;
+  }
+
+  // Waits until somebody has let the machine run (a frame step armed), so
+  // the calling thread, standing in for the frame runner, can turn a frame.
+  static bool wait_until_running() {
+    auto const deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (g_emu_paused.load()) {
+      if (std::chrono::steady_clock::now() >= deadline) return false;
+      std::this_thread::yield();
+    }
+    return true;
+  }
+
+  // Turns the one frame of a frame step and ends the step the way the frame
+  // loop does. Stood in for: in this binary the loop counts frame steps on a
+  // server of its own, not on the one under test.
+  static bool finish_frame_step() {
+    if (!emu_headless_turn().has_value()) return false;
+    if (!server.frame_step_tick(UINT64_MAX)) return false;
+    stop_machine();
+    server.notify_frame_step_done();
+    return true;
+  }
+
+  // The crc32= field of a `hash frame` reply.
+  static std::string reply_crc(const std::string& reply) {
+    if (reply.rfind("OK crc32=", 0) != 0) return "bad-reply";
+    return reply.substr(9, 8);
   }
 
   static constexpr size_t kFrameBytes =
@@ -2743,6 +2777,124 @@ TEST_F(IpcCanonicalFrameTest, HashFrameOfARunningMachineIsTakenBetweenFrames) {
   EXPECT_EQ(0u, reply.rfind("OK crc32=" + machine_frame_crc() + " frame=", 0))
       << reply;
   EXPECT_NE(std::string::npos, reply.find(" paused=0 ")) << reply;
+}
+
+// A frame the GIF recording cannot copy is a failure, not a short recording:
+// the machine goes away between frame 1 and frame 2 of 3, and the reply says
+// so and how far the recording got, with no GIF written.
+TEST_F(IpcCanonicalFrameTest, GifDumpThatLosesTheMachineSaysHowFarItGot) {
+  stop_machine();
+  std::filesystem::path const gif =
+      std::filesystem::temp_directory_path() / "koncepcja-test-lost.gif";
+  std::error_code ec;
+  std::filesystem::remove(gif, ec);
+  std::string reply;
+  std::thread client(
+      [&] { reply = send_command("frames dump " + gif.string() + " 3"); });
+  // This thread is the frame runner: it turns frame 1 of the recording...
+  bool const first_armed = wait_until_running();
+  bool const first_ran = first_armed && finish_frame_step();
+  // ...and before frame 2 runs, the machine is taken down and stopped.
+  bool const second_armed = first_ran && wait_until_running();
+  bridge_->stop();
+  stop_machine();
+  client.join();
+  ASSERT_TRUE(first_armed && first_ran && second_armed) << reply;
+
+  EXPECT_EQ("ERR 503 no-machine frames=1 of 3\n", reply);
+  EXPECT_FALSE(std::filesystem::exists(gif));
+  std::filesystem::remove(gif, ec);
+}
+
+TEST_F(IpcCanonicalFrameTest, GifDumpWithoutAMachineIsRefused) {
+  stop_machine();
+  bridge_->stop();
+  EXPECT_EQ("ERR 503 no-machine\n",
+            send_command("frames dump " +
+                         (std::filesystem::temp_directory_path() /
+                          "koncepcja-test-none.gif")
+                             .string() +
+                         " 1"));
+}
+
+// A `hash frame` that an IPC event runs is run by the frame runner inside its
+// frame turn. It copies the frame there and then: through the gate it would
+// wait for a boundary only this thread can reach, and stall the frame for the
+// gate's fallback (250 ms) every time.
+TEST_F(IpcCanonicalFrameTest, HashFrameInAnEventDoesNotStallTheFrame) {
+  std::string const once = send_command("event once vbl=1 hash frame");
+  std::string const every = send_command("event on vbl=1 hash frame");
+  ASSERT_EQ(0u, once.rfind("OK id=", 0)) << once;
+  ASSERT_EQ(0u, every.rfind("OK id=", 0)) << every;
+  CPC.paused = false;
+  g_emu_paused.store(false);
+  constexpr int kTurns = 4;
+  int turned = 0;
+  auto const start = std::chrono::steady_clock::now();
+  for (int i = 0; i < kTurns; ++i)
+    if (emu_headless_turn().has_value()) ++turned;
+  auto const took = std::chrono::steady_clock::now() - start;
+  stop_machine();
+  // The one-shot fired, so the events did run on these frames.
+  EXPECT_EQ("ERR 404 event-not-found\n",
+            send_command("event off " + once.substr(6)));
+  EXPECT_EQ("OK\n", send_command("event off " + every.substr(6)));
+  EXPECT_EQ(kTurns, turned);
+  EXPECT_LT(took, std::chrono::milliseconds(800))
+      << "a frame waited for its own boundary";
+}
+
+// beads-0ir.1: a copy of a running machine's frame is one whole frame, never
+// rows of two. This ROM flips the border every frame, so a copy taken while
+// the runner writes the next frame matches none of the frames it shows.
+class IpcFlashingFrameTest : public IpcCanonicalFrameTest {
+ protected:
+  std::vector<unsigned char> rom() const override {
+    return test_rom_flashing_border();
+  }
+};
+
+TEST_F(IpcFlashingFrameTest, EveryCopyOfARunningMachineIsOneWholeFrame) {
+  // The frames this machine shows, turned one by one on this thread.
+  std::set<std::string> whole;
+  std::string previous;
+  for (int i = 0; i < 8; ++i) {
+    ASSERT_EQ(EmuFrameResult::kFrameComplete, emu_run_frame());
+    std::string const crc = machine_frame_crc();
+    EXPECT_NE(previous, crc) << "frame " << i << " is the one before it";
+    whole.insert(crc);
+    previous = crc;
+  }
+  ASSERT_GE(whole.size(), 2u);
+
+  CPC.paused = false;
+  g_emu_paused.store(false);
+  std::atomic<bool> stop{false};
+  std::atomic<unsigned> turns{0};
+  std::thread runner([&] {
+    while (!stop.load()) {
+      if (emu_headless_turn())
+        turns.fetch_add(1);
+      else
+        std::this_thread::yield();
+    }
+  });
+  std::vector<std::string> replies;
+  for (int i = 0; i < 40; ++i) replies.push_back(send_command("hash frame"));
+  unsigned const turned = turns.load();
+  stop.store(true);
+  runner.join();
+  ASSERT_GE(turned, 40u) << "the runner did not run beside the copies";
+
+  std::set<std::string> seen;
+  for (const std::string& reply : replies) {
+    EXPECT_EQ(1u, whole.count(reply_crc(reply))) << "a torn copy: " << reply;
+    EXPECT_NE(std::string::npos, reply.find(" paused=0 ")) << reply;
+    seen.insert(reply_crc(reply));
+  }
+  // The copies caught the machine on both pictures: the frames really did
+  // change under them.
+  EXPECT_GE(seen.size(), 2u);
 }
 
 TEST_F(IpcServerTest, HashFrameWithoutAMachineIsRefused) {
