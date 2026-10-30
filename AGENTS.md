@@ -528,6 +528,16 @@ binary_port_enabled=1      # 0 = do not open the port (manifest: `binary: null`)
   block only grows, by a new layout number (`kChipLayout*` in
   `kcpc_proto.h`), and the document's table of which window reads what says
   when one has to.
+- The picture, read off the frame runner (the text IPC's `hash frame`,
+  `hash vram` and `frames dump` GIF, the M4 `/preview.bmp`), is the
+  machine's canonical frame (RGB24 768x272, what `FB_INFO` describes),
+  copied through the gate by `kcpc_host_frame_copy()`
+  (`subcycle_bridge_framebuffer()` underneath). **Never `back_surface`**
+  from another thread: the runner blits into it during the frame and, in the
+  GUI, swaps it for the next ring buffer at the boundary, and it is scaled to
+  the window and in the plugin's pixel format (beads-0ir.1). The render
+  thread's own readers (presenting, the dock preview) and the runner's (the
+  AVI recorder) keep reading it.
 - `g_symfile` is shared by the render thread, the text IPC and this port.
   Every `Symfile` method takes the table's lock; `Symbols()`,
   `Breakpoints()` and `Entrypoints()` hand out references and are only for a
@@ -614,6 +624,7 @@ curl http://localhost:8080/sd/m4/dir.txt  # Directory listing (M4 format)
 | `GET /sd/<path>` | Download file from SD |
 | `GET /sd/m4/dir.txt` | M4-format directory listing |
 | `GET /status` | JSON status (extension) |
+| `GET /preview.bmp` | The machine's frame as a 768x544 BMP (extension; see below) |
 | `POST /` | Upload file (multipart/form-data) |
 | `POST /reset` | Reset CPC (deferred to main thread) |
 | `POST /pause` | Toggle pause (deferred to main thread) |

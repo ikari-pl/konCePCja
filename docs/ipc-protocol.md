@@ -252,7 +252,8 @@ CRC32 hashes for CI regression testing.
 
 | Command | Response |
 |---------|----------|
-| `hash vram` | `OK crc32=DEADBEEF` — CRC32 of visible screen surface |
+| `hash frame` | `OK crc32=DEADBEEF frame=N paused=0\|1 width=768 height=272 stride=2304 format=rgb24` — CRC32 of the machine's canonical frame: the RGB24 bytes KCPC `FB_INFO` describes, 272 rows of 2304 bytes, top row first, before any scaling, scanlines or video style. The copy is taken between two frames (on a running machine by the frame runner at the next frame boundary, on a stopped one at once), never beside a running frame. `frame` is the count of frames completed when it was taken (the `frame` of KCPC stamps and `EVT_FRAME`), `paused` whether the machine was stopped. The same machine state hashes the same in the GUI build, `-H` and the UI-free build, whatever the window scale. Run by an `event` (on the frame runner, inside its frame) it copies the frame there and then, without waiting for a boundary. `ERR 503 no-machine` before the machine is built, `ERR 503 shutting-down` while the core shuts down, `ERR 503 busy` when no boundary came and the machine could not be borrowed either |
+| `hash vram` | `OK crc32=DEADBEEF` — the same CRC32 as `hash frame`, in the old one-field reply. (Before beads-0ir.1 it hashed the host surface the frame is blitted into, which depended on the window scale and the build.) |
 | `hash mem <addr> <len>` | `OK crc32=DEADBEEF` — CRC32 of memory range |
 | `hash regs` | `OK crc32=DEADBEEF` — CRC32 of packed register state |
 
@@ -399,7 +400,7 @@ Ring-buffer recording of Z80 instruction execution.
 
 | Command | Description |
 |---------|-------------|
-| `frames dump <pattern> <count> [delay_cs]` | Advance N frames, saving output. If pattern ends in `.gif`, produces an animated GIF. Otherwise, saves a PNG per frame. Max 10000 frames. A breakpoint that fires mid-recording ends it there: the reply counts the frames actually recorded (`OK frames=N` / `OK saved=N`) and the machine stays stopped for `wait bp`. `ERR 409 frame-step-busy` while another frame step runs (see `step frame`); one that takes the counter mid-recording ends the recording there. |
+| `frames dump <pattern> <count> [delay_cs]` | Advance N frames, saving output. If pattern ends in `.gif`, produces an animated GIF of the machine's canonical frame (the bytes `hash frame` hashes), each row shown twice: 768x544 in every build. Otherwise, saves a PNG per frame, as `screenshot` does. Max 10000 frames. A breakpoint that fires mid-recording ends it there: the reply counts the frames actually recorded (`OK frames=N` / `OK saved=N`) and the machine stays stopped for `wait bp`. A GIF frame that cannot be copied is a failure, not a short recording: no GIF is written and the reply is `ERR 503 <why> frames=N of M` (N frames recorded of the M asked for; `<why>` is `no-machine`, `shutting-down` or `busy`, as for `hash frame`), and the same reasons without the count refuse a recording before its first frame. `ERR 409 frame-step-busy` while another frame step runs (see `step frame`); one that takes the counter mid-recording ends the recording there. |
 
 **PNG mode** (default): Pattern uses printf `%d`/`%04d` for frame number, or `_NNNN.png` is appended. Returns `OK saved=N`.
 
@@ -964,7 +965,7 @@ echo "input key RETURN" | nc -w 2 localhost 6543
 echo "step frame 500" | nc -w 30 localhost 6543
 
 # Verify screen content
-HASH=$(echo "hash vram" | nc -w 1 localhost 6543)
+HASH=$(echo "hash frame" | nc -w 1 localhost 6543)
 echo "Screen hash: $HASH"
 
 # Take screenshot

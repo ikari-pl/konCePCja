@@ -911,6 +911,12 @@ bool cpc_stopped();
 // paused machine through leases swallows the user's Run now and then. read()
 // must only copy: every pause and resume in the process waits for it.
 bool cpc_read_while_stopped(const std::function<void()>& read);
+
+// True on the frame runner while it is inside a frame turn (EmuFrameTurn):
+// the IPC events it runs, at a watched write or in the frame epilogue. Such a
+// caller already has the machine; waiting for a frame boundary would be
+// waiting for itself.
+bool cpc_in_frame_turn();
 void cpc_pause(const CpcRunCause& cause = {});
 uint64_t cpc_resume();
 // Like cpc_resume(), but reports whether a pause lease deferred the call.
