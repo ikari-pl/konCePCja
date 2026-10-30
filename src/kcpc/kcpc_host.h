@@ -181,6 +181,16 @@ kcpc::Status kcpc_host_sym_load(std::uint32_t client, std::uint32_t request,
 
 // FB_INFO: the machine's canonical frame, with no transport until phase 4.
 kcpc::Status kcpc_host_fb_info(kcpc::FbInfo& info);
+// That frame, copied whole into `rgb` (sized here: RGB24, the width, height
+// and stride FB_INFO gives), for a reader off the frame runner: the text IPC's
+// `hash frame` and GIF recorder, the M4 /preview.bmp. Taken through the gate
+// like MEM_READ, so never beside a running frame: on a running machine the
+// runner copies it at the next frame boundary, on a stopped one the calling
+// thread does. Called by the runner inside its own frame turn (an IPC event)
+// it copies at once. `stamp` is when the copy was taken. kNotPresent when no
+// machine is built.
+kcpc::Status kcpc_host_frame_copy(std::vector<std::uint8_t>& rgb,
+                                  kcpc::Stamp& stamp);
 
 // Media (section 12): MEDIA_INSERT, MEDIA_EJECT, MEDIA_INFO, TAPE_CONTROL.
 // The changes run on the calling (socket) thread under a pause lease, while

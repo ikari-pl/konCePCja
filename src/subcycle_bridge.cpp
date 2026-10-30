@@ -758,6 +758,10 @@ subcycle::Machine* subcycle_bridge_machine() {
   return g_bridge.active ? &g_bridge.machine : nullptr;
 }
 
+const uint8_t* subcycle_bridge_framebuffer() {
+  return g_bridge.active ? g_bridge.fb.data() : nullptr;
+}
+
 void subcycle_bridge_silicon_disc_copy_out(uint8_t* dst) {
   Bridge& b = g_bridge;
   if (b.active && b.machine.silicon_disc_enabled())

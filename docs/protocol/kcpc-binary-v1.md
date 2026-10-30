@@ -1694,6 +1694,11 @@ This is the machine's canonical frame, before scaling or scanlines (epic
 invariant 1). The reply is the same for the life of the core: until phase 4
 there is nothing to read the frame from, and `transport` 0 says so.
 
+The text IPC's `hash frame` is the CRC32 of exactly these bytes (`height`
+rows of `stride` bytes, top row first), copied between two frames, and says
+after which frame it was taken: a client that reads the frame some other way
+compares its own hash with that one (docs/ipc-protocol.md, Hashes).
+
 ### Media
 
 Paths are files on the core's machine, in the core's filesystem. A relative
