@@ -1209,7 +1209,8 @@ TEST_F(KcpcControlTest, HelloGrantsControlToTheFirstWhoAsks) {
   EXPECT_EQ(observer_hello.role, kcpc::Role::kObserver);
   EXPECT_EQ(observer_hello.caps, kcpc::kServerCaps & ~kcpc::kCapRunControl &
                                      ~kcpc::kCapBreakpoints & ~kcpc::kCapInput &
-                                     ~kDevtoolsCaps & ~kMediaCaps)
+                                     ~kcpc::kCapGun & ~kDevtoolsCaps &
+                                     ~kMediaCaps)
       << "everything but run control, breakpoints, input and the DevTools "
          "data, which this machine does not offer";
   EXPECT_NE(observer_hello.caps & kcpc::kCapMachineWrite, 0U);
@@ -1813,7 +1814,8 @@ TEST_F(KcpcEventsTest, HelloAnnouncesRunControlAndEvents) {
   kcpc::HelloReply hello;
   auto client = join(kcpc::Role::kObserver, hello);
   EXPECT_EQ(hello.caps, kcpc::kServerCaps & ~kcpc::kCapBreakpoints &
-                            ~kcpc::kCapInput & ~kDevtoolsCaps & ~kMediaCaps);
+                            ~kcpc::kCapInput & ~kcpc::kCapGun & ~kDevtoolsCaps &
+                            ~kMediaCaps);
   EXPECT_NE(hello.caps & kcpc::kCapRunControl, 0U);
   EXPECT_NE(hello.caps & kcpc::kCapEvents, 0U);
 }
@@ -2419,8 +2421,8 @@ TEST_F(KcpcBreakpointsTest, HelloAnnouncesBreakpoints) {
   start_with_breakpoints();
   kcpc::HelloReply hello;
   auto client = join(kcpc::Role::kObserver, hello);
-  EXPECT_EQ(hello.caps, kcpc::kServerCaps & ~kcpc::kCapInput & ~kDevtoolsCaps &
-                            ~kMediaCaps);
+  EXPECT_EQ(hello.caps, kcpc::kServerCaps & ~kcpc::kCapInput & ~kcpc::kCapGun &
+                            ~kDevtoolsCaps & ~kMediaCaps);
   EXPECT_NE(hello.caps & kcpc::kCapBreakpoints, 0U);
 }
 
@@ -2700,6 +2702,18 @@ struct FakeInput {
       rows = matrix;
       return Status::kOk;
     };
+    c.gun = [this](bool aim, std::uint16_t x, std::uint16_t y, bool set_trigger,
+                   bool pulled) {
+      std::scoped_lock const lock(mutex);
+      gun_calls += 1;
+      if (!gun_fitted) return Status::kNotPresent;
+      if (aim) {
+        gun_x = x;
+        gun_y = y;
+      }
+      if (set_trigger) gun_pulled = pulled;
+      return Status::kOk;
+    };
   }
 
   std::uint8_t row(std::size_t index) {
@@ -2719,6 +2733,10 @@ struct FakeInput {
     std::scoped_lock const lock(mutex);
     return mouse_buttons;
   }
+  bool pulled() {
+    std::scoped_lock const lock(mutex);
+    return gun_pulled;
+  }
 
   std::mutex mutex;
   kcpc::KeyMatrix matrix{};  // the matrix's polarity: a clear bit is down
@@ -2731,6 +2749,11 @@ struct FakeInput {
   int mouse_x = 0;
   int mouse_y = 0;
   std::uint8_t mouse_buttons = 0;
+  int gun_calls = 0;
+  bool gun_fitted = true;
+  int gun_x = -1;
+  int gun_y = -1;
+  bool gun_pulled = false;
 };
 
 std::vector<std::uint8_t> key_payload(std::uint8_t row, std::uint8_t bit,
@@ -2760,6 +2783,19 @@ std::vector<std::uint8_t> mouse_payload(std::int16_t dx, std::int16_t dy,
   mouse.buttons = buttons;
   mouse.flags = flags;
   kcpc::write_mouse_request(w, mouse);
+  return w.take();
+}
+
+std::vector<std::uint8_t> gun_payload(std::uint16_t x, std::uint16_t y,
+                                      std::uint8_t trigger,
+                                      std::uint8_t flags) {
+  kcpc::Writer w;
+  kcpc::GunRequest gun;
+  gun.x = x;
+  gun.y = y;
+  gun.trigger = trigger;
+  gun.flags = flags;
+  kcpc::write_gun_request(w, gun);
   return w.take();
 }
 
@@ -3102,6 +3138,149 @@ TEST_F(KcpcInputTest, MouseWithNoMouseFittedIsNotPresent) {
   EXPECT_EQ(frame.status(), Status::kNotPresent);
   EXPECT_NE(frame.message().find("mouse"), std::string::npos);
   expect_ping_ok(*controller, 3);
+}
+
+// -- the light gun (beads-il6h) ----------------------------------------------
+
+TEST_F(KcpcInputTest, HelloAnnouncesTheGun) {
+  start_with_input();
+  kcpc::HelloReply hello;
+  auto client = join(kcpc::Role::kObserver, hello);
+  EXPECT_NE(hello.caps & kcpc::kCapGun, 0U);
+}
+
+TEST_F(KcpcInputTest, WithoutAGunCallbackGunDoesNotExist) {
+  start_with_breakpoints();
+  kcpc::HelloReply hello;
+  auto controller = join(kcpc::Role::kController, hello);
+  EXPECT_EQ(hello.caps & kcpc::kCapGun, 0U);
+  Frame frame;
+  exchange(*controller, Opcode::kGun, 2,
+           gun_payload(10, 10, 1, kcpc::kGunFlagAim | kcpc::kGunFlagTrigger),
+           frame);
+  EXPECT_EQ(frame.status(), Status::kUnknownOpcode);
+}
+
+TEST_F(KcpcInputTest, GunAimsAndPullsOnlyWhatItIsAskedTo) {
+  start_with_input();
+  kcpc::HelloReply hello;
+  auto controller = join(kcpc::Role::kController, hello);
+  Frame frame;
+
+  exchange(*controller, Opcode::kGun, 2,
+           gun_payload(400, 120, 1, kcpc::kGunFlagAim | kcpc::kGunFlagTrigger),
+           frame);
+  ASSERT_EQ(frame.status(), Status::kOk);
+  EXPECT_EQ(frame.payload.size(), 4U) << "GUN replies with the status alone";
+  EXPECT_EQ(input_.gun_x, 400);
+  EXPECT_EQ(input_.gun_y, 120);
+  EXPECT_TRUE(input_.pulled());
+
+  // The aim alone: the trigger stays pulled, whatever its field holds.
+  exchange(*controller, Opcode::kGun, 3,
+           gun_payload(767, 271, 0, kcpc::kGunFlagAim), frame);
+  ASSERT_EQ(frame.status(), Status::kOk);
+  EXPECT_EQ(input_.gun_x, 767);
+  EXPECT_EQ(input_.gun_y, 271);
+  EXPECT_TRUE(input_.pulled());
+
+  // The trigger alone: the aim stays, whatever its fields hold.
+  exchange(*controller, Opcode::kGun, 4,
+           gun_payload(9999, 9999, 0, kcpc::kGunFlagTrigger), frame);
+  ASSERT_EQ(frame.status(), Status::kOk);
+  EXPECT_EQ(input_.gun_x, 767);
+  EXPECT_FALSE(input_.pulled());
+}
+
+TEST_F(KcpcInputTest, GunIsCheckedBeforeTheGunIsTouched) {
+  start_with_input();
+  kcpc::HelloReply hello;
+  auto controller = join(kcpc::Role::kController, hello);
+  auto observer = join(kcpc::Role::kObserver, hello);
+  Frame frame;
+
+  exchange(*observer, Opcode::kGun, 2,
+           gun_payload(1, 1, 1, kcpc::kGunFlagTrigger), frame);
+  EXPECT_EQ(frame.status(), Status::kNotController);
+  exchange(*observer, Opcode::kGun, 3, {}, frame);
+  EXPECT_EQ(frame.status(), Status::kNotController) << "malformed, too";
+
+  exchange(*controller, Opcode::kGun, 2, {1, 0, 1, 0, 1}, frame);
+  EXPECT_EQ(frame.status(), Status::kBadPayload) << "five bytes of six";
+  exchange(*controller, Opcode::kGun, 3,
+           gun_payload(1, 1, 2, kcpc::kGunFlagTrigger), frame);
+  EXPECT_EQ(frame.status(), Status::kBadPayload) << "trigger is 0 or 1";
+  exchange(*controller, Opcode::kGun, 4,
+           gun_payload(768, 0, 0, kcpc::kGunFlagAim), frame);
+  EXPECT_EQ(frame.status(), Status::kOutOfRange) << "x 0 to 767";
+  exchange(*controller, Opcode::kGun, 5,
+           gun_payload(0, 272, 0, kcpc::kGunFlagAim), frame);
+  EXPECT_EQ(frame.status(), Status::kOutOfRange) << "y 0 to 271";
+  EXPECT_FALSE(frame.message().empty());
+  EXPECT_EQ(input_.count(&FakeInput::gun_calls), 0);
+
+  // Fields a flag does not name are not checked: they are not used.
+  exchange(*controller, Opcode::kGun, 6, gun_payload(768, 272, 7, 0), frame);
+  EXPECT_EQ(frame.status(), Status::kOk);
+}
+
+TEST_F(KcpcInputTest, GunWithNoGunEnabledIsNotPresent) {
+  input_.gun_fitted = false;
+  start_with_input();
+  kcpc::HelloReply hello;
+  auto controller = join(kcpc::Role::kController, hello);
+  Frame frame;
+  exchange(*controller, Opcode::kGun, 2,
+           gun_payload(1, 1, 1, kcpc::kGunFlagTrigger), frame);
+  EXPECT_EQ(frame.status(), Status::kNotPresent);
+  EXPECT_NE(frame.message().find("light gun"), std::string::npos)
+      << frame.message();
+  expect_ping_ok(*controller, 3);
+}
+
+// A trigger held when control is lost is let go, like a key; the aim stays.
+TEST_F(KcpcInputTest, AHeldTriggerIsLetGoWithControl) {
+  start_with_input();
+  kcpc::HelloReply hello;
+  auto controller = join(kcpc::Role::kController, hello);
+  Frame frame;
+  exchange(*controller, Opcode::kGun, 2,
+           gun_payload(300, 100, 1, kcpc::kGunFlagAim | kcpc::kGunFlagTrigger),
+           frame);
+  ASSERT_EQ(frame.status(), Status::kOk);
+  ASSERT_TRUE(input_.pulled());
+
+  kcpc::ControlReply reply;
+  control(*controller, 3, kcpc::kControlRelease, 0, reply);
+  EXPECT_FALSE(input_.pulled());
+  EXPECT_EQ(input_.gun_x, 300) << "letting go aims nowhere else";
+  EXPECT_EQ(input_.gun_y, 100);
+  EXPECT_EQ(input_.count(&FakeInput::gun_calls), 2);
+
+  // One that was let go already is not let go again.
+  control(*controller, 4, kcpc::kControlAcquire, 0, reply);
+  exchange(*controller, Opcode::kGun, 5, gun_payload(0, 0, 1, 0), frame);
+  ASSERT_EQ(frame.status(), Status::kOk);
+  control(*controller, 6, kcpc::kControlRelease, 0, reply);
+  EXPECT_EQ(input_.count(&FakeInput::gun_calls), 3);
+}
+
+// A controller that disconnects holding the trigger lets go of it too.
+TEST_F(KcpcInputTest, ADisconnectedControllerLetsGoOfTheTrigger) {
+  start_with_input();
+  kcpc::HelloReply hello;
+  auto controller = join(kcpc::Role::kController, hello);
+  auto observer = join(kcpc::Role::kObserver, hello);
+  Frame frame;
+  exchange(*controller, Opcode::kGun, 2,
+           gun_payload(0, 0, 1, kcpc::kGunFlagTrigger), frame);
+  ASSERT_EQ(frame.status(), Status::kOk);
+  ASSERT_TRUE(input_.pulled());
+
+  controller->close();
+  // Let go by the time anyone is told that control is free.
+  await_free_control(*observer);
+  EXPECT_FALSE(input_.pulled());
 }
 
 // -- slice 7: what the DevTools show -----------------------------------------

@@ -756,6 +756,31 @@ TEST(KcpcCodec, AMouseRequestCarriesSignedDeltas) {
   EXPECT_FALSE(kcpc::read_mouse_request(short_reader, out));
 }
 
+TEST(KcpcCodec, AGunRequestCarriesTheAimAndTheTrigger) {
+  EXPECT_EQ(static_cast<int>(kcpc::Opcode::kGun), 0x0B00);
+  EXPECT_NE(kcpc::kServerCaps & kcpc::kCapGun, 0U);
+  Writer w;
+  kcpc::GunRequest in;
+  in.x = 767;
+  in.y = 271;
+  in.trigger = 1;
+  in.flags = kcpc::kGunFlagAim | kcpc::kGunFlagTrigger;
+  kcpc::write_gun_request(w, in);
+  EXPECT_EQ(w.data(),
+            (std::vector<std::uint8_t>{0xFF, 0x02, 0x0F, 0x01, 0x01, 0x03}));
+  Reader r(w.data());
+  kcpc::GunRequest out;
+  ASSERT_TRUE(kcpc::read_gun_request(r, out));
+  EXPECT_EQ(out.x, 767);
+  EXPECT_EQ(out.y, 271);
+  EXPECT_EQ(out.trigger, 1);
+  EXPECT_EQ(out.flags, kcpc::kGunFlagAim | kcpc::kGunFlagTrigger);
+
+  std::vector<std::uint8_t> const cut = {0xFF, 0x02, 0x0F, 0x01, 0x01};
+  Reader short_reader(cut);
+  EXPECT_FALSE(kcpc::read_gun_request(short_reader, out));
+}
+
 TEST(KcpcCodec, TheMatrixHasTenRowsOfEightKeys) {
   EXPECT_EQ(kcpc::KeyMatrix{}.size(), 10U);
   EXPECT_EQ(kcpc::kKeyRows, 10);

@@ -616,6 +616,10 @@ class Server::Connection {
         if (!input()) break;
         handle_input_state(header);
         return true;
+      case Opcode::kGun:
+        if (!gun()) break;
+        if (controller_only(header)) handle_gun(header, payload);
+        return true;
       case Opcode::kChipGet:
         if (!chips()) break;
         handle_chip_get(header, payload);
@@ -1381,8 +1385,14 @@ class Server::Connection {
            config_.text && config_.mouse && config_.input_state;
   }
 
-  // The reply to KEY, KEYS_RELEASE and MOUSE: the status alone.
-  void respond_input(const FrameHeader& header, Status status) {
+  // CAP_GUN, which needs the control role too.
+  bool gun() const { return machine_writes() && config_.gun; }
+
+  // The reply to KEY, KEYS_RELEASE, MOUSE and GUN: the status alone.
+  // `not_present` names the device that is missing.
+  void respond_input(
+      const FrameHeader& header, Status status,
+      const char* not_present = "no AMX or Symbiface mouse is enabled") {
     if (status == Status::kNotController) {
       // Control was taken between the request's start and the change.
       refuse_observer(header);
@@ -1390,9 +1400,8 @@ class Server::Connection {
     }
     if (status != Status::kOk) {
       respond_error(header, status,
-                    status == Status::kNotPresent
-                        ? "no AMX or Symbiface mouse is enabled"
-                        : machine_refusal(status));
+                    status == Status::kNotPresent ? not_present
+                                                  : machine_refusal(status));
       return;
     }
     Writer w;
@@ -1452,6 +1461,29 @@ class Server::Connection {
       return;
     }
     respond_input(header, owner_.move_mouse(client_id_, request));
+  }
+
+  void handle_gun(const FrameHeader& header,
+                  const std::vector<std::uint8_t>& payload) {
+    Reader r(payload);
+    GunRequest request;
+    if (!read_gun_request(r, request)) {
+      respond_error(header, Status::kBadPayload, "GUN payload too short");
+      return;
+    }
+    if ((request.flags & kGunFlagTrigger) != 0 && request.trigger > 1) {
+      respond_error(header, Status::kBadPayload,
+                    "trigger must be 1 (pulled) or 0 (let go)");
+      return;
+    }
+    if ((request.flags & kGunFlagAim) != 0 &&
+        (request.x >= kGunFrameWidth || request.y >= kGunFrameHeight)) {
+      respond_error(header, Status::kOutOfRange,
+                    "the frame is 768 by 272 pixels: x 0 to 767, y 0 to 271");
+      return;
+    }
+    respond_input(header, owner_.aim_gun(client_id_, request),
+                  "no light gun is enabled");
   }
 
   void handle_input_state(const FrameHeader& header) {
@@ -1668,6 +1700,7 @@ class Server::Connection {
     if (media()) reply.caps |= kCapMedia;
     if (snapshots()) reply.caps |= kCapSnapshot;
     if (configuration()) reply.caps |= kCapConfig;
+    if (gun()) reply.caps |= kCapGun;
     reply.max_frame = request.max_frame == 0
                           ? kMaxServerFrame
                           : std::min(request.max_frame, kMaxServerFrame);
@@ -2016,6 +2049,21 @@ Status Server::move_mouse(std::uint32_t client, const MouseRequest& mouse) {
   return status;
 }
 
+Status Server::aim_gun(std::uint32_t client, const GunRequest& gun) {
+  std::scoped_lock const lock(held_mutex_);
+  if (controller_.load(std::memory_order_acquire) != client) {
+    return Status::kNotController;
+  }
+  if (held_owner_ != client) release_held_locked();
+  held_owner_ = client;
+  bool const aim = (gun.flags & kGunFlagAim) != 0;
+  bool const set_trigger = (gun.flags & kGunFlagTrigger) != 0;
+  bool const pulled = gun.trigger == 1;
+  Status const status = config_.gun(aim, gun.x, gun.y, set_trigger, pulled);
+  if (status == Status::kOk && set_trigger) held_trigger_ = pulled;
+  return status;
+}
+
 void Server::release_held(std::uint32_t client) {
   std::scoped_lock const lock(held_mutex_);
   if (held_owner_ == client) release_held_locked();
@@ -2029,8 +2077,11 @@ void Server::release_held_locked() {
   }
   // A mouse that has been unplugged meanwhile has no buttons to let go of.
   if (held_buttons_ != 0) config_.mouse(0, 0, true, 0);
+  // So has a gun.
+  if (held_trigger_) config_.gun(false, 0, 0, true, false);
   held_keys_.fill(0);
   held_buttons_ = 0;
+  held_trigger_ = false;
   held_owner_ = 0;
 }
 

@@ -1742,6 +1742,18 @@ kcpc::Status kcpc_host_mouse(int dx, int dy, bool set_buttons,
   return ipc_stage_mouse(dx, dy, mask) ? Status::kOk : Status::kNotPresent;
 }
 
+kcpc::Status kcpc_host_gun(bool aim, std::uint16_t x, std::uint16_t y,
+                           bool set_trigger, bool pulled) {
+  static_assert(kcpc::kGunFrameWidth == subcycle::kFbWidth &&
+                    kcpc::kGunFrameHeight == subcycle::kFbHeight,
+                "GUN aims at the frame FB_INFO describes");
+  std::optional<IpcGunAim> frame_aim;
+  if (aim) frame_aim = IpcGunAim{x, y};
+  std::optional<bool> trigger;
+  if (set_trigger) trigger = pulled;
+  return ipc_stage_gun(frame_aim, trigger) ? Status::kOk : Status::kNotPresent;
+}
+
 kcpc::Status kcpc_host_input_state(kcpc::KeyMatrix& rows) {
   static_assert(kcpc::kKeyRows == kKbdMatrixRows,
                 "INPUT_STATE is the matrix, row for row");
@@ -1796,6 +1808,7 @@ void kcpc_host_start(bool enabled) {
   config.text = &kcpc_host_text;
   config.mouse = &kcpc_host_mouse;
   config.input_state = &kcpc_host_input_state;
+  config.gun = &kcpc_host_gun;
   config.chip_get = &kcpc_host_chip_get;
   config.sym_list = &kcpc_host_sym_list;
   config.sym_add = [](const kcpc::Cause& cause, const kcpc::Symbol& symbol,

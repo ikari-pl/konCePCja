@@ -321,6 +321,7 @@ ship one at a time.
 | 11 | `CAP_MEDIA` | `MEDIA_*`, `TAPE_CONTROL` |
 | 12 | `CAP_SNAPSHOT` | `SNAPSHOT_SAVE`, `SNAPSHOT_LOAD` |
 | 13 | `CAP_CONFIG` | `CONFIG_GET`, `CONFIG_SET`, `CONFIG_APPLY` |
+| 14 | `CAP_GUN` | `GUN` |
 
 `PING` (empty request, empty reply) needs no capability.
 
@@ -1490,7 +1491,8 @@ is never `BUSY`.
   frontend sends when its window loses focus.
 - **Keys held when control is lost.** The server remembers which keys the
   controller pressed with `KEY` and has not released, and which mouse buttons
-  it set with `MOUSE`. When the controller disconnects, is dropped for
+  it set with `MOUSE`, and whether it pulled the light gun's trigger with
+  `GUN`. When the controller disconnects, is dropped for
   silence, sends `CONTROL release` or has control taken by force, the server
   releases exactly those, so a dropped connection never leaves a key held
   down. It does not release keys another source holds: a client that only
@@ -1528,6 +1530,34 @@ is never `BUSY`.
   - The movement reaches the machine a frame or two later, not with the next
     frame: the main loop hands it to the device, and the runner takes it
     from there. In a GUI core those are two threads.
+- **`GUN` (`0x0B00`)** — controller, `CAP_GUN`. Request: `u16 x`,
+  `u16 y`, `u8 trigger` (1 pulled, 0 let go), `u8 flags` (bit 0: `x` and `y`
+  are valid; bit 1: `trigger` is valid). Reply: empty. The light gun
+  (`input.lightgun`: the Amstrad Magnum Phaser or the Trojan Light Phazer)
+  aimed and fired: staged and applied by `ipc_drain_input()` once a frame,
+  like `MOUSE`, through the staging the text IPC's `input gun` uses
+  (`ipc_stage_gun()`).
+  - The aim is absolute, in pixels of the machine's frame, the one `FB_INFO`
+    describes: `x` 0–767, `y` 0–271. A frontend aims at the pixel it shows,
+    whatever the core's own window looks like. (The text IPC's
+    `input gun move` takes pixels of the core's window and maps them through
+    its video plugin; a remote frontend does not know that window.)
+  - Without bit 0 the aim stays where it is and `x`, `y` are not looked at;
+    without bit 1 the trigger stays as it is and `trigger` is not looked at.
+    The other bits of `flags` are ignored.
+  - While the trigger is pulled the gun pulses the CRTC's light pen input as
+    the beam passes the aim, and the CRTC latches its address in R16 and R17
+    (`CHIP_GET` CRTC). The Trojan gun's trigger is also joystick 0's fire 1,
+    pressed through the keyboard matrix as the text IPC's `input gun
+    trigger` does.
+  - A trigger pulled with `GUN` is let go when the controller loses control,
+    like a held key; the aim stays.
+  - `NOT_PRESENT` if no light gun is enabled; `BAD_PAYLOAD` for a payload
+    that is too short or a `trigger` that is not 0 or 1 when bit 1 is set;
+    `OUT_OF_RANGE` for an aim outside the frame when bit 0 is set. Checked in
+    this order: `NOT_CONTROLLER`, `BAD_PAYLOAD`, `OUT_OF_RANGE`,
+    `NOT_PRESENT`.
+  - Like `MOUSE`, it reaches the machine a frame or two later.
 - **`INPUT_STATE` (`0x0404`)** — anyone. Empty request. Reply: 10 bytes, one
   per matrix row, bit clear = key down (the matrix's own polarity). It is the
   pending matrix, the keys as every source has asked for them, so a `KEY` is
@@ -1894,11 +1924,12 @@ GUI action.
 | `0x0A00` | `CONFIG_GET` | `CAP_CONFIG` | anyone | 9 |
 | `0x0A01` | `CONFIG_SET` | `CAP_CONFIG` | controller | 9 |
 | `0x0A02` | `CONFIG_APPLY` | `CAP_CONFIG` | controller | 9 |
+| `0x0B00` | `GUN` | `CAP_GUN` | controller | 10 |
 | `0x8001`–`0x800B` | events | `CAP_EVENTS` | server only | 4, 5, 7 |
 
 Reserved: the unused opcodes of the media (`0x08xx`), snapshot (`0x09xx`)
-and configuration (`0x0Axx`) ranges, and `0x0B00`–`0x0BFF` for the light gun
-and other input devices.
+and configuration (`0x0Axx`) ranges, and `0x0B01`–`0x0BFF` for other input
+devices.
 
 ## 14. A session, byte by byte
 
@@ -1971,6 +2002,7 @@ test-first against a real `-H` core.
 | 7 | DevTools data (**landed**, beads-3o1.7) | `CHIP_GET` for the CRTC, the Gate Array, the PSG, the FDC and the ASIC (layout 2), the memory space `ASIC_PAGE`; `SYM_LIST`, `SYM_ADD`, `SYM_DEL`, `SYM_LOAD` on a symbol table that now has a lock; `FB_INFO` with no transport; `EVT_MEDIA_CHANGED`, `EVT_SYMBOLS_CHANGED`, `EVT_MACHINE_CHANGED` for changes from any source; `CAP_CHIPS`, `CAP_SYMBOLS`, `CAP_FB_INFO` |
 | 8 | Exit test and documentation (**landed**, beads-3o1.8) | The exit test of beads-3o1 (`test_exit_criterion.py`), a refusal checked for every opcode of [section 13](#13-opcode-table), the documentation brought in line with the code; `SYM_LOAD` takes the `..` rule of the other paths, and a refused disc changes nothing on either port. **No freeze:** the server stays at major 0 |
 | 9 | Media, snapshots, configuration (**landed**, beads-rcyq) | `MEDIA_INSERT`, `MEDIA_EJECT`, `MEDIA_INFO`, `TAPE_CONTROL` on the loaders and the media swap the text IPC and the menus use, with the machine's half applied under the request's lease; `SNAPSHOT_SAVE`, `SNAPSHOT_LOAD` (SNA); `CONFIG_GET`, `CONFIG_SET`, `CONFIG_APPLY` on one table of keys shared with the text IPC; `CAP_MEDIA`, `CAP_SNAPSHOT`, `CAP_CONFIG` |
+| 10 | The light gun (beads-il6h) | `GUN`, aimed in frame pixels, on the staging the text IPC's `input gun` uses; a trigger the controller pulled is let go when it loses control; `CAP_GUN` |
 
 Slice 9 needs slices 3 (the controller role) and 4 (events) and nothing
 later, so it can be built alongside slices 5 to 7. Slice 8 is numbered before
