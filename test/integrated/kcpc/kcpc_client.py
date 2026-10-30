@@ -94,7 +94,8 @@ OP_SNAPSHOT_LOAD = 0x0901
 OP_CONFIG_GET = 0x0A00
 OP_CONFIG_SET = 0x0A01
 OP_CONFIG_APPLY = 0x0A02
-OP_RESERVED_INPUT = 0x0B00  # a reserved range: used to test UNKNOWN_OPCODE
+OP_GUN = 0x0B00
+OP_RESERVED_INPUT = 0x0BFF  # a reserved range: used to test UNKNOWN_OPCODE
 
 # Events (section 9): frames of kind 3 the server sends unasked.
 EVT_STOPPED = 0x8001
@@ -181,6 +182,7 @@ CAP_MEM_ROM = 1 << 10
 CAP_MEDIA = 1 << 11
 CAP_SNAPSHOT = 1 << 12
 CAP_CONFIG = 1 << 13
+CAP_GUN = 1 << 14
 
 # CHIP_GET: the chips, and the layout of each one's block.
 CHIP_CRTC = 1
@@ -237,6 +239,12 @@ MOUSE_LEFT = 1 << 0
 MOUSE_MIDDLE = 1 << 1
 MOUSE_RIGHT = 1 << 2
 MOUSE_FLAG_BUTTONS = 1 << 0   # MOUSE: the `buttons` field is to be applied
+
+# GUN: the aim is in pixels of the frame FB_INFO describes.
+GUN_FRAME_WIDTH = 768
+GUN_FRAME_HEIGHT = 272
+GUN_FLAG_AIM = 1 << 0         # `x` and `y` are to be applied
+GUN_FLAG_TRIGGER = 1 << 1     # `trigger` is to be applied
 
 # Memory spaces (section 11).
 SPACE_CPU = 0        # what the Z80 would read now
@@ -942,6 +950,15 @@ def mouse_payload(dx: int, dy: int, buttons: Optional[int] = None) -> bytes:
     return struct.pack('<hhBB', dx, dy, buttons or 0, flags)
 
 
+def gun_payload(aim: Optional[Tuple[int, int]] = None,
+                pulled: Optional[bool] = None) -> bytes:
+    """None leaves the aim, or the trigger, as it is."""
+    flags = ((GUN_FLAG_AIM if aim is not None else 0)
+             | (GUN_FLAG_TRIGGER if pulled is not None else 0))
+    x, y = aim if aim is not None else (0, 0)
+    return struct.pack('<HHBB', x, y, 1 if pulled else 0, flags)
+
+
 def mem_read_payload(space: int, addr: int, length: int,
                      bank: int = 0) -> bytes:
     return struct.pack('<BBHII', space, 0, bank, addr, length)
@@ -1313,6 +1330,14 @@ class KcpcClient:
         is given, set its buttons (MOUSE_LEFT | MOUSE_MIDDLE | MOUSE_RIGHT).
         NOT_PRESENT when no mouse is enabled."""
         self.request(OP_MOUSE, mouse_payload(dx, dy, buttons))
+
+    def gun(self, aim: Optional[Tuple[int, int]] = None,
+            pulled: Optional[bool] = None) -> None:
+        """Aim the light gun at `aim`, (x, y) in frame pixels (FB_INFO's
+        width by height), and pull (True) or let go of (False) its trigger.
+        None leaves either as it is. A trigger still pulled when this client
+        loses control is let go. NOT_PRESENT when no light gun is enabled."""
+        self.request(OP_GUN, gun_payload(aim, pulled))
 
     def input_state(self) -> bytes:
         """The keyboard matrix, one byte per row (KEY_ROWS of them); a clear

@@ -401,6 +401,9 @@ struct IpcGunPending {
   // a multi-monitor setup) is a valid aim and must not read as "untouched".
   std::optional<int32_t> x;  // staged window px (motion.x equivalent)
   std::optional<int32_t> y;
+  // x/y are already frame pixels (CPC.phazer_x/y's own units: KCPC's GUN),
+  // not window pixels to map through the video plugin.
+  bool aim_in_frame = false;
   std::optional<int> trigger;  // 0 = released, 1 = pressed; nullopt = untouched
   std::atomic<bool> dirty{false};  // fast-path: skip the lock when idle
   // Published by the main thread each frame (phazer_emulation != None) so the
@@ -875,6 +878,20 @@ bool ipc_gun_gate_open() {
   return g_ipc_gun.device_active.load(std::memory_order_relaxed);
 }
 
+bool ipc_stage_gun(std::optional<IpcGunAim> frame_aim,
+                   std::optional<bool> pulled) {
+  if (!ipc_gun_gate_open()) return false;
+  std::scoped_lock const lock(g_ipc_gun.mutex);
+  if (frame_aim) {
+    g_ipc_gun.x = frame_aim->x;
+    g_ipc_gun.y = frame_aim->y;
+    g_ipc_gun.aim_in_frame = true;
+  }
+  if (pulled) g_ipc_gun.trigger = *pulled ? 1 : 0;
+  g_ipc_gun.dirty.store(true, std::memory_order_release);
+  return true;
+}
+
 bool ipc_stage_mouse(int dx, int dy, std::optional<uint32_t> buttons) {
   if (!ipc_mouse_gate_open()) return false;
   std::scoped_lock const lock(g_ipc_mouse.mutex);
@@ -956,34 +973,46 @@ void ipc_drain_input() {
   if (g_ipc_gun.dirty.load(std::memory_order_acquire)) {
     std::optional<int32_t> gx, gy;
     std::optional<int> trig;
+    bool in_frame = false;
     {
       std::scoped_lock const lock(g_ipc_gun.mutex);
       if (g_ipc_gun.dirty.load(std::memory_order_relaxed)) {
         gx = g_ipc_gun.x;
         gy = g_ipc_gun.y;
         trig = g_ipc_gun.trigger;
+        in_frame = g_ipc_gun.aim_in_frame;
         g_ipc_gun.x.reset();
         g_ipc_gun.y.reset();
         g_ipc_gun.trigger.reset();
         g_ipc_gun.dirty.store(false, std::memory_order_relaxed);
       }
     }
-    // vid_plugin is set up by video_init on this same main thread, but a drain
-    // can land before that (or in a headless/test context) — never deref null.
-    if (CPC.phazer_emulation && vid_plugin != nullptr) {
-      // Same window-px -> CPC-frame mapping the SDL mouse-motion path uses.
-      // Clamp at 0: a point left/above the offset (off the active window) maps
-      // negative, and a negative float -> unsigned int cast is undefined.
-      if (gx)
-        CPC.phazer_x = static_cast<unsigned int>(
-            std::max(0.0f, (*gx - vid_plugin->x_offset) * vid_plugin->x_scale));
-      if (gy)
-        CPC.phazer_y = static_cast<unsigned int>(
-            std::max(0.0f, (*gy - vid_plugin->y_offset) * vid_plugin->y_scale));
+    if (CPC.phazer_emulation) {
+      if (in_frame) {
+        // Frame pixels, which the KCPC server has checked against the frame:
+        // there is no window to map them through.
+        if (gx) CPC.phazer_x = static_cast<unsigned int>(std::max(0, *gx));
+        if (gy) CPC.phazer_y = static_cast<unsigned int>(std::max(0, *gy));
+      } else if (vid_plugin != nullptr) {
+        // vid_plugin is set up by video_init on this same main thread, but a
+        // drain can land before that (or in a headless/test context) — never
+        // deref null.
+        // Same window-px -> CPC-frame mapping the SDL mouse-motion path uses.
+        // Clamp at 0: a point left/above the offset (off the active window)
+        // maps negative, and a negative float -> unsigned int cast is
+        // undefined.
+        if (gx)
+          CPC.phazer_x = static_cast<unsigned int>(std::max(
+              0.0f, (*gx - vid_plugin->x_offset) * vid_plugin->x_scale));
+        if (gy)
+          CPC.phazer_y = static_cast<unsigned int>(std::max(
+              0.0f, (*gy - vid_plugin->y_offset) * vid_plugin->y_scale));
+      }
       if (trig) {
         // Trojan wires the trigger to joystick Fire 1 (see the SDL button
         // path).
-        if (CPC.phazer_emulation == PhazerType::TrojanLightPhazer) {
+        if (CPC.phazer_emulation == PhazerType::TrojanLightPhazer &&
+            CPC.InputMapper != nullptr) {
           auto scancode = CPC.InputMapper->CPCscancodeFromCPCkey(CPC_J0_FIRE1);
           ipc_apply_keypress(scancode, keyboard_matrix, *trig == 1);
         }
@@ -3891,6 +3920,7 @@ std::string handle_command(const std::string& line) {
           std::scoped_lock const lock(g_ipc_gun.mutex);
           g_ipc_gun.x = parse_int(parts[3]);
           g_ipc_gun.y = parse_int(parts[4]);
+          g_ipc_gun.aim_in_frame = false;
           g_ipc_gun.dirty.store(true, std::memory_order_release);
           return "OK\n";
         }

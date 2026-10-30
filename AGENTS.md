@@ -409,7 +409,8 @@ anyone, and the breakpoints `BP_ADD`, `BP_DEL`, `BP_CLEAR` (`BP_LIST` for
 anyone): execution breakpoints, watchpoints and I/O breakpoints, on the
 lists the text IPC and DevTools edit, and input: `KEY` (a keyboard matrix
 position; row 9 is joystick 0), `KEYS_RELEASE`, `TEXT` (the AutoTypeQueue)
-and `MOUSE`, with `INPUT_STATE` for anyone, and what the DevTools show:
+and `MOUSE`, with `INPUT_STATE` for anyone, and the light gun (`GUN`, aimed
+in frame pixels), and what the DevTools show:
 `CHIP_GET` (CRTC, Gate Array, PSG, FDC, ASIC), the memory space `ASIC_PAGE`,
 the symbols (`SYM_LIST` for anyone; `SYM_ADD`, `SYM_DEL`, `SYM_LOAD`) and
 `FB_INFO`, and media, snapshots and configuration: `MEDIA_INSERT`,
@@ -506,15 +507,19 @@ binary_port_enabled=1      # 0 = do not open the port (manifest: `binary: null`)
 - Input from this port uses the paths the text IPC's `input` commands use
   and takes no pause lease: `KEY` writes the pending matrix through
   `kbd_matrix_set_line()` (`src/keyboard.h`), `TEXT` enqueues on
-  `g_autotype_queue`, `MOUSE` stages through `ipc_stage_mouse()` for
-  `ipc_drain_input()`. **`KEY` must not go through `ipc_apply_keypress()` or
-  `applyKeypressDirect()`**: those release SHIFT and CONTROL around a plain
-  key, and a frontend sends its modifiers as matrix positions of their own.
-- The server (`Server::press_key()`, `release_held()`) remembers the keys
-  and mouse buttons the controller holds and releases exactly those when it
-  loses control, before `EVT_CONTROL_CHANGED` is posted. A new request that
-  holds something down (a key, a button) must be recorded there, under
-  `held_mutex_`, after re-checking the controller under that mutex.
+  `g_autotype_queue`, `MOUSE` stages through `ipc_stage_mouse()` and `GUN`
+  through `ipc_stage_gun()` for `ipc_drain_input()`. `GUN`'s aim is in frame
+  pixels (`CPC.phazer_x/y`'s units, FB_INFO's 768×272), applied without the
+  window mapping the text IPC's `input gun move` goes through. **`KEY` must
+  not go through `ipc_apply_keypress()` or `applyKeypressDirect()`**: those
+  release SHIFT and CONTROL around a plain key, and a frontend sends its
+  modifiers as matrix positions of their own.
+- The server (`Server::press_key()`, `release_held()`) remembers the keys,
+  mouse buttons and gun trigger the controller holds and releases exactly
+  those when it loses control, before `EVT_CONTROL_CHANGED` is posted. A new
+  request that holds something down (a key, a button, a trigger) must be
+  recorded there, under `held_mutex_`, after re-checking the controller
+  under that mutex.
 - Chip state for this port is read off the Devices, through the gate
   (`kcpc_host_chip_get()`): `crtc_peek()`, `ga_peek()`, `psg_peek()`,
   `fdc_peek()`, `asic_peek()`. **Never from the host view structs** (`CRTC`,

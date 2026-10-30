@@ -39,6 +39,7 @@ import re
 import shutil
 import signal
 import socket
+import struct
 import subprocess
 import sys
 import tempfile
@@ -341,14 +342,16 @@ def test_manifest_port_and_hello() -> None:
             # The groups implemented so far: the machine reads, with the
             # ROM spaces, the writes with the control role, run control,
             # events, breakpoints, input, chip state, symbols, the
-            # description of the frame, media, snapshots and configuration.
+            # description of the frame, media, snapshots, configuration and
+            # the light gun.
             assert hello.caps == (kc.CAP_MACHINE_READ | kc.CAP_MEM_ROM
                                   | kc.CAP_MACHINE_WRITE
                                   | kc.CAP_RUN_CONTROL | kc.CAP_EVENTS
                                   | kc.CAP_BREAKPOINTS | kc.CAP_INPUT
                                   | kc.CAP_CHIPS | kc.CAP_SYMBOLS
                                   | kc.CAP_FB_INFO | kc.CAP_MEDIA
-                                  | kc.CAP_SNAPSHOT | kc.CAP_CONFIG), (
+                                  | kc.CAP_SNAPSHOT | kc.CAP_CONFIG
+                                  | kc.CAP_GUN), (
                 f'caps {hello.caps:#x}')
 
             m = hello.machine
@@ -3617,6 +3620,77 @@ def test_mouse_needs_a_mouse_and_moves_the_amx_counters() -> None:
             time.sleep(0.02)
 
 
+def light_pen(c: KcpcClient) -> int:
+    """The address the CRTC latched on its light pen input: R16, R17."""
+    reg = c.chip_get(kc.CHIP_CRTC).reg
+    return (reg[16] << 8) | reg[17]
+
+
+def test_gun_needs_a_gun_and_moves_the_light_pen() -> None:
+    """GUN answers NOT_PRESENT when no light gun is enabled. With one, the
+    trigger pulled at an aim makes the CRTC latch that spot's address: eight
+    character columns (128 frame pixels) to the right is 8 more, one
+    character row (8 lines) down is one 40-column row more. Without the
+    trigger nothing is latched; a trigger still pulled when control is lost
+    is let go, so the next controller's aim latches nothing either."""
+    with Core() as core, controller(core, 'no gun') as c:
+        assert c.hello_reply.caps & kc.CAP_GUN, hex(c.hello_reply.caps)
+        refused(kc.NOT_PRESENT, 'GUN with no gun', c.gun, (10, 10), True)
+        refused(kc.NOT_PRESENT, 'GUN trigger with no gun', c.gun, None,
+                False)
+
+    with Core('-O', 'input.lightgun=1') as core, \
+            observer(core, 'watcher') as o:
+        with controller(core, 'gunner') as c:
+            wait_for_ready(c)
+            c.subscribe(kc.CLASS_RUN)
+            c.pause()
+            refused(kc.OUT_OF_RANGE, 'GUN past the right edge', c.gun,
+                    (kc.GUN_FRAME_WIDTH, 0))
+            refused(kc.OUT_OF_RANGE, 'GUN below the bottom', c.gun,
+                    (0, kc.GUN_FRAME_HEIGHT))
+            refused(kc.BAD_PAYLOAD, 'GUN trigger 2', c.request, kc.OP_GUN,
+                    struct.pack('<HHBB', 0, 0, 2, kc.GUN_FLAG_TRIGGER))
+            refused(kc.NOT_CONTROLLER, 'GUN from an observer', o.gun,
+                    (200, 100), True)
+            assert light_pen(o) == 0, hex(light_pen(o))
+
+            # The aim and trigger are applied by the main loop and reach the
+            # machine with a later frame: three frames are plenty.
+            c.gun((200, 100), True)
+            run_frames(c, 3)
+            spot = light_pen(o)
+            assert spot != 0, 'the trigger latched nothing'
+            c.gun((328, 100))
+            run_frames(c, 3)
+            assert light_pen(o) == spot + 8, (hex(spot), hex(light_pen(o)))
+            c.gun((200, 108))
+            run_frames(c, 3)
+            assert light_pen(o) == spot + 40, (hex(spot), hex(light_pen(o)))
+
+            # Let go: aiming elsewhere latches nothing new.
+            c.gun(pulled=False)
+            run_frames(c, 3)
+            c.gun((328, 108))
+            run_frames(c, 3)
+            assert light_pen(o) == spot + 40, hex(light_pen(o))
+
+            # Pulled, then control is lost holding it.
+            c.gun((200, 100), True)
+            run_frames(c, 3)
+            assert light_pen(o) == spot, hex(light_pen(o))
+        wait_control_free(o)
+
+        with controller(core, 'next gunner') as c:
+            c.subscribe(kc.CLASS_RUN)
+            c.pause()
+            c.gun((328, 108))
+            run_frames(c, 3)
+            assert light_pen(o) == spot, (
+                'the trigger stayed pulled after its controller left: '
+                f'{light_pen(o):#x}')
+
+
 def test_input_needs_control_and_is_checked() -> None:
     """Acceptance 6: an observer's KEY, KEYS_RELEASE, TEXT and MOUSE answer
     NOT_CONTROLLER and change nothing, malformed or not; INPUT_STATE is
@@ -5203,6 +5277,7 @@ TESTS: List[Callable[[], None]] = [
     test_held_keys_are_released_when_control_is_lost,
     test_text_is_typed_by_the_autotype_queue,
     test_mouse_needs_a_mouse_and_moves_the_amx_counters,
+    test_gun_needs_a_gun_and_moves_the_light_pen,
     test_input_needs_control_and_is_checked,
     test_chip_get_matches_the_text_ipc,
     test_fdc_chip_and_media_events,

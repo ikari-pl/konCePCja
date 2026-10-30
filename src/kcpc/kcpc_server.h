@@ -149,6 +149,13 @@ using TextFn = std::function<Status(
 // (kMouseButton*). kNotPresent when no mouse is fitted.
 using MouseFn = std::function<Status(int dx, int dy, bool set_buttons,
                                      std::uint8_t buttons)>;
+// Aims the light gun at `x`, `y` in frame pixels when `aim` (the server has
+// checked both against kGunFrameWidth and kGunFrameHeight), and pulls or
+// lets go of its trigger when `set_trigger`. kNotPresent when no gun is
+// enabled. Called with `aim` false and the trigger let go, from whichever
+// thread took control away, when a controller lost control holding it.
+using GunFn = std::function<Status(bool aim, std::uint16_t x, std::uint16_t y,
+                                   bool set_trigger, bool pulled)>;
 // The matrix as it is now, in its own polarity: a clear bit is a key down.
 using InputStateFn = std::function<Status(KeyMatrix&)>;
 
@@ -282,6 +289,9 @@ struct ServerConfig {
   TextFn text;
   MouseFn mouse;
   InputStateFn input_state;
+  // CAP_GUN: GUN exists, and HELLO announces the capability, when this is
+  // set and there is a control role to send it with (CAP_MACHINE_WRITE).
+  GunFn gun;
   // CAP_CHIPS: CHIP_GET exists, mem_read is asked for the space ASIC_PAGE and
   // HELLO announces the capability, when this and the machine reads are set.
   ChipGetFn chip_get;
@@ -371,7 +381,9 @@ class Server {
   Status press_key(std::uint32_t client, const KeyRequest& key);
   Status release_all_keys(std::uint32_t client);
   Status move_mouse(std::uint32_t client, const MouseRequest& mouse);
-  // Releases the keys and mouse buttons `client` holds down through this
+  Status aim_gun(std::uint32_t client, const GunRequest& gun);
+  // Releases the keys, mouse buttons and gun trigger `client` holds down
+  // through this
   // port. Called when it stops being the controller, by whichever thread
   // ended that, and before the change of controller is announced.
   void release_held(std::uint32_t client);
@@ -399,6 +411,7 @@ class Server {
   std::uint32_t held_owner_ = 0;
   KeyMatrix held_keys_{};
   std::uint8_t held_buttons_ = 0;
+  bool held_trigger_ = false;
 
   EventRing ring_;
   std::thread fan_out_;
