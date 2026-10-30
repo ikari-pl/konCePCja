@@ -22,4 +22,3 @@ void fb_publish_frame(const std::uint8_t* rgb24);
 
 // Unmaps the region and (on POSIX) unlinks its name. Idempotent.
 void fb_publish_stop();
-
