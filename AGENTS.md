@@ -28,7 +28,7 @@ src/
 ├── koncepcja_ipc_server.cpp  # TCP IPC server for external debugging
 ├── telnet_console.cpp # TCP text console — mirrors CPC output, injects keyboard
 ├── kcpc/              # KCPC binary frontend server (port 6545): codec, threads, host seam
-├── net_socket.cpp     # the socket shim the KCPC server uses (the one #ifdef _WIN32 for it)
+├── net_socket.cpp     # the socket shim the KCPC server and text IPC use (the one #ifdef _WIN32 for them)
 └── z80_view.cpp       # host-side Z80 view + the firmware/BDOS output hooks
 ```
 
@@ -575,6 +575,9 @@ binary_port_enabled=1      # 0 = do not open the port (manifest: `binary: null`)
   of queue beyond which a client's events are dropped. They exist for the
   tests.
 - `src/net_socket.{h,cpp}` — non-blocking loopback sockets with timeouts.
+  The text IPC server runs on it too: a reply goes out whole however long
+  (the client socket is non-blocking), and every wait is a 200 ms slice, so
+  `stop()` never waits for a quiet client.
 - `test/integrated/kcpc/kcpc_client.py` is the reference client (standard
   library only); `test_kcpc.py` next to it starts its own cores
   (`-H` by default, `--ui-free`, `--gui`) and runs inside `make e2e_test`.

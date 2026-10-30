@@ -12,8 +12,10 @@
 
 #include <zlib.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
@@ -38,6 +40,7 @@
 #include "keyboard.h"
 #include "koncepcja.h"
 #include "koncepcja_ipc_server.h"
+#include "net_socket.h"
 #include "serial_interface.h"
 #include "silicon_disc.h"
 #include "stuck_z80_thread.h"
@@ -588,6 +591,191 @@ TEST_F(IpcServerTest, AsmCommandsWorkWithoutDevTools) {
   EXPECT_EQ(0x42, memory[1][1]);
   EXPECT_EQ(0xC9, memory[1][2]);
   g_asm_source.set("");
+}
+
+// --- The connection itself (beads-o3j0) ---
+//
+// What the server promises a client, pinned for its move onto net_socket:
+// one connection carries any number of lines, ';' chains commands on a line,
+// `disconnect` ends the connection, a client queued behind another is served
+// after it, a reply of any size arrives whole, the port probe moves past a
+// port somebody else holds, and stop() does not wait for an idle client.
+
+// A client of the server's own port, with deadlines on every wait.
+class IpcTestClient {
+ public:
+  explicit IpcTestClient(int port) : s_(net::connect_loopback(port, 2000)) {}
+  ~IpcTestClient() { net::close_socket(s_); }
+  IpcTestClient(const IpcTestClient&) = delete;
+  IpcTestClient& operator=(const IpcTestClient&) = delete;
+
+  bool connected() const { return s_ != net::kInvalidSocket; }
+
+  bool send(const std::string& text) {
+    auto const* p = reinterpret_cast<const std::uint8_t*>(text.data());
+    std::size_t left = text.size();
+    auto const deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (left > 0 && std::chrono::steady_clock::now() < deadline) {
+      net::IoResult const r = net::send_some(s_, p, left);
+      if (r.status == net::IoStatus::kOk) {
+        p += r.bytes;
+        left -= r.bytes;
+      } else if (r.status == net::IoStatus::kWouldBlock) {
+        net::wait_writable(s_, 50);
+      } else {
+        return false;
+      }
+    }
+    return left == 0;
+  }
+
+  void finish_sending() { net::shutdown_send(s_); }
+
+  // Reads until `lines` newlines have arrived, the peer closes, or the
+  // deadline passes. `closed` says whether the peer closed.
+  std::string read_lines(int lines, int timeout_ms, bool* closed = nullptr) {
+    std::string out;
+    if (closed) *closed = false;
+    auto const deadline = std::chrono::steady_clock::now() +
+                          std::chrono::milliseconds(timeout_ms);
+    while (std::count(out.begin(), out.end(), '\n') < lines &&
+           std::chrono::steady_clock::now() < deadline) {
+      if (!net::wait_readable(s_, 50)) continue;
+      std::uint8_t buf[4096];
+      net::IoResult const r = net::recv_some(s_, buf, sizeof(buf));
+      if (r.status == net::IoStatus::kOk) {
+        out.append(reinterpret_cast<const char*>(buf), r.bytes);
+      } else if (r.status != net::IoStatus::kWouldBlock) {
+        if (closed) *closed = true;
+        break;
+      }
+    }
+    return out;
+  }
+
+ private:
+  net::Socket s_;
+};
+
+TEST_F(IpcServerTest, OneConnectionCarriesLinesAndChainsUntilDisconnect) {
+  IpcTestClient client(server.port());
+  ASSERT_TRUE(client.connected());
+  // A chained line, a CRLF line and a line split across two sends.
+  ASSERT_TRUE(client.send("ping; ping\r\npi"));
+  ASSERT_TRUE(client.send("ng\n"));
+  EXPECT_EQ("OK pong\nOK pong\nOK pong\n", client.read_lines(3, 5000));
+  // `disconnect` ends the connection; what follows it is never run.
+  ASSERT_TRUE(client.send("ping; disconnect; ping\nping\n"));
+  bool closed = false;
+  EXPECT_EQ("OK pong\n", client.read_lines(3, 5000, &closed));
+  EXPECT_TRUE(closed) << "the server must close the connection on disconnect";
+}
+
+TEST_F(IpcServerTest, ATrailingCommandWithoutNewlineRunsWhenTheClientCloses) {
+  // `echo -n ping | nc`: the line never ends, the client just stops sending.
+  IpcTestClient client(server.port());
+  ASSERT_TRUE(client.connected());
+  ASSERT_TRUE(client.send("ping;ping"));
+  client.finish_sending();
+  bool closed = false;
+  EXPECT_EQ("OK pong\nOK pong\n", client.read_lines(3, 5000, &closed));
+  EXPECT_TRUE(closed);
+}
+
+TEST_F(IpcServerTest, AClientWaitingBehindAnotherIsServedAfterIt) {
+  IpcTestClient first(server.port());
+  ASSERT_TRUE(first.connected());
+  ASSERT_TRUE(first.send("ping\n"));
+  ASSERT_EQ("OK pong\n", first.read_lines(1, 5000));  // first is being served
+  IpcTestClient second(server.port());
+  ASSERT_TRUE(second.connected());
+  ASSERT_TRUE(second.send("ping\n"));
+  ASSERT_TRUE(first.send("disconnect\n"));
+  EXPECT_EQ("OK pong\n", second.read_lines(1, 5000));
+}
+
+TEST_F(IpcServerTest, AReplyLargerThanTheSocketBuffersArrivesWhole) {
+  IpcTestClient client(server.port());
+  ASSERT_TRUE(client.connected());
+  // 2 MB of hex: more than any platform's loopback buffers hold (macOS
+  // swallows a 64 KiB read's 128 KB whole). Addresses wrap at 64 KiB.
+  ASSERT_TRUE(client.send("mem read 0 1048576\n"));
+  // Read nothing for a while: the server's send buffer fills and the reply
+  // has to be sent in pieces as the reader drains it.
+  std::this_thread::sleep_for(std::chrono::milliseconds(300));
+  std::string const reply = client.read_lines(1, 10000);
+  ASSERT_EQ(std::string("OK ").size() + (1048576 * 2) + 1, reply.size());
+  EXPECT_EQ(0u, reply.find("OK 0000"));
+  EXPECT_EQ('\n', reply.back());
+  ASSERT_TRUE(client.send("ping\n"));
+  EXPECT_EQ("OK pong\n", client.read_lines(1, 5000))
+      << "the connection must still be usable after a large reply";
+}
+
+// Not the fixture: these start and stop servers of their own, while the
+// fixture's server is down.
+class IpcServerLifecycle : public testing::Test {
+ protected:
+  void SetUp() override { ASSERT_TRUE(net::startup()); }
+  void TearDown() override { net::cleanup(); }
+
+  static int wait_for_port(const KoncepcjaIpcServer& s) {
+    for (int i = 0; i < 200 && s.port() <= 0; i++) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(25));
+    }
+    return s.port();
+  }
+};
+
+TEST_F(IpcServerLifecycle, TheProbeMovesPastAPortSomebodyElseHolds) {
+  // Hold the lowest free port of the server's range (6543..6552), so the
+  // server has to probe past it.
+  net::Socket held = net::kInvalidSocket;
+  int held_port = 0;
+  for (int p = 6543; p < 6552 && held == net::kInvalidSocket; p++) {
+    held = net::listen_loopback(p, 1);
+    if (held != net::kInvalidSocket) held_port = p;
+  }
+  if (held == net::kInvalidSocket) {
+    GTEST_SKIP() << "6543..6551 are all taken on this machine";
+  }
+  KoncepcjaIpcServer server;
+  server.start();
+  int const port = wait_for_port(server);
+  EXPECT_GT(port, 0) << "the server never bound a port";
+  EXPECT_NE(held_port, port);
+  EXPECT_GE(port, 6543);
+  EXPECT_LE(port, 6552);
+  if (port > 0) {
+    IpcTestClient client(port);
+    ASSERT_TRUE(client.connected());
+    ASSERT_TRUE(client.send("ping\n"));
+    EXPECT_EQ("OK pong\n", client.read_lines(1, 5000));
+  }
+  server.stop();
+  net::close_socket(held);
+}
+
+TEST_F(IpcServerLifecycle, StopDoesNotWaitOutAnIdleClient) {
+  KoncepcjaIpcServer server;
+  server.start();
+  int const port = wait_for_port(server);
+  ASSERT_GT(port, 0);
+  IpcTestClient client(port);
+  ASSERT_TRUE(client.connected());
+  ASSERT_TRUE(client.send("ping\n"));
+  ASSERT_EQ("OK pong\n", client.read_lines(1, 5000));  // being served
+  // The client now says nothing. The server used to wait for its next line
+  // for up to 60 s without looking at its stop flag, so quitting the
+  // emulator with a debugger attached hung that long.
+  auto const t0 = std::chrono::steady_clock::now();
+  server.stop();
+  auto const took_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                           std::chrono::steady_clock::now() - t0)
+                           .count();
+  EXPECT_LT(took_ms, 2000) << "stop() took " << took_ms
+                           << " ms with an idle client connected";
 }
 
 // A key tap's hold is counted in frames that BEGAN with the pressed matrix

@@ -17,8 +17,10 @@
 #include <zlib.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <chrono>
+#include <cstdint>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -33,16 +35,6 @@
 #include <thread>
 #include <utility>
 #include <vector>
-
-#ifdef _WIN32
-#include <winsock2.h>
-#include <ws2tcpip.h>
-#else
-#include <netinet/in.h>
-#include <sys/select.h>
-#include <sys/socket.h>
-#include <unistd.h>
-#endif
 
 #include "amx_mouse.h"
 #include "asic_debug.h"
@@ -69,6 +61,7 @@
 #include "koncepcja.h"
 #include "m4board.h"
 #include "m4board_http.h"
+#include "net_socket.h"
 #include "phazer_type.h"
 #include "plotter.h"
 #include "plotter_view.h"
@@ -6964,149 +6957,43 @@ int ipc_event_mem_addresses(uint16_t* out, int max) {
                         : 0;
 }
 
-#ifdef _WIN32
+namespace {
+// How long a wait on a socket lasts before the server looks at its stop flag.
+constexpr int kStopCheckMs = 200;
+// A client that sends nothing for this long is dropped.
+constexpr auto kClientIdleTimeout = std::chrono::seconds(60);
 
-void KoncepcjaIpcServer::run() {
-  WSADATA wsa;
-  if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) return;
-
-  SOCKET server_fd = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-  if (server_fd == INVALID_SOCKET) {
-    WSACleanup();
-    return;
-  }
-
-  // SO_EXCLUSIVEADDRUSE, not SO_REUSEADDR: on Windows SO_REUSEADDR lets a
-  // second process bind a port another process is already listening on, and
-  // connections are then handed out between them unpredictably.  That makes
-  // the 6543..6552 scan below silently useless — a second instance, or the
-  // unit tests run while the emulator is open, would "bind" 6543 and then
-  // answer, or be answered by, the wrong process.  SO_EXCLUSIVEADDRUSE makes
-  // bind() fail on a port in use, so the scan moves to the next one.
-  int opt = 1;
-  setsockopt(server_fd, SOL_SOCKET, SO_EXCLUSIVEADDRUSE,
-             reinterpret_cast<const char*>(&opt), sizeof(opt));
-
-  sockaddr_in addr{};
-  addr.sin_family = AF_INET;
-  addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-
-  int bound_port = 0;
-  for (int p = kBasePort; p < kBasePort + kMaxPortAttempts; p++) {
-    addr.sin_port = htons(static_cast<uint16_t>(p));
-    if (bind(server_fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) !=
-        SOCKET_ERROR) {
-      bound_port = p;
-      break;
+// Sends all of `reply`. The client socket is non-blocking, so a reply larger
+// than what the socket buffers hold goes out in pieces as the client reads.
+// False when the connection failed or the server is stopping.
+bool send_reply(net::Socket s, const std::string& reply,
+                const std::atomic<bool>& running) {
+  auto const* p = reinterpret_cast<const std::uint8_t*>(reply.data());
+  std::size_t left = reply.size();
+  while (left > 0) {
+    net::IoResult const r = net::send_some(s, p, left);
+    if (r.status == net::IoStatus::kOk) {
+      p += r.bytes;
+      left -= r.bytes;
+    } else if (r.status == net::IoStatus::kWouldBlock) {
+      if (!running.load()) return false;
+      net::wait_writable(s, kStopCheckMs);
+    } else {
+      return false;
     }
   }
-  if (bound_port == 0) {
-    LOG_ERROR("IPC: could not bind to any port in range "
-              << kBasePort << "-" << (kBasePort + kMaxPortAttempts - 1));
-    closesocket(server_fd);
-    WSACleanup();
-    return;
-  }
-
-  if (listen(server_fd, 1) == SOCKET_ERROR) {
-    closesocket(server_fd);
-    WSACleanup();
-    return;
-  }
-
-  actual_port.store(bound_port);
-  LOG_INFO("IPC: listening on port " << bound_port);
-
-  while (running.load()) {
-    fd_set readfds;
-    FD_ZERO(&readfds);
-    FD_SET(server_fd, &readfds);
-    timeval tv{0, 200000};  // 200ms
-
-    int ready = select(0, &readfds, nullptr, nullptr, &tv);
-    if (ready <= 0) continue;
-
-    sockaddr_in client{};
-    int len = sizeof(client);
-    SOCKET client_fd =
-        accept(server_fd, reinterpret_cast<sockaddr*>(&client), &len);
-    if (client_fd == INVALID_SOCKET) continue;
-
-    // Persistent connection: read lines until client disconnects, sends
-    // "disconnect", or idle timeout.
-    std::string buffer;
-    char buf[1024];
-    bool client_quit = false;
-    while (running.load() && !client_quit) {
-      fd_set cfds;
-      FD_ZERO(&cfds);
-      FD_SET(client_fd, &cfds);
-      timeval ctv{60, 0};  // 60s idle timeout
-
-      int cready = select(0, &cfds, nullptr, nullptr, &ctv);
-      if (cready <= 0) break;  // timeout or error
-
-      int n = recv(client_fd, buf, sizeof(buf) - 1, 0);
-      if (n <= 0) break;  // client disconnected or error
-      buf[n] = 0;
-      buffer.append(buf);
-
-      // Extract and dispatch complete lines
-      size_t pos;
-      while ((pos = buffer.find('\n')) != std::string::npos) {
-        std::string raw_line = buffer.substr(0, pos);
-        buffer.erase(0, pos + 1);
-        if (!raw_line.empty() && raw_line.back() == '\r') raw_line.pop_back();
-
-        // Split on semicolons for command chaining
-        auto cmds = split_semicolons(raw_line);
-        for (const auto& cmd : cmds) {
-          if (cmd == "disconnect") {
-            client_quit = true;
-            break;
-          }
-          auto reply = handle_command(cmd);
-          send(client_fd, reply.c_str(), static_cast<int>(reply.size()), 0);
-        }
-        if (client_quit) break;
-      }
-    }
-    // Dispatch any trailing data without newline (for single-shot clients like
-    // echo|nc)
-    if (!client_quit && !buffer.empty()) {
-      if (!buffer.empty() && buffer.back() == '\r') buffer.pop_back();
-      auto cmds = split_semicolons(buffer);
-      for (const auto& cmd : cmds) {
-        if (cmd == "disconnect") break;
-        auto reply = handle_command(cmd);
-        send(client_fd, reply.c_str(), static_cast<int>(reply.size()), 0);
-      }
-    }
-    closesocket(client_fd);
-  }
-
-  closesocket(server_fd);
-  WSACleanup();
+  return true;
 }
-
-#else  // POSIX
+}  // namespace
 
 void KoncepcjaIpcServer::run() {
-  int const server_fd = ::socket(AF_INET, SOCK_STREAM, 0);
-  if (server_fd < 0) return;
+  if (!net::startup()) return;
 
-  int opt = 1;
-  setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
-
-  sockaddr_in addr{};
-  addr.sin_family = AF_INET;
-  addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-
+  net::Socket listener = net::kInvalidSocket;
   int bound_port = 0;
   for (int p = kBasePort; p < kBasePort + kMaxPortAttempts; p++) {
-    addr.sin_port = htons(static_cast<uint16_t>(p));
-    if (bind(server_fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) ==
-        0) {
+    listener = net::listen_loopback(p, 1);
+    if (listener != net::kInvalidSocket) {
       bound_port = p;
       break;
     }
@@ -7114,12 +7001,7 @@ void KoncepcjaIpcServer::run() {
   if (bound_port == 0) {
     LOG_ERROR("IPC: could not bind to any port in range "
               << kBasePort << "-" << (kBasePort + kMaxPortAttempts - 1));
-    ::close(server_fd);
-    return;
-  }
-
-  if (listen(server_fd, 1) < 0) {
-    ::close(server_fd);
+    net::cleanup();
     return;
   }
 
@@ -7127,40 +7009,29 @@ void KoncepcjaIpcServer::run() {
   LOG_INFO("IPC: listening on port " << bound_port);
 
   while (running.load()) {
-    fd_set readfds;
-    FD_ZERO(&readfds);
-    FD_SET(server_fd, &readfds);
-    timeval tv{0, 200000};  // 200ms
-
-    int const ready = select(server_fd + 1, &readfds, nullptr, nullptr, &tv);
-    if (ready <= 0) continue;
-
-    sockaddr_in client{};
-    socklen_t len = sizeof(client);
-    int const client_fd =
-        accept(server_fd, reinterpret_cast<sockaddr*>(&client), &len);
-    if (client_fd < 0) continue;
+    if (!net::wait_readable(listener, kStopCheckMs)) continue;
+    net::Socket const client = net::accept_client(listener);
+    if (client == net::kInvalidSocket) continue;
 
     // Persistent connection: read lines until client disconnects, sends
     // "disconnect", or idle timeout.
     std::string buffer;
-    char buf[1024];
+    std::uint8_t buf[1024];
     // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
     // mutated (out-param/compound-assign/loop/reference)
     bool client_quit = false;
+    auto idle_deadline = std::chrono::steady_clock::now() + kClientIdleTimeout;
     while (running.load() && !client_quit) {
-      fd_set cfds;
-      FD_ZERO(&cfds);
-      FD_SET(client_fd, &cfds);
-      timeval ctv{60, 0};  // 60s idle timeout
-
-      int const cready = select(client_fd + 1, &cfds, nullptr, nullptr, &ctv);
-      if (cready <= 0) break;  // timeout or error
-
-      ssize_t const n = read(client_fd, buf, sizeof(buf) - 1);
-      if (n <= 0) break;  // client disconnected or error
-      buf[n] = 0;
-      buffer.append(buf);
+      // Waits in short slices, so stop() is not held up by a quiet client.
+      if (!net::wait_readable(client, kStopCheckMs)) {
+        if (std::chrono::steady_clock::now() >= idle_deadline) break;
+        continue;
+      }
+      net::IoResult const r = net::recv_some(client, buf, sizeof(buf));
+      if (r.status == net::IoStatus::kWouldBlock) continue;
+      if (r.status != net::IoStatus::kOk) break;  // disconnected or error
+      idle_deadline = std::chrono::steady_clock::now() + kClientIdleTimeout;
+      buffer.append(reinterpret_cast<const char*>(buf), r.bytes);
 
       // Extract and dispatch complete lines
       size_t pos;
@@ -7177,7 +7048,7 @@ void KoncepcjaIpcServer::run() {
             break;
           }
           auto reply = handle_command(cmd);
-          (void)write(client_fd, reply.c_str(), reply.size());
+          (void)send_reply(client, reply, running);
         }
         if (client_quit) break;
       }
@@ -7190,13 +7061,12 @@ void KoncepcjaIpcServer::run() {
       for (const auto& cmd : cmds) {
         if (cmd == "disconnect") break;
         auto reply = handle_command(cmd);
-        (void)write(client_fd, reply.c_str(), reply.size());
+        (void)send_reply(client, reply, running);
       }
     }
-    ::close(client_fd);
+    net::close_socket(client);
   }
 
-  ::close(server_fd);
+  net::close_socket(listener);
+  net::cleanup();
 }
-
-#endif  // _WIN32

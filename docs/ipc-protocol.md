@@ -6,6 +6,11 @@ commands separated by `;` — each runs in order and gets its own response.
 
 Connect with `nc`: `echo "ping" | nc -w 1 localhost 6543`
 
+A connection stays open for as many lines as the client sends, until it sends
+`disconnect`, closes, or is silent for 60 s. A last command without a newline
+runs when the client closes its side. One connection is served at a time: a
+second client waits until the first is done, then is served.
+
 A second, binary protocol for out-of-process frontends (several clients,
 pushed events, bulk memory) is specified in
 [protocol/kcpc-binary-v1.md](protocol/kcpc-binary-v1.md), and implemented
