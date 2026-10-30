@@ -3055,12 +3055,11 @@ TEST_F(IpcFlashingFrameTest, ScreenshotOfARunningMachineIsOneWholeFrame) {
   stop.store(true);
   runner.join();
   ASSERT_GE(turned, 12u) << "the runner did not run beside the screenshots";
-  std::set<std::string> seen;
-  for (const std::string& shot : shots) {
+  // Which of the frames each one caught is up to timing: a steady two
+  // frames per PNG catches the same one every time, so only wholeness is
+  // asserted. That the frames change under the copies is shown above.
+  for (const std::string& shot : shots)
     EXPECT_EQ(1u, whole.count(shot)) << "a torn screenshot: " << shot;
-    seen.insert(shot);
-  }
-  EXPECT_GE(seen.size(), 2u);
   std::error_code ec;
   std::filesystem::remove(png, ec);
 }
