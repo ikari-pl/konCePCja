@@ -1,0 +1,353 @@
+name: PR Review
+
+# Runs the compound-engineering plugin's ce-code-review on a pull request and
+# posts its report as one PR comment, updated in place on every re-run.
+#
+# Trigger: add the `review` label to a PR (the workflow takes the label off
+# again when it is done, so re-adding it re-runs), or run this workflow by
+# hand with the PR number. Nothing runs on a push.
+#
+# The model is reached through crowbot.sh, which serves only the OpenAI API.
+# Claude Code speaks only the Anthropic Messages API, so the job starts a
+# LiteLLM proxy (.github/review/litellm.yaml) that translates one into the
+# other. Setup, once:
+#   gh secret set CROWBOT_API_KEY --repo ikari-pl/konCePCja
+#   gh variable set REVIEW_MODEL --repo ikari-pl/konCePCja --body claude-opus-5-5   # optional
+#
+# The PR is untrusted input. The review job checks out the BASE commit, never
+# runs the PR's code (the review reads the PR head through `git show`), holds
+# only a read-only GITHUB_TOKEN, and lets the agent use nothing but reads,
+# read-only git/gh commands and writes under its own /tmp run directory. The
+# crowbot key lives only in the proxy, which runs as another Unix user. Fork
+# PRs get no secrets on `pull_request` and are skipped (no pull_request_target).
+
+on:
+  pull_request:
+    types: [labeled]
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: Pull request number to review
+        required: true
+        type: number
+
+permissions: {}
+
+concurrency:
+  group: pr-review-${{ github.event.pull_request.number || inputs.pr }}
+  cancel-in-progress: true
+
+env:
+  # Pinned tool versions. Bump them deliberately, together with a test run.
+  PIN_CLAUDE_CODE: 2.1.308
+  PIN_LITELLM: 1.81.7
+  # compound-engineering-v3.19.0 of github.com/EveryInc/compound-engineering-plugin
+  PIN_CE_PLUGIN_SHA: 1756c0b9f3cf94493f287ea29ae766ad668fb7cf
+  REVIEW_LABEL: review
+
+jobs:
+  gate:
+    name: Decide whether to review
+    if: github.event_name == 'workflow_dispatch' || github.event.label.name == 'review'
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: read
+    outputs:
+      run: ${{ steps.decide.outputs.run }}
+      pr: ${{ steps.decide.outputs.pr }}
+      base_sha: ${{ steps.decide.outputs.base_sha }}
+      head_sha: ${{ steps.decide.outputs.head_sha }}
+    steps:
+      - name: Look up the PR
+        id: decide
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number || inputs.pr }}
+          HAS_KEY: ${{ secrets.CROWBOT_API_KEY != '' }}
+        run: |
+          set -euo pipefail
+          info=$(gh pr view "$PR" --json number,state,isCrossRepository,baseRefOid,headRefOid)
+          {
+            echo "pr=$PR"
+            echo "base_sha=$(jq -r .baseRefOid <<<"$info")"
+            echo "head_sha=$(jq -r .headRefOid <<<"$info")"
+          } >> "$GITHUB_OUTPUT"
+          run=true
+          if [ "$(jq -r .isCrossRepository <<<"$info")" = "true" ]; then
+            echo "::notice title=PR review skipped::PR #$PR comes from a fork; fork PRs get no secrets, so they are not reviewed."
+            run=false
+          elif [ "$(jq -r .state <<<"$info")" != "OPEN" ]; then
+            echo "::notice title=PR review skipped::PR #$PR is not open."
+            run=false
+          elif [ "$HAS_KEY" != "true" ]; then
+            echo "::warning title=PR review skipped::The CROWBOT_API_KEY secret is not set (gh secret set CROWBOT_API_KEY)."
+            run=false
+          fi
+          echo "run=$run" >> "$GITHUB_OUTPUT"
+
+  review:
+    name: ce-code-review
+    needs: gate
+    if: needs.gate.outputs.run == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      outcome: ${{ steps.review.outcome }}
+      artifact_url: ${{ steps.upload.outputs.artifact-url }}
+      model: ${{ steps.models.outputs.model }}
+    steps:
+      # The base commit, not the PR head: the agent never sees the PR's files
+      # as a working tree (the skill's "pr-remote" scope), and nothing of the
+      # PR is executed.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+        with:
+          ref: ${{ needs.gate.outputs.base_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Fetch the PR head for git show
+        env:
+          PR: ${{ needs.gate.outputs.pr }}
+        run: git fetch --no-tags origin "pull/$PR/head:refs/review/pr-$PR-head"
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4.4.0
+        with:
+          node-version: "22"
+
+      - name: Install Claude Code, LiteLLM and the plugin
+        run: |
+          set -euo pipefail
+          npm install --global --no-fund --no-audit "@anthropic-ai/claude-code@${PIN_CLAUDE_CODE}"
+          python -m pip install --quiet "litellm[proxy]==${PIN_LITELLM}"
+          git init --quiet "$RUNNER_TEMP/ce-plugin"
+          git -C "$RUNNER_TEMP/ce-plugin" fetch --quiet --depth 1 \
+            https://github.com/EveryInc/compound-engineering-plugin.git "$PIN_CE_PLUGIN_SHA"
+          git -C "$RUNNER_TEMP/ce-plugin" checkout --quiet FETCH_HEAD
+          claude --version
+
+      - name: Pick the models
+        id: models
+        env:
+          REVIEW_MODEL: ${{ vars.REVIEW_MODEL || 'claude-opus-5-5' }}
+          REVIEW_SUBAGENT_MODEL: ${{ vars.REVIEW_SUBAGENT_MODEL }}
+        run: |
+          set -euo pipefail
+          sub="${REVIEW_SUBAGENT_MODEL:-$REVIEW_MODEL}"
+          echo "model=$REVIEW_MODEL" >> "$GITHUB_OUTPUT"
+          echo "subagent_model=$sub" >> "$GITHUB_OUTPUT"
+
+      # The proxy runs as its own Unix user, so the agent (the runner user)
+      # cannot read the crowbot key out of /proc/<pid>/environ. The key goes
+      # in through stdin, never through a command line or the environment of
+      # a later step.
+      - name: Start the LiteLLM proxy
+        env:
+          CROWBOT_API_KEY: ${{ secrets.CROWBOT_API_KEY }}
+        run: |
+          set -euo pipefail
+          proxy_key="sk-review-$(openssl rand -hex 24)"
+          echo "::add-mask::$proxy_key"
+          echo "REVIEW_PROXY_KEY=$proxy_key" >> "$GITHUB_ENV"
+          sudo useradd --system --create-home --home-dir /var/lib/review-proxy review-proxy
+          sudo install -d -m 700 -o review-proxy /var/lib/review-proxy/run
+          sudo install -m 644 .github/review/litellm.yaml /var/lib/review-proxy/litellm.yaml
+          printf '%s' "$CROWBOT_API_KEY" | sudo -u review-proxy sh -c 'umask 077; cat > /var/lib/review-proxy/run/upstream.key'
+          printf '%s' "$proxy_key" | sudo -u review-proxy sh -c 'umask 077; cat > /var/lib/review-proxy/run/proxy.key'
+          litellm_bin="$(command -v litellm)"
+          sudo -u review-proxy -H sh -c '
+            cd /var/lib/review-proxy
+            CROWBOT_API_KEY="$(cat run/upstream.key)" \
+            REVIEW_PROXY_KEY="$(cat run/proxy.key)" \
+            REVIEW_UPSTREAM_BASE=https://api.crowbot.sh/v1 \
+            exec "$0" --config litellm.yaml --host 127.0.0.1 --port 4000 > run/litellm.log 2>&1
+          ' "$litellm_bin" < /dev/null > /dev/null 2>&1 &
+          for _ in $(seq 1 60); do
+            if curl -sf http://127.0.0.1:4000/health/liveliness > /dev/null; then
+              echo "proxy is up"
+              # It has read them; from here on the key is only in its memory.
+              sudo rm -f /var/lib/review-proxy/run/upstream.key /var/lib/review-proxy/run/proxy.key
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "::error::the LiteLLM proxy did not come up"
+          sudo tail -50 /var/lib/review-proxy/run/litellm.log
+          exit 1
+
+      # The runner user has passwordless sudo and the Docker socket, either of
+      # which reads the proxy's memory. Take both away before the agent runs:
+      # the runner VM is thrown away after the job, so nothing has to undo it.
+      - name: Drop root access
+        run: |
+          set -euo pipefail
+          sudo systemctl stop docker.socket docker.service containerd.service || true
+          sudo rm -f /var/run/docker.sock /run/containerd/containerd.sock
+          sudo sh -c 'rm -f /etc/sudoers.d/*; sed -i "/^\\(%admin\\|%sudo\\|runner\\)[[:space:]]/d" /etc/sudoers'
+          if sudo -n true 2>/dev/null; then
+            echo "::error::sudo still works; refusing to run the agent"
+            exit 1
+          fi
+          echo "sudo and docker are gone"
+
+      - name: Run ce-code-review
+        id: review
+        timeout-minutes: 50
+        env:
+          # Read-only: the job has contents: read and pull-requests: read.
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR_URL: ${{ github.server_url }}/${{ github.repository }}/pull/${{ needs.gate.outputs.pr }}
+          ANTHROPIC_BASE_URL: http://127.0.0.1:4000
+          ANTHROPIC_MODEL: ${{ steps.models.outputs.model }}
+          ANTHROPIC_DEFAULT_OPUS_MODEL: ${{ steps.models.outputs.model }}
+          ANTHROPIC_DEFAULT_SONNET_MODEL: ${{ steps.models.outputs.subagent_model }}
+          ANTHROPIC_DEFAULT_HAIKU_MODEL: ${{ steps.models.outputs.subagent_model }}
+          ANTHROPIC_SMALL_FAST_MODEL: ${{ steps.models.outputs.subagent_model }}
+          CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1"
+          DISABLE_AUTOUPDATER: "1"
+        run: |
+          set -euo pipefail
+          export ANTHROPIC_AUTH_TOKEN="$REVIEW_PROXY_KEY"
+          mkdir -p "$RUNNER_TEMP/review-out"
+          # dontAsk: whatever the list below does not allow is refused, never
+          # prompted for. No Edit, no Write outside the run directory, no
+          # network tools, no shell beyond read-only git and gh.
+          allowed=(
+            Read Grep Glob Agent Task TodoWrite Skill
+            "Write(//tmp/compound-engineering/**)"
+            "Edit(//tmp/compound-engineering/**)"
+            "Bash(mkdir -p /tmp/compound-engineering/*)"
+            "Bash(mkdir -p \"/tmp/compound-engineering/*)"
+            "Bash(date:*)" "Bash(head:*)" "Bash(od:*)" "Bash(tr:*)"
+            "Bash(echo:*)" "Bash(ls:*)" "Bash(cat:*)" "Bash(wc:*)" "Bash(jq:*)"
+            "Bash(git diff:*)" "Bash(git show:*)" "Bash(git log:*)" "Bash(git blame:*)"
+            "Bash(git rev-parse:*)" "Bash(git merge-base:*)" "Bash(git ls-files:*)"
+            "Bash(git ls-tree:*)" "Bash(git cat-file:*)" "Bash(git grep:*)"
+            "Bash(git status:*)" "Bash(git branch --show-current:*)"
+            "Bash(git fetch --no-tags origin:*)"
+            "Bash(gh pr view:*)" "Bash(gh pr diff:*)" "Bash(gh api:*)"
+          )
+          # Claude Code lets some commands it judges read-only (curl, an
+          # interpreter's -c) through even in dontAsk; name them here.
+          denied=(
+            WebFetch WebSearch NotebookEdit
+            "Read(//proc/**)" "Read(//var/lib/review-proxy/**)"
+            "Bash(curl:*)" "Bash(wget:*)" "Bash(nc:*)" "Bash(ssh:*)" "Bash(scp:*)"
+            "Bash(python:*)" "Bash(python3:*)" "Bash(node:*)" "Bash(npx:*)" "Bash(npm:*)"
+            "Bash(perl:*)" "Bash(ruby:*)" "Bash(bash:*)" "Bash(sh:*)" "Bash(env:*)"
+            "Bash(sudo:*)" "Bash(docker:*)" "Bash(litellm:*)" "Bash(claude:*)"
+            "Bash(git push:*)" "Bash(git config:*)" "Bash(git remote:*)"
+            "Bash(gh auth:*)" "Bash(gh secret:*)"
+          )
+          status=0
+          claude -p "/compound-engineering:ce-code-review $PR_URL" \
+            --plugin-dir "$RUNNER_TEMP/ce-plugin" \
+            --permission-mode dontAsk \
+            --allowedTools "${allowed[@]}" \
+            --disallowedTools "${denied[@]}" \
+            --output-format json \
+            --no-session-persistence \
+            < /dev/null > "$RUNNER_TEMP/review-out/claude-result.json" || status=$?
+          # The rendered report the skill saved; fall back to the reply text.
+          report=$(find /tmp/compound-engineering/ce-code-review -name report.md -printf '%T@ %p\n' 2>/dev/null \
+                     | sort -n | tail -1 | cut -d' ' -f2- || true)
+          if [ -n "$report" ]; then
+            cp "$report" "$RUNNER_TEMP/review-out/report.md"
+          else
+            jq -r '.result // empty' "$RUNNER_TEMP/review-out/claude-result.json" \
+              > "$RUNNER_TEMP/review-out/report.md" || true
+          fi
+          if [ "$(jq -r '.is_error // false' "$RUNNER_TEMP/review-out/claude-result.json" 2>/dev/null || echo true)" = "true" ]; then
+            status=1
+          fi
+          exit "$status"
+
+      - name: Collect the run directory
+        if: always()
+        run: |
+          mkdir -p "$RUNNER_TEMP/review-out/run"
+          if [ -d /tmp/compound-engineering/ce-code-review ]; then
+            cp -R /tmp/compound-engineering/ce-code-review/. "$RUNNER_TEMP/review-out/run/"
+          fi
+
+      - name: Upload the review
+        id: upload
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        with:
+          name: ce-code-review-pr-${{ needs.gate.outputs.pr }}
+          path: ${{ runner.temp }}/review-out
+          retention-days: 30
+          if-no-files-found: warn
+          overwrite: true
+
+  post:
+    name: Post the review
+    needs: [gate, review]
+    if: always() && needs.gate.outputs.run == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    steps:
+      # The base commit's copy of the script: this job holds a write token, so
+      # it runs nothing the PR changed.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+        with:
+          ref: ${{ needs.gate.outputs.base_sha }}
+          sparse-checkout: .github/review
+          persist-credentials: false
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4.3.0
+        continue-on-error: true
+        with:
+          name: ce-code-review-pr-${{ needs.gate.outputs.pr }}
+          path: ${{ runner.temp }}/review-out
+
+      - name: Comment on the PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR: ${{ needs.gate.outputs.pr }}
+          OUTCOME: ${{ needs.review.outputs.outcome || needs.review.result }}
+          ARTIFACT_URL: ${{ needs.review.outputs.artifact_url }}
+          MODEL: ${{ needs.review.outputs.model }}
+          HEAD_SHA: ${{ needs.gate.outputs.head_sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/review-out"
+          python3 .github/review/compose_comment.py \
+            --report "$out/report.md" --result "$out/claude-result.json" \
+            --status "$OUTCOME" --run-url "$RUN_URL" --artifact-url "$ARTIFACT_URL" \
+            --model "$MODEL" --head-sha "$HEAD_SHA" > "$RUNNER_TEMP/comment.md"
+          marker='<!-- ce-code-review:crowbot -->'
+          id=$(gh api --paginate "repos/$GH_REPO/issues/$PR/comments" \
+                 --jq ".[] | select(.user.login == \"github-actions[bot]\" and (.body | startswith(\"$marker\"))) | .id" \
+               | head -1)
+          body=$(jq -Rs '{body: .}' < "$RUNNER_TEMP/comment.md")
+          if [ -n "$id" ]; then
+            gh api -X PATCH "repos/$GH_REPO/issues/comments/$id" --input - <<<"$body" > /dev/null
+            echo "updated comment $id"
+          else
+            gh api -X POST "repos/$GH_REPO/issues/$PR/comments" --input - <<<"$body" > /dev/null
+            echo "posted a new comment"
+          fi
+
+      - name: Remove the review label
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR: ${{ needs.gate.outputs.pr }}
+        run: |
+          gh api -X DELETE "repos/$GH_REPO/issues/$PR/labels/$REVIEW_LABEL" > /dev/null 2>&1 \
+            && echo "removed the $REVIEW_LABEL label" \
+            || echo "the $REVIEW_LABEL label was not on the PR"
