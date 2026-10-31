@@ -1,5 +1,13 @@
 # Changelog
 
+## [6.6.0](https://github.com/ikari-pl/konCePCja/compare/v6.5.0...v6.6.0) (2026-10-31)
+
+
+### Features
+
+* **devtools:** trace file UI and Windows build tweaks ([#145](https://github.com/ikari-pl/konCePCja/issues/145)) ([11d3c43](https://github.com/ikari-pl/konCePCja/commit/11d3c43669c71450fa61428a7f302be5d0b6cd34))
+* **kcpc:** C++ client library and frame-ring reader (beads-3sp.1) ([#151](https://github.com/ikari-pl/konCePCja/issues/151)) ([40d862e](https://github.com/ikari-pl/konCePCja/commit/40d862e811e8614b26f1593abd2362d94c2bafed))
+
 ## [6.5.0](https://github.com/ikari-pl/konCePCja/compare/v6.4.2...v6.5.0) (2026-10-31)
 
 
