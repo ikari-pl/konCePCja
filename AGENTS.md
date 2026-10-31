@@ -263,13 +263,11 @@ Both loops run each frame through `emu_run_frame()` (`src/emu_frame.h`).
 **Always pause before touching Z80 state.**  `reg set`, `step in` and
 `snapshot save/load` take a `CpcPauseLease` (the machine is idle between two
 frames while they run, and its run state is put back after). `mem write`,
-`mem fill`, `mem cpu-write`, `poke write` and `asm assemble` are one change
-made the way KCPC `MEM_WRITE` is (`kcpc_host_write_machine()`): at a frame
-boundary on a running machine that KCPC clients read or that runs unpaced,
-otherwise under a lease held alone; `poke apply`/`unapply` under a lease
-alone (beads-nlho). None of them pauses the machine for you, so from the test
-side call `ipc.pause()` first when the test needs it stopped. The server is
-idempotent on double-pause.
+`mem fill`, `mem cpu-write`, `poke write` and `asm assemble` run at a frame
+boundary when KCPC clients read or the machine runs unpaced, and under a lease
+held alone otherwise; `poke apply`/`unapply` run under a lease alone. None of
+them pauses the machine for you, so from the test side call `ipc.pause()` first
+when the test needs it stopped. The server is idempotent on double-pause.
 
 **Use `wait bp <timeout_ms>` as a deadlock detector.**  This command blocks
 until a breakpoint fires *or* the timeout expires.  If it times out when a
@@ -292,8 +290,7 @@ GUI build: a Z80 thread plus a render thread that draws ImGui and DevTools
 offscreen. Only `-H/--headless`, or a video init that fails outright ("falling
 back to headless" in the log), runs the single-threaded headless loop. So
 render-thread code (DevTools windows, which a breakpoint stop opens) runs during
-e2e tests; that is how the Registers window corrupted the machine in
-beads-vwwq. The IPC protocol is identical in both modes.
+e2e tests. The IPC protocol is identical in both modes.
 `KoncepcjaIPC.is_threaded()` tells them apart by sending `gui` (`gui=0` for
 the `-H` loop, `gui=1` for the GUI build, dummy driver included). `devtools`
 cannot tell them apart: it returns `OK` in both. `make e2e_test` also runs
@@ -320,12 +317,10 @@ Tune `KoncepcjaIPC(timeout=5.0)` if the machine is slow.
 #### Testing the restart vectors: use a prepared ROM, not `mem write`
 
 **`mem write` and `disasm` do not address the same memory.**  `mem write`
-targets RAM; `disasm` and `mem read` show the ROM overlay.  The lower ROM
-covers `0x0000-0x3FFF`, which is *all eight* Z80 restart vectors — so a
-handler poked to `0x0030` lands in RAM the CPU will never execute, while
-`disasm 0x0030` cheerfully shows you firmware.  Two step-out tests were
-written this way and **passed for the wrong reason**: they were exercising
-Amstrad's restart handlers, which happen to return.  Both had to be deleted.
+targets RAM; `disasm` and `mem read` show the ROM overlay (unless `--view=ram`
+is passed). The lower ROM covers `0x0000-0x3FFF`, which is *all eight* Z80
+restart vectors — so a handler poked to `0x0030` lands in RAM the CPU will
+never execute, while `disasm 0x0030` shows firmware.
 
 Use `make_test_rom()` in `test/integrated/ipc_harness.py` instead.  It builds
 a synthetic 32K system ROM with no firmware in it and returns a temp
@@ -395,253 +390,35 @@ nc localhost 6544
 
 ## KCPC Binary Server
 
-A second server for out-of-process frontends on **port 6545** (probes forward
-to 6554; read `ports.binary` from the startup manifest, never assume it).
-Binary frames, up to 8 clients at once, loopback only. The contract, with
-the slices it was built in, is
-[docs/protocol/kcpc-binary-v1.md](docs/protocol/kcpc-binary-v1.md); all of
-it is implemented (phase 3 of beads-cv2 is complete). It answers `HELLO`, `PING`, `MACHINE_INFO`, the machine reads `REGS_GET`,
-`MEM_INFO` and `MEM_READ` (64 KiB of memory is one reply), and, for the one
-client that holds control (`CONTROL`; a forced request takes it from another
-client), the writes `REGS_SET` and `MEM_WRITE` and run control: `PAUSE`,
-`RUN`, `RESET`, `STEP` (in, over, out, to, frames), with `RUN_STATE` for
-anyone, and the breakpoints `BP_ADD`, `BP_DEL`, `BP_CLEAR` (`BP_LIST` for
-anyone): execution breakpoints, watchpoints and I/O breakpoints, on the
-lists the text IPC and DevTools edit, and input: `KEY` (a keyboard matrix
-position; row 9 is joystick 0), `KEYS_RELEASE`, `TEXT` (the AutoTypeQueue)
-and `MOUSE`, with `INPUT_STATE` for anyone, and the light gun (`GUN`, aimed
-in frame pixels), and what the DevTools show:
-`CHIP_GET` (CRTC, Gate Array, PSG, FDC, ASIC), the memory space `ASIC_PAGE`,
-the symbols (`SYM_LIST` for anyone; `SYM_ADD`, `SYM_DEL`, `SYM_LOAD`) and
-`FB_INFO` (which names the frame ring, `CAP_FB_SHM`), and media, snapshots and configuration: `MEDIA_INSERT`,
-`MEDIA_EJECT`, `TAPE_CONTROL`, `SNAPSHOT_SAVE`, `SNAPSHOT_LOAD`,
-`CONFIG_SET`, `CONFIG_APPLY` (`MEDIA_INFO` and `CONFIG_GET` for anyone). A client
-that sends `SUBSCRIBE` is pushed events (`EVT_STOPPED`, `EVT_RESUMED`,
-`EVT_RESET`, `EVT_FRAME`, `EVT_BREAKPOINTS_CHANGED`, `EVT_SYMBOLS_CHANGED`,
-`EVT_MEDIA_CHANGED`, `EVT_MACHINE_CHANGED`, ...), whoever caused
-them: a pause, a `bp add`, a `sym add`, a `load` or a `config apply` from the
-text IPC or the GUI is pushed too, and
-a breakpoint, watchpoint or I/O hit says what was hit. The protocol is at
-major version 0: client and server must come from the same checkout, until
-phase 5 (the remote GUI) ships; the freeze to major 1 comes after that, not
-before (user decision).
+A binary server for out-of-process frontends on **port 6545** (probes forward
+to 6554; read `ports.binary` from the startup manifest, never assume it). Up
+to 8 loopback clients at once; one holds `CONTROL`. Full wire specification:
+[docs/protocol/kcpc-binary-v1.md](docs/protocol/kcpc-binary-v1.md) and
+[docs/protocol/fb-ring-v1.md](docs/protocol/fb-ring-v1.md).
 
 ```ini
 [ipc]
 binary_port_enabled=1      # 0 = do not open the port (manifest: `binary: null`)
 ```
 
-- `src/kcpc/kcpc_proto.h` — opcodes, status codes and the bounds-checked
-  field reader/writer. Pure; unit-tested in `test/kcpc_proto_test.cpp`.
-- `src/kcpc/kcpc_server.{h,cpp}` — acceptor thread plus a reader and a writer
-  thread per client. Knows nothing about the emulator, so
-  `test/kcpc_server_test.cpp` runs it over loopback with a fake machine.
-- `src/kcpc/kcpc_gate.{h,cpp}` — the machine gate: how a read is taken
-  without pausing anything. A reader thread queues it and the frame runner
-  runs it at the next frame boundary (`kcpc_service_frame()`, called from
-  `frame_epilogue()`); on a stopped machine the reader runs it itself under
-  `cpc_read_while_stopped()`. That is not a `CpcPauseLease` on purpose: a
-  Run is refused while any lease is held, so a client polling a paused
-  machine through leases swallows `run` now and then. Emulator-free like
-  the server; `test/kcpc_gate_test.cpp` drives it with a fake machine.
-- `src/kcpc/kcpc_host.{h,cpp}` — the seam to the emulator. **Nothing touches
-  the machine from a socket thread except through here**, and only the ways
-  the document's threading model allows: reads through the gate, changes
-  under a `CpcPauseLease` while it is the only lease held
-  (`change_alone()`, so a write never runs beside a machine rebuild) and
-  ended with `restore_run_state()`. A read callback must only copy:
-  it runs on the frame runner. The one change that may run there too is a
-  `REGS_SET`/`MEM_WRITE` while clients read a running machine, or on an
-  unpaced one (`written()`, `Gate::at_boundary()`): it is made at the frame
-  boundary behind the reads, with no lease (beads-df1x, beads-dws9); keep
-  anything with file I/O or a lease of its own off that path. The writes a
-  controller sent together are one such change (`kcpc_host_writes()`): the
-  reader takes those its receive buffer already holds into the run, never
-  waits for more, and answers each in request order. **Do not call anything
-  that takes `g_pause_mutex` (`cpc_stopped()`, a lease) from a path a running machine
-  hits per read**: the runner holds that mutex for the whole of every
-  machine frame, and on an unpaced machine a socket thread then waits about
-  15 ms for it each time.
-- Register edits from every source reach the machine through
-  `subcycle_bridge_write_regs()` (`src/subcycle_bridge.h`): KCPC by mask, the
-  text IPC and DevTools through `subcycle_bridge_regs_to_machine()`, which
-  diffs the host view. At a breakpoint the machine's own PC is one past the
-  address everything shows; `subcycle_bridge_shown_regs()` is the block with
-  the address that is shown.
-- `src/kcpc/kcpc_events.h` — the event record and the ring events are
-  posted into (`Server::post()`): lock-free, several producers, one
-  consumer (the server's fan-out thread). Posting is the only thing the
-  frame runner does for an event.
-- The run state is **announced by the core**, not sampled by the server:
-  `cpc_pause()`, an applied resume and the last pause lease letting go
-  compare the settled state with the one last announced and call the one
-  observer (`cpc_set_run_state_observer()`, `src/koncepcja.h`). A lease's
-  own pause and resume are never announced. The observer runs under the
-  pause mutex, on the frame runner too: it must only post. Pass a
-  `CpcRunCause` to `cpc_pause()` / `release_stopped()` / `release_running()`
-  when the stop or run should name who asked.
-- To run the machine on somebody's request use `cpc_run()`, not
-  `cpc_resume()`: the latter is dropped while any pause lease is held.
-- A step that runs and stops the machine on its way (over a call, out of a
-  routine, to an address) is a **walk**: `CpcWalk` in `src/koncepcja.h`,
-  opened by `z80_run_until_ephemeral()`, `z80_step_out_until()` and
-  `z80_step_over()` themselves, so the text IPC's and the DevTools' walks
-  get it too. It is announced as one step (one `EVT_RESUMED` at most, one
-  `EVT_STOPPED`). **A walk waits on `cpc_announced_stopped()`, never on
-  `g_emu_paused`**: a pause lease sets the latter for the length of another
-  actor's memory write, and a walk that took that for a stop ended half way
-  (beads-pja3). It runs the machine with `cpc_walk_run()` and looks at
-  `cpc_walk_interrupted()` before every instruction it steps: somebody's
-  pause must end it, and on a machine the walk has stopped already a pause
-  changes nothing else it could notice.
-- The KCPC walker (`walk()` in `src/kcpc/kcpc_host.cpp`) is the one thread
-  that runs this port's walks. `kcpc_host_step()` opens the walk
-  (`cpc_walk_begin()`) on the reader thread and the walker closes it.
-- Breakpoints for this port go through `z80_bp_put()` / `z80_bp_remove()` /
-  `z80_bp_clear()` / `z80_bp_list()` (`src/z80_view.h`): one entry per kind
-  and address, refused with `LimitReached` when the probe would not arm it
-  (32 execution, 16 watch, 8 I/O comparators, `PROBE_MAX_*`). Every mutator
-  of the lists ends in `bump_bp_generation()`, which calls the one hook
-  (`z80_set_breakpoints_changed_hook()`) under the pause mutex: a new
-  mutator must bump, and the hook must only post.
-- Input from this port uses the paths the text IPC's `input` commands use
-  and takes no pause lease: `KEY` writes the pending matrix through
-  `kbd_matrix_set_line()` (`src/keyboard.h`), `TEXT` enqueues on
-  `g_autotype_queue`, `MOUSE` stages through `ipc_stage_mouse()` and `GUN`
-  through `ipc_stage_gun()` for `ipc_drain_input()`. `GUN`'s aim is in frame
-  pixels (`CPC.phazer_x/y`'s units, FB_INFO's 768×272), applied without the
-  window mapping the text IPC's `input gun move` goes through. **`KEY` must
-  not go through `ipc_apply_keypress()` or `applyKeypressDirect()`**: those
-  release SHIFT and CONTROL around a plain key, and a frontend sends its
-  modifiers as matrix positions of their own.
-- The server (`Server::press_key()`, `release_held()`) remembers the keys,
-  mouse buttons and gun trigger the controller holds and releases exactly
-  those when it loses control, before `EVT_CONTROL_CHANGED` is posted. A new
-  request that holds something down (a key, a button, a trigger) must be
-  recorded there, under `held_mutex_`, after re-checking the controller
-  under that mutex.
-- Chip state for this port is read off the Devices, through the gate
-  (`kcpc_host_chip_get()`): `crtc_peek()`, `ga_peek()`, `psg_peek()`,
-  `fdc_peek()`, `asic_peek()`. **Never from the host view structs** (`CRTC`,
-  `GateArray`, `PSG`, `asic`, `pbRegisterPage`): the frame runner rewrites
-  those once a frame and a socket thread reading them races it. A chip's
-  block only grows, by a new layout number (`kChipLayout*` in
-  `kcpc_proto.h`), and the document's table of which window reads what says
-  when one has to.
-- The picture, read off the frame runner (the text IPC's `hash frame`,
-  `hash vram`, `screenshot` and `frames dump`, GIF and PNG alike, the F3 /
-  menu screenshot, the M4 `/preview.bmp`), is the
-  machine's canonical frame (RGB24 768x272, what `FB_INFO` describes),
-  copied through the gate by `kcpc_host_frame_copy()`
-  (`subcycle_bridge_framebuffer()` underneath). **Never `back_surface`**
-  from another thread: the runner blits into it during the frame and, in the
-  GUI, swaps it for the next ring buffer at the boundary, and it is scaled to
-  the window and in the plugin's pixel format (beads-0ir.1). A saved
-  picture is that frame with each row shown twice, 768x544
-  (`dumpScreenTo()`, beads-2hoi). The render
-  thread's own readers (presenting, the dock preview) and the runner's (the
-  AVI recorder) keep reading it.
-- `g_symfile` is shared by the render thread, the text IPC and this port.
-  Every `Symfile` method takes the table's lock; `Symbols()`,
-  `Breakpoints()` and `Entrypoints()` hand out references and are only for a
-  table no other thread can reach (one just read from a file). Add several
-  symbols with `addSymbols()`, which is one change: each change calls the one
-  hook (`set_changed_hook()`) under the lock, and that hook must only post.
-- A medium that changes is announced through `media_note()` then
-  `media_changed()` (`src/slotshandler.h`): the note first, because the
-  event's `present` and `path` are read from it later, on the server's
-  fan-out thread. `media_changed()` is called on the frame runner too (the
-  machine taking a queued disc), so its hook must only post. A new way to
-  load or eject must do both, or frontends keep showing the old medium.
-- Media requests of this port (`kcpc_host_media_insert()` and the others in
-  `src/kcpc/kcpc_host.cpp`) run the loaders of `slotshandler.h` under a
-  lease, alone, and then call `subcycle_bridge_apply_pending_media()`: the
-  machine has the medium when the reply is sent, and every event of the
-  request is posted on the request's thread, named after it
-  (`MediaCauseScope`). A cartridge goes in through `cpc_cartridge_swap()`
-  (`src/koncepcja.h`), never `file_load()` alone: the board reads the image
-  through a raw pointer and has to be pointed at the new one.
-- The configuration keys are one table, `ipc_config_get()` /
-  `ipc_config_set()` / `ipc_config_apply()` in `src/koncepcja_ipc_server.h`,
-  which the text IPC's `config` only formats. Add a key there and both
-  servers have it. `ipc_config_machine()` is the part a socket thread must
-  read through the gate.
-- **Nothing that takes the pause mutex goes inside `alone_under_lease()`'s
-  work** (`cpc_announce_reset()`, `emulator_reset()`, a lease): the work
-  runs under that mutex. Such calls go in the `let_go` callback, where the
-  lease is still held and the mutex is not (the reset after a cartridge
-  insert, the `EVT_RESET` of a snapshot load).
-- `koncpc_rebuild_machine()` calls the one hook
-  (`cpc_set_machine_rebuilt_hook()`) while it still holds its pause lease;
-  the hook reads the new machine directly and must not take a lease.
-- `z80_step_instruction()` acknowledges the probe after the step. The probe
-  is ticked along with the board, so a stepped fetch at an armed address
-  latches a hit nobody collects; left there, the next frame reported it as a
-  breakpoint stop at an address the CPU had left.
-- The frame ring (beads-0ir.2, [docs/protocol/fb-ring-v1.md](docs/protocol/fb-ring-v1.md)):
-  the core publishes the canonical frame to shared memory named
-  `kcpc-fb-<pid>` (`/kcpc-fb-<pid>` on POSIX, `Local\kcpc-fb-<pid>` on
-  Windows) at **every** frame completion, read or not (user decision
-  2026-10-26). `fb_publish_frame()` (`src/kcpc/fb_publish.h`) is called by
-  `subcycle_bridge_frame()` on the frame runner, only for a frame that ran
-  to its end, before the host blit and the pacer's sleep; it takes no lock,
-  so `fb_publish_start()` runs before the frame runner exists and
-  `fb_publish_stop()` (in `doCleanUp()`, which the signal exit takes too)
-  after it has ended. The layout and the seqlock are `src/kcpc/fb_ring.h`;
-  the OS shim (the one `#ifdef _WIN32` for shared memory) is
-  `src/shm_region.{h,cpp}`. The producer never waits for a reader.
-  KCPC names the ring (beads-0ir.3): `kcpc_host_fb_info()` reports
-  `fb_publish_shm_name()` and `fb_publish_seq()` (atomics, safe from a
-  socket thread), and `kcpc_service_frame()` puts `fb_publish_seq()` in each
-  `EVT_FRAME`: it runs in `frame_epilogue()`, after the bridge published the
-  frame. `CAP_FB_SHM` is announced only while the ring runs.
-  `tools/fb_dump.c` (`make fb_dump_tool`, CMake `fb_dump`; `make e2e_test`
-  builds it) is a C reader that includes no emulator header: keep it that
-  way, it is the proof the document is enough. `test_fb_ring.py` is phase
-  4's exit test.
-- `KONCPC_KCPC_CONTROLLER_TIMEOUT_MS` in the environment lowers the 30 s a
-  controller may stay silent, and `KONCPC_KCPC_EVENT_QUEUE_BYTES` the 4 MiB
-  of queue beyond which a client's events are dropped. They exist for the
-  tests.
-- `src/net_socket.{h,cpp}` — non-blocking loopback sockets with timeouts.
-  The text IPC server runs on it too: a reply goes out whole however long
-  (the client socket is non-blocking), and every wait is a 200 ms slice, so
-  `stop()` never waits for a quiet client.
-- `src/kcpc/kcpc_client.{h,cpp}` is the C++ client (beads-3sp.1), what the
-  GUI's `--connect` will speak: `Client::connect()` does HELLO, one reader
-  thread matches each response to its request by `id` and hands events to
-  `ClientOptions::on_event` (on that thread, in arrival order, so an event a
-  request caused comes after its reply) or to `next_event()`'s queue.
-  `call()` blocks, `send()` does not; there is a typed request per opcode,
-  each a `Result` (`Outcome` kReplied / kTimeout / kClosed / kBadReply, then
-  the `Status`). It PINGs after `keepalive_ms` (10 s) of silence, tracks the
-  role from HELLO, `CONTROL` and `EVT_CONTROL_CHANGED`, and an `ERROR` or the
-  end of the stream ends every pending request with kClosed
-  (`close_status()` says why). Payloads go through `kcpc_proto.h` and
-  `decode_event()` (the mirror of `encode_event()` in `kcpc_events.h`):
-  **no second codec**; a new opcode gets its codec there and a typed request
-  here. A callback must never wait for a reply: the reader delivers replies.
-  `src/kcpc/fb_ring_reader.{h,cpp}` maps the ring by FB_INFO's `shm_name`,
-  read-only, and copies the latest frame with `fb_ring_read_latest()`.
-  `test/kcpc_client_test.cpp` runs it against `kcpc::Server` with the fake
-  machine of `test/kcpc_fake_machine.h` (shared with
-  `kcpc_server_test.cpp`); a request that stays pending until the
-  connection ends needs a peer that never answers (`SilentPeer`), because
-  the real server answers what it has read before it shuts down.
-- `test/integrated/kcpc/kcpc_client.py` is the reference client (standard
-  library only); `test_kcpc.py` next to it starts its own cores
-  (`-H` by default, `--ui-free`, `--gui`) and runs inside `make e2e_test`.
-  `test_exit_criterion.py` is the phase's acceptance test (two clients, a
-  pushed breakpoint stop, 64 KiB in one frame equal to the text IPC's
-  `mem read`), with no polling anywhere: keep it that way, a wait is a
-  blocking read. `test_every_opcode_has_a_documented_refusal` parses the
-  opcode table of the protocol document: an opcode added to the client must
-  be added to that table, with its refusals.
+### Source map
+- `src/kcpc/kcpc_proto.h` — opcodes, status codes, bounds-checked field reader/writer (`test/kcpc_proto_test.cpp`).
+- `src/kcpc/kcpc_server.{h,cpp}` — acceptor + reader/writer thread per client (`test/kcpc_server_test.cpp`).
+- `src/kcpc/kcpc_gate.{h,cpp}` — lock-free frame-boundary read queue (`kcpc_service_frame()` in `frame_epilogue()`), or `cpc_read_while_stopped()` when paused (`test/kcpc_gate_test.cpp`).
+- `src/kcpc/kcpc_host.{h,cpp}` — the single seam between socket threads and the emulator.
+- `src/kcpc/kcpc_events.h` — MPSC lock-free event ring and codec (`encode_event` / `decode_event`).
+- `src/kcpc/fb_ring.h`, `fb_publish.{h,cpp}`, `fb_ring_reader.{h,cpp}` — canonical RGB24 768×272 shared-memory frame ring (`kcpc-fb-<pid>`, `src/shm_region.{h,cpp}`). `tools/fb_dump.c` is a standalone C reader with no emulator headers.
+- `src/kcpc/kcpc_client.{h,cpp}` — C++ client library (`test/kcpc_client_test.cpp`); `test/integrated/kcpc/kcpc_client.py` is the Python reference client.
 
-A test must only ever connect to ports its own core printed in its manifest.
-Probing 6543–6554 to see who answers reaches the text IPC and telnet console
-of any other emulator on the machine, and the telnet console types what it
-receives into its CPC.
+### Threading & boundary invariants (apply across KCPC, text IPC, and DevTools)
+- **Socket and UI threads never touch the running machine directly.** Reads go through `kcpc::Gate` (serviced at `frame_epilogue()` when running, or under `cpc_read_while_stopped()` when stopped). Mutations take `CpcPauseLease` via `change_alone()` and finish with `restore_run_state()` (except batched `REGS_SET`/`MEM_WRITE` when KCPC clients read or the machine runs unpaced, which run at the frame boundary without a lease).
+- **Never acquire `g_pause_mutex` (`cpc_stopped()`, `CpcPauseLease`) on a per-frame or per-read path** — the frame runner holds `g_pause_mutex` for the entire frame (~15 ms).
+- **Callbacks invoked on the frame runner or under a lock (`Gate` read callbacks, `cpc_set_run_state_observer`, breakpoint/symbol/media change hooks) must only copy memory or post to the lock-free event ring** — never perform file I/O, block, or acquire `CpcPauseLease`.
+- **Nothing inside `alone_under_lease()`'s work callback may re-acquire `g_pause_mutex`** (`cpc_announce_reset()`, `emulator_reset()`, nested leases); put those in the `let_go` callback where the mutex is already released.
+- **Read chip state from Device `*_peek()` through the gate, never from the host view structs** (`CRTC`, `GateArray`, `PSG`, `asic`, `pbRegisterPage`), which the frame runner rewrites each frame.
+- **Read video frames from `subcycle_bridge_framebuffer()` through the gate, never from `back_surface`** (which is being blitted/swapped in plugin pixel format).
+- **Multi-frame step walks (`CpcWalk`) wait on `cpc_announced_stopped()`, never on `g_emu_paused`** (which briefly flips during another thread's `CpcPauseLease`), and check `cpc_walk_interrupted()` before each instruction.
+- **Always connect to the ports printed in your own instance's startup manifest** — never scan 6543–6554 or pattern-kill processes.
 
 ## M4 HTTP Server
 
@@ -781,36 +558,16 @@ Breakpoints, Symbols, Disc Tools, …), listed in the Window menu.
 | Cmd+O (macOS) / Ctrl+O (Linux, Windows) | Load Disk A... |
 | Cmd+S (macOS) / Ctrl+S (Linux, Windows) | Save Snapshot... |
 
-Cmd/Ctrl chords belong to the host UI and never reach the CPC; unmodified
-keys (F-keys included) are the CPC's. The chords are resolved in one place,
-`src/host_chords.h`/`.cpp`, which the SDL event loop, both menu bars and the
-About box all read. SDL is the only dispatcher — the native macOS menu shows
-a chord as text and registers no key equivalent, since AppKit and SDL both
-see the key and an accelerator on it double-fires (the F9 lesson). The F-key
-text on native menu items comes from the live InputMapper bindings
-(`koncpc_action_menu_title()`), so the menu is built after the mapper exists
-and re-reads the text each time it opens. On Linux
-and Windows, Control is a real CPC key, so Ctrl+K/O/S are the three
-combinations taken from the CPC; every other Control combination reaches it.
+Cmd/Ctrl+K/O/S belong to the host UI and never reach the CPC; unmodified keys
+(F-keys included) reach the CPC. Host chords are resolved in one place
+(`src/host_chords.{h,cpp}`) and dispatched only by SDL — the native macOS menu
+displays chord labels without registering AppKit key equivalents (so keys never
+double-fire).
 
 ### SDL3 macOS Mouse Events & ImGui Viewports
 
-When `ImGuiConfigFlags_ViewportsEnable` is active, ImGui creates separate OS windows (viewports) for floating devtools. On macOS this triggers a chain of issues:
-
-**Root cause chain:**
-1. `SDL_CaptureMouse()` is a permanent no-op in the Cocoa implementation (`Cocoa_CaptureMouse()` in `SDL_cocoamouse.m`) — just returns `true`.
-2. `koncpc_order_viewports_above_main()` keeps viewport windows above the main window via `orderWindow:NSWindowAbove`. This confuses macOS mouse-up delivery during drags.
-3. macOS may deliver `mouseUp:` to a different NSWindow or lose it entirely.
-4. SDL's internal `source->buttonstate` gets stuck at "pressed".
-5. `SDL_PrivateSendMouseButton()` has duplicate suppression (`if (buttonstate == source->buttonstate) return`) — once stuck, ALL future button events for that button are silently dropped at the SDL level.
-
-**The fix** (three layers):
-- **SDL Cocoa backend** (`vendor/SDL/src/video/cocoa/SDL_cocoamouse.m`): `Cocoa_ReconcileMouseButtons()` polls `[NSEvent pressedMouseButtons]` (OS-reported hardware state) once per frame in `Cocoa_PumpEvents()`. Calls `SDL_SendMouseButton(RELEASED)` through SDL's full pipeline for any stuck buttons.
-- **ImGui SDL3 backend** (`vendor/imgui/backends/imgui_impl_sdl3.cpp`): Viewport windowID check removed for mouse button and MOUSE_ENTER events. Button state is global — the GLFW and Win32 backends never had this check.
-- **Application** (`src/kon_cpc_ja.cpp`): No legacy `showGui()` click handler — topbar clicks are handled purely by ImGui's `Button("Menu (F1)")`.
-
-**Key pitfalls when debugging mouse issues:**
-- `SDL_GetMouseState()` reads SDL's **event-derived cache** — if the button-up event was lost, this cache is stuck too. Use `SDL_GetGlobalMouseState()` which queries OS-reported state via `[NSEvent pressedMouseButtons]`.
+With `ImGuiConfigFlags_ViewportsEnable`, macOS may drop `mouseUp:` events across floating viewport windows, leaving SDL's event-derived button cache stuck pressed:
+- Query `SDL_GetGlobalMouseState()` (OS-reported state) rather than `SDL_GetMouseState()` (event-derived cache) when reconciling button state (`Cocoa_ReconcileMouseButtons()` in `vendor/SDL/src/video/cocoa/SDL_cocoamouse.m`).
 - SDL and ImGui use **different button-to-bit mappings**: SDL has Left=bit0, Middle=bit1, Right=bit2; ImGui's `MouseButtonsDown` has Left=bit0, Right=bit1, Middle=bit2. Always use an explicit mapping table, not `(1 << button_n)` for both.
 - SDL is a pre-built submodule. Edits to `vendor/SDL/src/` require rebuilding: `cd vendor/SDL/build && make -j$(sysctl -n hw.ncpu)` then `cmake --install . --prefix ../install`.
 
@@ -825,33 +582,21 @@ Config file locations (in order of precedence — the first one found wins):
 6. `koncepcja.cfg` in the macOS app bundle's `Resources/` (next to the binary's
    parent)
 
-The profile config outranks a checkout-local file: running a debug-style
-build from the repo root no longer picks up the untracked `koncepcja.cfg`
-sitting there when `~/.config/koncepcja/koncepcja.cfg` exists. Settings ▸
-System shows the file in use, as does `config get file` over IPC. The
-sidecars — `imgui.ini` and the DevTools `layouts/` directory — live next to
-whichever config file wins, so they move with it.
+The profile config outranks a checkout-local file. Settings ▸ System shows the
+file in use, as does `config get file` over IPC. The sidecars — `imgui.ini` and
+the DevTools `layouts/` directory — live next to whichever config file wins, so
+they move with it.
 
 ### Scripted runs and dialogs
 
-Only a user gesture (window close, F10, the native Quit item, the menu's
-Quit) may raise the "unsaved changes" dialog. It asks about a disc in either
-drive and about a Symbiface II IDE image the CPC has written to, and names
-which (`quitLosesWrites()`, `koncpc_quit_unsaved_message()` in
-`src/quit_policy.h`; the other prompts, reset and an Options restart, keep
-asking about discs only, through `driveAltered()`). IPC `quit`, SIGTERM/SIGINT,
-`-E/--exit-after`, `-B/--exit-on-break` and a scripted `-a KONCPC_EXIT` quit
-without asking — nobody is there to answer — and write each disc's unsaved
-writes back to its own file, exactly as an eject does (a disc loaded from an
-archive goes to a DSK beside it, never into it), and each IDE image's to its
-image file. Only a user who was shown the dialog and answered "Quit anyway?"
-with yes leaves them unwritten, discs and IDE alike; with the dialog
-suppressed, the writes go back. A signal exits with 128+signo
-(130 for Ctrl+C, 143 for SIGTERM) and does not save settings; a second signal
-before shutdown finishes kills the process outright. `KONCPC_NO_DIALOGS=1`
-in the environment suppresses the dialog on every path;
-`test/integrated/ipc_harness.py` sets it, so a test that dirties a disk and
-is then terminated can never block on a modal.
+Only a user gesture (window close, F10, native Quit, menu Quit) may raise the
+"unsaved changes" dialog (`quitLosesWrites()`, `koncpc_quit_unsaved_message()`
+in `src/quit_policy.h`). Non-interactive exits (IPC `quit`, SIGTERM/SIGINT,
+`-E/--exit-after`, `-B/--exit-on-break`, `-a KONCPC_EXIT`, or when
+`KONCPC_NO_DIALOGS=1` is set) never prompt and flush dirty disc/IDE images back
+to disk automatically (archive-backed discs save to `<entry>.dsk` beside the
+archive). Signals exit with `128+signo` without saving settings; a second
+signal kills the process immediately.
 
 ### Key Config Options
 
@@ -860,88 +605,37 @@ is then terminated can never block on a modal.
 model=2           # 0=464, 1=664, 2=6128, 3=6128+
 ram_size=128      # RAM in KB: 64, 128, 192, 256, 320, 512, 576 … 4160
 speed=4           # Clock speed MHz
-run_tier=0        # Run-tier policy: 0=auto (Fast;
-                  # drops to Wake while any breakpoint/watchpoint/IO-BP is
-                  # set — per-cycle observability for the debugger), 1=fast,
-                  # 2=wake, 3=soldered, 4=faithful. Shift+F9 cycles
-                  # auto→fast→wake at runtime; the Machine menu has the full
-                  # list; `tier` on the IPC port reads/sets it. KONCPC_TIER/
-                  # KONCPC_WAKE env vars pin the tier and disable the policy.
+run_tier=0        # 0=auto (Fast; drops to Wake while any breakpoint/watchpoint/IO-BP is set),
+                  # 1=fast, 2=wake, 3=soldered, 4=faithful. Shift+F9 cycles auto→fast→wake;
+                  # `tier` on IPC reads/sets it; KONCPC_TIER / KONCPC_WAKE pin it.
 
 [video]
 scr_scale=2       # Window scale factor
 scr_style=1       # Rendering style (0-11)
-scr_window=1      # 1 = start windowed, 0 = start fullscreen. NOTE the IPC key
-                  # `config get|set fullscreen` has the opposite polarity
-                  # (1 = fullscreen).
-vsync=1           # 1=VSYNC present (default). 0=MAILBOX/IMMEDIATE on the MAIN
-                  # window only (viewport/DevTools windows always stay VSYNC —
-                  # IMMEDIATE breaks their swapchains). Escape hatch for the
-                  # remote-desktop present stall; emulation pacing is unaffected
-                  # (decoupled from render), so FPS stays 50 either way.
-                  # Cost of 0: when only IMMEDIATE is available (no MAILBOX —
-                  # seen on a 5K/144 Hz Mac display) the 50 Hz presents land
-                  # unsynced. On a variable-refresh-rate (VRR) display that is
-                  # visibly broken — frames snap back — because VRR locks the
-                  # panel to the present cadence and IMMEDIATE has none. Use 1
-                  # with VRR (beads-7azm).
+scr_window=1      # 1 = windowed, 0 = fullscreen (IPC `config fullscreen` has opposite polarity).
+vsync=1           # 1=VSYNC (default, required on VRR displays). 0=MAILBOX/IMMEDIATE on the main
+                  # window only (viewport windows stay VSYNC).
 
 [sound]
-enabled=1         # NOTE: the INI keys are enabled/playback_rate/bits/stereo/
-playback_rate=2   # volume — NOT the snd_* names of the C++ struct members.
-                  # 0=11025, 1=22050, 2=44100, 3=48000, 4=96000
+enabled=1         # INI keys are enabled/playback_rate/bits/stereo/volume (not snd_*).
+playback_rate=2   # 0=11025, 1=22050, 2=44100, 3=48000, 4=96000
 volume=80         # 0-100
 
 [input]
-lightgun=0        # Light gun: 0=off, 1=Amstrad Magnum Phaser, 2=Trojan Light
-                  # Phazer. Same as the F-key toggle; lets config/headless runs
-                  # enable a gun (the IPC `input gun` contract keys off it).
-host_chords=1     # Cmd/Ctrl+K/O/S drive the host UI (palette, Load Disk A,
-                  # Save Snapshot). 0 hands Ctrl+K/O/S back to the CPC on
-                  # Linux/Windows — CP/M software (WordStar) uses them. No
-                  # effect on macOS, where the chords use Command.
+lightgun=0        # 0=off, 1=Amstrad Magnum Phaser, 2=Trojan Light Phazer.
+host_chords=1     # 1=Cmd/Ctrl+K/O/S drive host UI; 0=pass Ctrl+K/O/S to CPC on Linux/Windows.
 ```
 
 ## Code Conventions
 
-- Use `byte` (uint8_t), `word` (uint16_t), `dword` (uint32_t) types
-- Z80 memory access: `z80_read_mem(addr)`, `z80_write_mem(addr, val)`
-- Pause/resume: `cpc_pause()`, `cpc_resume()`
-- A `CpcPauseLease` holder lets go with exactly one of `restore_run_state()`
-  (borrowed the machine: put back what was there), `release_stopped()` (a
-  stop somebody asked for: a step) or `release_running()` (promises a running
-  machine: reset, the start of a frame step). Never `if (!was_paused)
-  cpc_resume();` by hand: it resumes over a breakpoint that fired meanwhile
-  and does nothing while another lease is held. A lease that only reads uses
-  `read_alone()`.
-- Lease holders on different threads take turns with the machine: an idle
-  lease has it until it lets go, and one on another thread waits (bounded,
-  then not idle: fail closed). Nesting on one thread is fine. **A holder that
-  waits for another thread which takes a lease of its own must `lend()` the
-  machine for that wait** (IPC `profile load` waiting for the main thread's
-  rebuild), or the two wait for each other until the bound runs out
-  (beads-nhfy). A `PauseOnly` lease that never calls `wait()` (a window
-  screenshot) pauses without taking the machine.
-- Reset: `emulator_reset()`
-- A DevTools window changes the machine, a byte of memory included, through
-  `change_machine_alone()` (`src/devtools_ui.cpp`): a lease held alone, never
-  a bare `z80_write_mem()` from the render thread beside a running frame
-  (beads-tddf). `Z80Assembler::assemble()` takes the caller's way of making
-  that one change (`AsmCommit`).
-- A cartridge goes into a built machine through `cpc_cartridge_insert()`
-  (`src/koncepcja.h`), never `file_load(CPC.cartridge)`: the load frees the
-  image the board reads through a raw pointer. A caller that holds the
-  machine itself uses `cpc_cartridge_swap()`.
-- A disc goes into a drive through `disc_insert()` (`src/slotshandler.h`),
-  never `slot.file = path; file_load(slot)`: a file that is refused then
-  changes nothing, the slot's file included (`file_load()` tries the image
-  on copies before it empties the drive).
-- A disc's unsaved writes go back to the file the bridge was told it came
-  from (`subcycle_bridge_insert_media()`'s `path`). A loader that reads a
-  disc out of an archive must pass the entry's name too (`archive_entry`):
-  such a disc is written as `<entry>.dsk` beside the archive, never into it
-  (`dsk_beside_archive()` in `src/subcycle_bridge.cpp`, beads-lels).
-- ImGui state is in global `imgui_state` struct
+- Use `byte` (uint8_t), `word` (uint16_t), `dword` (uint32_t) types.
+- Z80 memory access: `z80_read_mem(addr)`, `z80_write_mem(addr, val)`.
+- Pause/resume: `cpc_pause()`, `cpc_resume()`, `cpc_run()` (use `cpc_run()` for user/client resume requests; `cpc_resume()` is ignored while any pause lease is held).
+- **`CpcPauseLease` lifecycle**: end every lease with `restore_run_state()` (put back prior state), `release_stopped()` (step), or `release_running()` (reset / frame step) — never manual `if (!was_paused) cpc_resume()`. Read-only leases use `read_alone()`. If a lease holder waits on another thread that also acquires a lease, call `lend()` around the wait to avoid deadlock.
+- **DevTools mutations**: change machine or memory state from the UI thread through `change_machine_alone()` (`src/devtools_ui.cpp`), never a bare `z80_write_mem()` beside a running frame.
+- **Media insertion**: insert cartridges via `cpc_cartridge_insert()` (or `cpc_cartridge_swap()` when already holding the lease) and discs via `disc_insert()` — never bare `file_load()`, which frees live pointers or clobbers slot state on error. Archive-backed discs must pass `archive_entry` so writes save to `<entry>.dsk` beside the archive.
+- **User-writable output paths**: save user exports (traces, dumps, screenshots) to `CPC.sdump_dir` with fallback to `SDL_GetPrefPath("konCePCja", "konCePCja")`, never `SDL_GetBasePath()` (read-only in installed builds).
+- ImGui state is in global `imgui_state` struct.
 
 ## Code Review Themes
 
@@ -961,10 +655,13 @@ Recurring patterns from code reviews. Follow these to avoid common pitfalls:
 - **Use `new T[N]()` or `= {}` for value-initialization** — Don't allocate then `memset`. Value-init is cleaner and works with non-POD types.
 - **Never `memset` non-POD types** — Use default constructors, `= {}`, or assignment. `memset` on a `std::string` or struct with constructors is undefined behavior.
 
-### Performance in Render Loops
-- **Cache per-frame expensive computations** — ImGui render functions run every frame. Scanning 256KB of memory, rebuilding string lists, or formatting large tables must use a dirty flag and only recompute when state changes.
-- **Stack arrays for small fixed-size buffers** — Don't use `std::vector` in per-frame code for buffers whose size is known at compile time. `char buf[64]` or `std::array` avoids heap allocation.
-- **`std::map::upper_bound` for range lookups** — O(log N) instead of linear scan when looking up "which region does address X belong to?"
+### Performance & Cross-Thread State in UI / IPC
+- **Copy under the guard, format and write outside it** — Hold `CpcPauseLease` (or a shared lock) only long enough to `memcpy` raw POD state into a caller-owned buffer. Never format text, build large strings, or perform file/socket I/O while holding a lease or lock that blocks the emulation thread.
+- **Bridge live emulation state to UI at `frame_epilogue()`, never via per-frame leases** — Acquiring `CpcPauseLease` per frame contends with `g_pause_mutex` (held for the entire ~15 ms frame), and reading live Z80-written buffers from the UI thread is a data race. When a viewer is open, copy the needed slice in `frame_epilogue()` (where the Z80 is between frames) and hand it to the UI thread under a light UI-only mutex + generation counter.
+- **Virtualise large lists and tables (`ImGuiListClipper`)** — Keep buffers as raw structs and format only the ~40–50 visible rows inside `ImGuiListClipper`; never materialize a whole buffer or table into strings up front.
+- **Cache per-frame expensive computations** — ImGui render functions run every frame. Scanning memory, rebuilding file/symbol lists, or recomputing layouts must key off a dirty flag or media/symbol generation counter.
+- **Stack arrays for small fixed-size buffers** — Prefer `char buf[64]` or `std::array` over `std::vector` in per-frame code when the bound is known at compile time.
+- **`std::map::upper_bound` for range lookups** — O(log N) instead of linear scan when looking up which region an address belongs to.
 
 ### String & Buffer Safety
 - **Track string lengths explicitly** — When packing strings into fixed-width fields (like ATA IDENTIFY), compute `strlen` once and bounds-check per-character access. Don't rely on null-terminator proximity to short-circuit evaluation.
@@ -1010,32 +707,6 @@ instead of adding a new one.
   taken away. Only the separate posting job has write access, and it runs
   nothing from the PR. The full run directory is a workflow artifact for 30
   days.
-
-## Landing the Plane (Session Completion)
-
-**When ending a work session**, you MUST complete ALL steps below. Work is NOT complete until `git push` succeeds.
-
-**MANDATORY WORKFLOW:**
-
-1. **File issues for remaining work** - Create issues for anything that needs follow-up
-2. **Run quality gates** (if code changed) - Tests, linters, builds
-3. **Update issue status** - Close finished work, update in-progress items
-4. **PUSH TO REMOTE** - This is MANDATORY:
-   ```bash
-   git pull --rebase
-   bd sync
-   git push
-   git status  # MUST show "up to date with origin"
-   ```
-5. **Clean up** - Clear stashes, prune remote branches
-6. **Verify** - All changes committed AND pushed
-7. **Hand off** - Provide context for next session
-
-**CRITICAL RULES:**
-- Work is NOT complete until `git push` succeeds
-- NEVER stop before pushing - that leaves work stranded locally
-- NEVER say "ready to push when you are" - YOU must push
-- If push fails, resolve and retry until it succeeds
 
 <!-- BEGIN BEADS INTEGRATION -->
 ## Issue Tracking with bd (beads)
