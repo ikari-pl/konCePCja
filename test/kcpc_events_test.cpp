@@ -261,3 +261,88 @@ TEST(KcpcEvents, OnlyTheThreeMasklessEventsHaveNoClass) {
   EXPECT_EQ(kcpc::event_class(Opcode::kEvtOverrun), 0U);
   EXPECT_EQ(kcpc::event_class(Opcode::kEvtControlChanged), 0U);
 }
+
+// A client reads back exactly what the server wrote (beads-3sp.1).
+TEST(KcpcEvents, DecodeReadsBackEveryEventEncodeWrites) {
+  Event stopped;
+  stopped.opcode = Opcode::kEvtStopped;
+  stopped.frame = 0x0102030405060708ULL;
+  stopped.reason = static_cast<std::uint8_t>(kcpc::StopReason::kWatchpoint);
+  stopped.access = kcpc::kBpAccessWrite;
+  stopped.pc = 0x4001;
+  stopped.addr = 0xBE80;
+  stopped.value = 0x5A;
+  stopped.old_value = 0xA5;
+  stopped.cause_client = 3;
+  stopped.cause_request = 99;
+  Event control;
+  control.opcode = Opcode::kEvtControlChanged;
+  control.controller = 7;
+  control.previous = 2;
+  control.reason = kcpc::kControlTaken;
+  Event frame = frame_event(500);
+  frame.fb_seq = 499;
+  Event machine;
+  machine.opcode = Opcode::kEvtMachineChanged;
+  machine.machine.model = 3;
+  machine.machine.flags = kcpc::kMachineFlagAsic;
+  machine.machine.ram_bytes = 128U * 1024U;
+  machine.machine.stamp = {321, true};
+  Event media;
+  media.opcode = Opcode::kEvtMediaChanged;
+  media.slot = 1;
+  media.generation = 12;
+  kcpc::MediaNote const note{true, "/discs/b.dsk"};
+
+  for (Event const& in : {stopped, control, frame, machine, media}) {
+    Event out;
+    kcpc::MediaNote out_note;
+    ASSERT_TRUE(kcpc::decode_event(static_cast<std::uint16_t>(in.opcode),
+                                   kcpc::encode_event(in, note), out,
+                                   out_note));
+    EXPECT_EQ(out.opcode, in.opcode);
+    EXPECT_EQ(out.frame, in.opcode == Opcode::kEvtMachineChanged
+                             ? in.machine.stamp.frame
+                             : in.frame);
+    EXPECT_EQ(out.reason, in.reason);
+    EXPECT_EQ(out.access, in.access);
+    EXPECT_EQ(out.pc, in.pc);
+    EXPECT_EQ(out.addr, in.addr);
+    EXPECT_EQ(out.value, in.value);
+    EXPECT_EQ(out.old_value, in.old_value);
+    EXPECT_EQ(out.controller, in.controller);
+    EXPECT_EQ(out.previous, in.previous);
+    EXPECT_EQ(out.fb_seq, in.fb_seq);
+    EXPECT_EQ(out.generation, in.generation);
+    EXPECT_EQ(out.slot, in.slot);
+    EXPECT_EQ(out.machine.model, in.machine.model);
+    EXPECT_EQ(out.machine.flags, in.machine.flags);
+    EXPECT_EQ(out.machine.ram_bytes, in.machine.ram_bytes);
+    bool const wire_cause = in.opcode == Opcode::kEvtStopped;
+    EXPECT_EQ(out.cause_client, wire_cause ? in.cause_client : 0U);
+    EXPECT_EQ(out.cause_request, wire_cause ? in.cause_request : 0U);
+    if (in.opcode == Opcode::kEvtMediaChanged) {
+      EXPECT_TRUE(out_note.present);
+      EXPECT_EQ(out_note.path, note.path);
+    }
+  }
+}
+
+TEST(KcpcEvents, DecodeRefusesAShortPayloadAndANonEvent) {
+  Event e;
+  kcpc::MediaNote note;
+  std::vector<std::uint8_t> payload = kcpc::encode_event(frame_event(1));
+  payload.pop_back();
+  EXPECT_FALSE(kcpc::decode_event(static_cast<std::uint16_t>(Opcode::kEvtFrame),
+                                  payload, e, note));
+  EXPECT_FALSE(kcpc::decode_event(static_cast<std::uint16_t>(Opcode::kPing), {},
+                                  e, note));
+  EXPECT_TRUE(kcpc::decode_event(
+      static_cast<std::uint16_t>(Opcode::kEvtShutdown), {}, e, note));
+  // Fields a later minor version appends are ignored.
+  payload = kcpc::encode_event(frame_event(9));
+  payload.push_back(0xEE);
+  ASSERT_TRUE(kcpc::decode_event(static_cast<std::uint16_t>(Opcode::kEvtFrame),
+                                 payload, e, note));
+  EXPECT_EQ(e.frame, 9U);
+}

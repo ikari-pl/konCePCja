@@ -1700,8 +1700,8 @@ This is the machine's canonical frame, before scaling or scanlines (epic
 invariant 1). Everything but `fb_seq` is the same for the life of the core.
 The ring's layout and how to read it without a torn frame are
 [fb-ring-v1.md](fb-ring-v1.md); `kcpc_client.FbRing`
-(`test/integrated/kcpc/kcpc_client.py`) and `tools/fb_dump.c` are two
-readers. When the core could not create the region it logs why, runs on
+(`test/integrated/kcpc/kcpc_client.py`), `tools/fb_dump.c` and
+`kcpc::FbRingReader` (`src/kcpc/fb_ring_reader.h`) are three readers. When the core could not create the region it logs why, runs on
 without it, `transport` is 0 and `HELLO` does not announce `CAP_FB_SHM`.
 
 The text IPC's `hash frame` is the CRC32 of exactly these bytes (`height`
@@ -2014,6 +2014,7 @@ test-first against a real `-H` core.
 | 9 | Media, snapshots, configuration (**landed**, beads-rcyq) | `MEDIA_INSERT`, `MEDIA_EJECT`, `MEDIA_INFO`, `TAPE_CONTROL` on the loaders and the media swap the text IPC and the menus use, with the machine's half applied under the request's lease; `SNAPSHOT_SAVE`, `SNAPSHOT_LOAD` (SNA); `CONFIG_GET`, `CONFIG_SET`, `CONFIG_APPLY` on one table of keys shared with the text IPC; `CAP_MEDIA`, `CAP_SNAPSHOT`, `CAP_CONFIG` |
 | 10 | The light gun (beads-il6h) | `GUN`, aimed in frame pixels, on the staging the text IPC's `input gun` uses; a trigger the controller pulled is let go when it loses control; `CAP_GUN` |
 | 11 | The frame ring named (beads-0ir.3, phase 4) | `FB_INFO` with `transport` 1, `shm_name` and the live `fb_seq`; `EVT_FRAME` with the frame's `fb_seq`; `CAP_FB_SHM`; `tools/fb_dump.c` and the client's `FbRing`; the exit test of phase 4 (`test_fb_ring.py`, below) |
+| 12 | The C++ client (beads-3sp.1, phase 5) | `kcpc::Client` (`src/kcpc/kcpc_client.h`): HELLO, replies matched by `id`, events to a callback or a queue, a typed request per opcode, `CONTROL`, the `PING` keepalive, every pending request ended by `ERROR` or the end of the stream; `kcpc::FbRingReader`; `decode_event()` beside `encode_event()`. No change on the wire |
 
 Slice 9 needs slices 3 (the controller role) and 4 (events) and nothing
 later, so it can be built alongside slices 5 to 7. Slice 8 is numbered before
@@ -2103,8 +2104,11 @@ Source layout the slices should follow:
   with `-H` by default, `--ui-free` for a `KONCPC_MODERN_UI=0` binary and
   `--gui` for the GUI build under SDL's dummy drivers. `make e2e_test` runs
   the first and the last; the UI-free CI steps run the second.
-- `test/kcpc_proto_test.cpp`, `test/kcpc_server_test.cpp` — the unit tests
-  in `test_runner`.
+- `src/kcpc/kcpc_client.{h,cpp}`, `src/kcpc/fb_ring_reader.{h,cpp}` — the
+  C++ client and frame-ring reader a frontend links (beads-3sp.1).
+- `test/kcpc_proto_test.cpp`, `test/kcpc_server_test.cpp`,
+  `test/kcpc_client_test.cpp` — the unit tests in `test_runner`; the last
+  two share the fake machine of `test/kcpc_fake_machine.h`.
 
 ### Exit criterion of phase 3
 

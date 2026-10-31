@@ -13,11 +13,13 @@ the OS name below, `fb_seq` the latest frame's sequence number; and each
 [kcpc-binary-v1.md](kcpc-binary-v1.md)). Without KCPC, the name follows from
 the core's pid, which the startup manifest reports.
 
-Two readers live in this repository: `tools/fb_dump.c`, a C program that
+Three readers live in this repository: `tools/fb_dump.c`, a C program that
 knows the ring only from this document (it copies the latest frame into a
 PNG or PPM and prints its sequence number and CRC32: `fb_dump <name or pid>
 <out.png>`, built by `make fb_dump_tool` and by CMake's `fb_dump` target),
-and `FbRing` in `test/integrated/kcpc/kcpc_client.py`.
+`FbRing` in `test/integrated/kcpc/kcpc_client.py`, and
+`kcpc::FbRingReader` (`src/kcpc/fb_ring_reader.h`), the one a C++ frontend
+links, on top of `fb_ring_read_latest()`.
 
 ## Terms
 
