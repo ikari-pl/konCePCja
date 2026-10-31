@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <filesystem>
 #include <fstream>
 #include <functional>
@@ -34,6 +35,7 @@
 #include "slotshandler.h"
 #include "subcycle_bridge.h"
 #include "symfile.h"
+#include "trace.h"
 #include "wav_recorder.h"
 #include "ym_recorder.h"
 #include "z80_assembler.h"
@@ -364,6 +366,84 @@ void DevToolsUI::render_registers() {
   }
 
   render_run_state_chip();  // beads-rj4
+  ImGui::SameLine();
+  {
+    bool trace_on = g_trace.is_active();
+    if (ImGui::Checkbox("Trace", &trace_on)) {
+      // enable() resizes the buffer and disable() frees it, while the Z80
+      // thread may be inside record(): take the machine idle for the change.
+      CpcPauseLease lease;
+      if (imgui_lease_ready(lease)) {
+        if (trace_on) {
+          g_trace.enable(g_trace_default_size);
+          subcycle_bridge_set_instr_trace(true);
+        } else {
+          subcycle_bridge_set_instr_trace(false);
+          g_trace.disable();
+        }
+        lease.restore_run_state();
+      }
+    }
+    if (ImGui::IsItemHovered()) {
+      ImGui::SetTooltip(
+          "Record every executed instruction (PC, opcode, A, F, BC, DE, HL, "
+          "SP)\n"
+          "into a ring buffer; the oldest entries are overwritten when full.\n"
+          "Same as the IPC commands 'trace on' / 'trace off'. Unticking frees\n"
+          "the buffer. Size: [devtools] trace_buffer_size in the config.\n"
+          "Write it out with the IPC command 'trace dump <path>'.");
+    }
+    ImGui::SameLine();
+    ImGui::BeginDisabled(!trace_on);
+    if (ImGui::SmallButton("Save")) {
+      // Copy the ring while the machine is idle, then release the lease before
+      // formatting and writing the file so large buffers never stall emulation.
+      std::vector<TraceEntry> entries;
+      bool ready = false;
+      {
+        CpcPauseLease lease;
+        if (imgui_lease_ready(lease)) {
+          g_trace.snapshot(entries);
+          lease.restore_run_state();
+          ready = true;
+        }
+      }
+      if (!ready) {
+        imgui_toast_error("Cannot save the trace: the machine is busy");
+      } else if (entries.empty()) {
+        imgui_toast_error("Trace is empty: nothing recorded yet");
+      } else {
+        char stamp[32];
+        std::time_t now = std::time(nullptr);
+        std::strftime(stamp, sizeof(stamp), "%Y-%m-%d_%H-%M-%S",
+                      std::localtime(&now));
+        std::filesystem::path dir = CPC.sdump_dir;
+        std::error_code ec;
+        if (dir.empty() || !std::filesystem::is_directory(dir, ec)) {
+          dir.clear();
+          if (char* pref = SDL_GetPrefPath("konCePCja", "konCePCja")) {
+            dir = pref;
+            SDL_free(pref);
+          } else {
+            dir = ".";
+          }
+        }
+        std::filesystem::path const path =
+            dir / (std::string("trace ") + stamp + ".txt");
+        if (TraceRecorder::write_entries(entries, path.string())) {
+          imgui_toast_success("Trace saved: " + path.string());
+        } else {
+          imgui_toast_error("Cannot write trace: " + path.string());
+        }
+      }
+    }
+    ImGui::EndDisabled();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+      ImGui::SetTooltip(
+          "Write the trace buffer to 'trace <date time>.txt' next to the\n"
+          "executable. Tracing keeps running. Enabled only while Trace is on.");
+    }
+  }
   ImGui::Separator();
 
   bool locked = !CPC.paused;

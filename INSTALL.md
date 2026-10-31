@@ -92,7 +92,7 @@ Download and install [MSYS2](https://www.msys2.org). Open the **MINGW64** shell 
 ```
 pacman -S git make zip mingw-w64-x86_64-gcc mingw-w64-x86_64-cmake \
   mingw-w64-x86_64-freetype mingw-w64-x86_64-libpng mingw-w64-x86_64-zlib \
-  mingw-w64-x86_64-pkg-config mingw-w64-x86_64-SDL3
+  mingw-w64-x86_64-pkg-config mingw-w64-x86_64-sdl3
 ```
 
 Clone and build:

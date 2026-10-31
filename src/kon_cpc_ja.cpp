@@ -3176,6 +3176,8 @@ void loadConfiguration(t_CPC& CPC, const std::string& configFilename) {
   CPC.resources_path =
       conf.getStringValue("system", "resources_path", appPath + "/resources");
 
+  g_trace_default_size = std::clamp(
+      conf.getIntValue("devtools", "trace_buffer_size", 65536), 1, 16777216);
   CPC.devtools_scale = conf.getIntValue("devtools", "scale", 1);
   CPC.devtools_max_stack_size =
       conf.getIntValue("devtools", "max_stack_size", 50);
