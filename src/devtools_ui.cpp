@@ -370,12 +370,18 @@ void DevToolsUI::render_registers() {
   {
     bool trace_on = g_trace.is_active();
     if (ImGui::Checkbox("Trace", &trace_on)) {
-      if (trace_on) {
-        g_trace.enable(g_trace_default_size);
-        subcycle_bridge_set_instr_trace(true);
-      } else {
-        subcycle_bridge_set_instr_trace(false);
-        g_trace.disable();
+      // enable() resizes the buffer and disable() frees it, while the Z80
+      // thread may be inside record(): take the machine idle for the change.
+      CpcPauseLease lease;
+      if (imgui_lease_ready(lease)) {
+        if (trace_on) {
+          g_trace.enable(g_trace_default_size);
+          subcycle_bridge_set_instr_trace(true);
+        } else {
+          subcycle_bridge_set_instr_trace(false);
+          g_trace.disable();
+        }
+        lease.restore_run_state();
       }
     }
     if (ImGui::IsItemHovered()) {
@@ -389,22 +395,43 @@ void DevToolsUI::render_registers() {
     ImGui::SameLine();
     ImGui::BeginDisabled(!trace_on);
     if (ImGui::SmallButton("Save")) {
-      if (g_trace.entry_count() == 0) {
-        imgui_toast_error("Trace is empty: nothing recorded yet");
+      // The dump walks the ring the Z80 thread is writing, so it runs with the
+      // machine idle too — and it reports how many entries it found.
+      CpcPauseLease lease;
+      if (!imgui_lease_ready(lease)) {
+        imgui_toast_error("Cannot save the trace: the machine is busy");
       } else {
-        char stamp[32];
-        std::time_t now = std::time(nullptr);
-        std::strftime(stamp, sizeof(stamp), "%Y-%m-%d_%H-%M-%S",
-                      std::localtime(&now));
-        const char* base = SDL_GetBasePath();
-        std::filesystem::path path =
-            (base ? std::filesystem::path(base) : std::filesystem::path(".")) /
-            (std::string("trace ") + stamp + ".txt");
-        if (g_trace.dump(path.string())) {
-          imgui_toast_success("Trace saved: " + path.string());
+        int const entries = g_trace.entry_count();
+        if (entries == 0) {
+          imgui_toast_error("Trace is empty: nothing recorded yet");
         } else {
-          imgui_toast_error("Cannot write trace: " + path.string());
+          char stamp[32];
+          std::time_t now = std::time(nullptr);
+          std::strftime(stamp, sizeof(stamp), "%Y-%m-%d_%H-%M-%S",
+                        std::localtime(&now));
+          // The trace belongs to the user, not to the install: the configured
+          // dump directory first, then SDL's per-user pref directory (writable
+          // on an installed Linux build), never the read-only binary's own.
+          std::filesystem::path dir = CPC.sdump_dir;
+          std::error_code ec;
+          if (dir.empty() || !std::filesystem::is_directory(dir, ec)) {
+            dir.clear();
+            if (char* pref = SDL_GetPrefPath("konCePCja", "konCePCja")) {
+              dir = pref;
+              SDL_free(pref);
+            } else {
+              dir = ".";
+            }
+          }
+          std::filesystem::path const path =
+              dir / (std::string("trace ") + stamp + ".txt");
+          if (g_trace.dump(path.string())) {
+            imgui_toast_success("Trace saved: " + path.string());
+          } else {
+            imgui_toast_error("Cannot write trace: " + path.string());
+          }
         }
+        lease.restore_run_state();
       }
     }
     ImGui::EndDisabled();

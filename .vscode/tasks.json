@@ -13,7 +13,7 @@
       "type": "shell",
       "command": "${workspaceFolder}\\koncepcja.exe",
       "options": {
-        "env": { "PATH": "C:\\msys64\\mingw64\\bin;${env:PATH}" }
+        "env": { "PATH": "${env:MSYS2_ROOT}\\mingw64\\bin;C:\\msys64\\mingw64\\bin;${env:PATH}" }
       },
       "dependsOn": "Build (win64, MSYS2)",
       "problemMatcher": []
