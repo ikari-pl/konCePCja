@@ -1,5 +1,6 @@
 #include "trace.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
 
@@ -82,37 +83,36 @@ void format_entry(const TraceEntry& e, char* buf, size_t bufsz) {
 }
 }  // namespace
 
-bool TraceRecorder::dump(const std::string& path) const {
+void TraceRecorder::snapshot(std::vector<TraceEntry>& out) const {
+  out.resize(count);
+  if (count == 0) return;
+  int const n = static_cast<int>(buffer.size());
+  int const start = (count < n) ? 0 : head;
+  int const first = std::min(count, n - start);
+  std::memcpy(out.data(), &buffer[start], first * sizeof(TraceEntry));
+  if (first < count) {
+    std::memcpy(out.data() + first, &buffer[0],
+                (count - first) * sizeof(TraceEntry));
+  }
+}
+
+bool TraceRecorder::write_entries(const std::vector<TraceEntry>& entries,
+                                  const std::string& path) {
   FILE* f = fopen(path.c_str(), "w");
   if (!f) return false;
-
-  // Iterate from oldest to newest
-  int const start = (count < static_cast<int>(buffer.size())) ? 0 : head;
   char line[128];
-  for (int i = 0; i < count; i++) {
-    int const idx = (start + i) % static_cast<int>(buffer.size());
-    format_entry(buffer[idx], line, sizeof(line));
+  for (const auto& e : entries) {
+    format_entry(e, line, sizeof(line));
     fprintf(f, "%s\n", line);
   }
-
   fclose(f);
   return true;
 }
 
-std::string TraceRecorder::to_string(int max_lines) const {
-  std::string result;
-  int const start = (count < static_cast<int>(buffer.size())) ? 0 : head;
-  int const n = (max_lines > 0 && max_lines < count) ? max_lines : count;
-  // Show the most recent n entries
-  int const skip = count - n;
-  char line[128];
-  for (int i = skip; i < count; i++) {
-    int const idx = (start + i) % static_cast<int>(buffer.size());
-    format_entry(buffer[idx], line, sizeof(line));
-    result += line;
-    result += '\n';
-  }
-  return result;
+bool TraceRecorder::dump(const std::string& path) const {
+  std::vector<TraceEntry> entries;
+  snapshot(entries);
+  return write_entries(entries, path);
 }
 
 void TraceRecorder::set_crash_path(const std::string& path) {

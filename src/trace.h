@@ -28,11 +28,15 @@ class TraceRecorder {
   void record(uint16_t pc, uint8_t a, uint8_t f, uint16_t bc, uint16_t de,
               uint16_t hl, uint16_t sp);
 
+  // Copy recorded entries oldest-to-newest while the machine is idle.
+  void snapshot(std::vector<TraceEntry>& out) const;
+
+  // Format and write a captured snapshot to a file.
+  static bool write_entries(const std::vector<TraceEntry>& entries,
+                            const std::string& path);
+
   // Dump trace to file as text log
   bool dump(const std::string& path) const;
-
-  // Get trace as string (for IPC response)
-  std::string to_string(int max_lines = 0) const;
 
   // Is tracing active?
   bool is_active() const { return active.load(); }
