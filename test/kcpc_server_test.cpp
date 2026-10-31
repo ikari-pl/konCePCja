@@ -50,7 +50,7 @@ kcpc::MachineInfo fake_machine() {
 
 // The groups of slice 7, which a fixture without them does not announce.
 constexpr std::uint64_t kDevtoolsCaps =
-    kcpc::kCapChips | kcpc::kCapSymbols | kcpc::kCapFbInfo;
+    kcpc::kCapChips | kcpc::kCapSymbols | kcpc::kCapFbInfo | kcpc::kCapFbShm;
 // And those of slice 9.
 constexpr std::uint64_t kMediaCaps =
     kcpc::kCapMedia | kcpc::kCapSnapshot | kcpc::kCapConfig;
@@ -3353,10 +3353,15 @@ struct FakeDevtools {
       generation = changed(server, cause);
       return Status::kOk;
     };
-    c.fb_info = [](kcpc::FbInfo& info) {
+    c.fb_info = [this](kcpc::FbInfo& info) {
       info.width = 768;
       info.height = 272;
       info.stride = 2304;
+      if (fb_ring) {  // as a core whose frame ring runs
+        info.transport = kcpc::kFbTransportShm;
+        info.fb_seq = fb_seq.load();
+        info.shm_name = "/kcpc-fb-4242";
+      }
       return Status::kOk;
     };
     c.media_state = [this](std::uint8_t slot, kcpc::MediaNote& note) {
@@ -3389,6 +3394,9 @@ struct FakeDevtools {
   std::uint64_t sym_generation = 10;
   std::vector<kcpc::Symbol> symbols;
   std::vector<std::uint8_t> media_asked;
+  // FB_INFO: whether the frame ring runs, and its latest frame.
+  std::atomic<bool> fb_ring{true};
+  std::atomic<std::uint64_t> fb_seq{0};
 };
 
 class KcpcDevtoolsTest : public KcpcInputTest {
@@ -3627,12 +3635,14 @@ TEST_F(KcpcDevtoolsTest, FbInfoDescribesTheFrame) {
   start_with_devtools();
   kcpc::HelloReply hello;
   auto observer = join(kcpc::Role::kObserver, hello);
+  devtools_.fb_seq = 41;
   Frame frame;
   exchange(*observer, Opcode::kFbInfo, 2, {}, frame);
   ASSERT_EQ(frame.status(), Status::kOk);
-  // width, height, format, transport, two reserved, stride, fb_seq and an
-  // empty str.
-  ASSERT_EQ(frame.payload.size(), 4U + 2U + 2U + 1U + 1U + 2U + 4U + 8U + 2U);
+  // width, height, format, transport, two reserved, stride, fb_seq and the
+  // ring's name as a str.
+  ASSERT_EQ(frame.payload.size(),
+            4U + 2U + 2U + 1U + 1U + 2U + 4U + 8U + 2U + 13U);
   kcpc::Reader r(frame.payload);
   r.skip(4);
   kcpc::FbInfo info;
@@ -3640,9 +3650,34 @@ TEST_F(KcpcDevtoolsTest, FbInfoDescribesTheFrame) {
   EXPECT_EQ(info.width, 768);
   EXPECT_EQ(info.height, 272);
   EXPECT_EQ(info.format, kcpc::kFbFormatRgb24);
-  EXPECT_EQ(info.transport, kcpc::kFbTransportNone);
+  EXPECT_EQ(info.transport, kcpc::kFbTransportShm);
   EXPECT_EQ(info.stride, 2304U);
-  EXPECT_EQ(info.fb_seq, 0U);
+  EXPECT_EQ(info.fb_seq, 41U);
+  EXPECT_EQ(info.shm_name, "/kcpc-fb-4242");
+
+  devtools_.fb_seq = 42;  // live: read at each request
+  exchange(*observer, Opcode::kFbInfo, 3, {}, frame);
+  kcpc::Reader again(frame.payload);
+  again.skip(4);
+  ASSERT_TRUE(kcpc::read_fb_info(again, info));
+  EXPECT_EQ(info.fb_seq, 42U);
+}
+
+TEST_F(KcpcDevtoolsTest, WithoutTheRingFbShmIsNotAnnounced) {
+  devtools_.fb_ring = false;  // the core could not create the region
+  start_with_devtools();
+  kcpc::HelloReply hello;
+  auto observer = join(kcpc::Role::kObserver, hello);
+  EXPECT_NE(hello.caps & kcpc::kCapFbInfo, 0U);
+  EXPECT_EQ(hello.caps & kcpc::kCapFbShm, 0U);
+  Frame frame;
+  exchange(*observer, Opcode::kFbInfo, 2, {}, frame);
+  ASSERT_EQ(frame.status(), Status::kOk);
+  kcpc::Reader r(frame.payload);
+  r.skip(4);
+  kcpc::FbInfo info;
+  ASSERT_TRUE(kcpc::read_fb_info(r, info));
+  EXPECT_EQ(info.transport, kcpc::kFbTransportNone);
   EXPECT_TRUE(info.shm_name.empty());
 }
 

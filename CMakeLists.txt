@@ -268,6 +268,15 @@ set_source_files_properties(${VENDOR_TEXTEDITOR_SOURCES} PROPERTIES
 add_executable(koncepcja main.cpp)
 target_link_libraries(koncepcja PRIVATE koncepcja_lib)
 
+# tools/fb_dump: copies the latest frame out of a running core's frame ring
+# (beads-0ir.3, docs/protocol/fb-ring-v1.md). Plain C, no emulator headers;
+# test/integrated/kcpc/test_fb_ring.py runs it.
+add_executable(fb_dump tools/fb_dump.c)
+set_target_properties(fb_dump PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    target_link_libraries(fb_dump PRIVATE rt)
+endif()
+
 if(WIN32)
     # Link as a Windows GUI app (no console window) for Release. The UI-free
     # build has no window at all: it stays a console program, so the startup

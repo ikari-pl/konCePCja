@@ -18,8 +18,11 @@
 #include <thread>
 #include <vector>
 
+#include "kcpc/fb_publish.h"
+#include "kcpc/kcpc_host.h"  // kcpc_host_fb_info
 #include "shm_region.h"
 #include "startup_manifest.h"  // startup_manifest_self_pid
+#include "subcycle/machine.h"  // kFbWidth, kFbHeight
 
 #ifndef _WIN32
 #include <fcntl.h>
@@ -83,7 +86,7 @@ TEST(FbRingTest, HeaderDescribesTheFrame) {
   EXPECT_EQ(std::memcmp(mem.base, "FBUF", 4), 0);
   EXPECT_EQ(h->version, kcpc::kFbRingVersion);
   EXPECT_EQ(h->header_bytes, sizeof(kcpc::FbRingHeader));
-  EXPECT_EQ(h->format, kcpc::kFbFormatRgb24);
+  EXPECT_EQ(h->format, kcpc::kFbRingFormatRgb24);
   EXPECT_EQ(h->width, kW);
   EXPECT_EQ(h->height, kH);
   EXPECT_EQ(h->stride, kStride);
@@ -274,6 +277,49 @@ TEST(ShmRegionTest, ARegionIsSharedBetweenMappingsAndGoneAfterClose) {
   owner.close();  // twice is fine
   shm::Region again;
   EXPECT_FALSE(again.open_read(base, error));
+}
+
+// The core's side as KCPC sees it (beads-0ir.3): while the ring runs,
+// FB_INFO names it and reports the sequence number of its latest frame, the
+// one EVT_FRAME carries; without it FB_INFO says there is no transport.
+TEST(FbPublishTest, FbInfoNamesTheRingAndItsLatestFrame) {
+  kcpc::FbInfo info;
+  ASSERT_EQ(kcpc_host_fb_info(info), kcpc::Status::kOk);
+  EXPECT_EQ(info.transport, kcpc::kFbTransportNone) << "not started yet";
+  EXPECT_TRUE(info.shm_name.empty());
+  EXPECT_EQ(fb_publish_seq(), 0U);
+
+  ASSERT_TRUE(fb_publish_start());
+  std::string const base = kcpc::fb_ring_name(
+      static_cast<std::uint64_t>(startup_manifest_self_pid()));
+  ASSERT_EQ(kcpc_host_fb_info(info), kcpc::Status::kOk);
+  EXPECT_EQ(info.transport, kcpc::kFbTransportShm);
+  EXPECT_EQ(info.shm_name, shm::os_name(base));
+  EXPECT_EQ(info.fb_seq, 0U) << "nothing published yet";
+
+  std::vector<std::uint8_t> const frame(
+      std::size_t{subcycle::kFbWidth} * 3 * subcycle::kFbHeight, 0x5A);
+  fb_publish_frame(frame.data());
+  fb_publish_frame(frame.data());
+  EXPECT_EQ(fb_publish_seq(), 2U);
+  ASSERT_EQ(kcpc_host_fb_info(info), kcpc::Status::kOk);
+  EXPECT_EQ(info.fb_seq, 2U);
+
+  // The name FB_INFO gives is the one a reader opens.
+  std::string error;
+  shm::Region reader;
+  ASSERT_TRUE(reader.open_read(base, error)) << error;
+  const kcpc::FbRingHeader* header =
+      kcpc::fb_ring_header(reader.data(), reader.size());
+  ASSERT_NE(header, nullptr);
+  EXPECT_EQ(header->latest_seq.load(), 2U);
+  reader.close();
+
+  fb_publish_stop();
+  ASSERT_EQ(kcpc_host_fb_info(info), kcpc::Status::kOk);
+  EXPECT_EQ(info.transport, kcpc::kFbTransportNone);
+  EXPECT_TRUE(info.shm_name.empty());
+  EXPECT_EQ(fb_publish_seq(), 0U);
 }
 
 #ifndef _WIN32

@@ -1696,7 +1696,13 @@ class Server::Connection {
     if (input()) reply.caps |= kCapInput;
     if (chips()) reply.caps |= kCapChips;
     if (symbols()) reply.caps |= kCapSymbols;
-    if (config_.fb_info) reply.caps |= kCapFbInfo;
+    if (config_.fb_info) {
+      reply.caps |= kCapFbInfo;
+      FbInfo frame;
+      if (config_.fb_info(frame) == Status::kOk &&
+          frame.transport == kFbTransportShm)
+        reply.caps |= kCapFbShm;
+    }
     if (media()) reply.caps |= kCapMedia;
     if (snapshots()) reply.caps |= kCapSnapshot;
     if (configuration()) reply.caps |= kCapConfig;

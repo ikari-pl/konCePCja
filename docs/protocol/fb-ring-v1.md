@@ -7,9 +7,17 @@ contract for readers; the code is `src/kcpc/fb_ring.h` (layout, writer,
 reader), `src/shm_region.{h,cpp}` (the OS shim) and `src/kcpc/fb_publish.*`
 (the core's side).
 
-The KCPC binary server does not name the ring yet: `FB_INFO` and `EVT_FRAME`
-gain it in beads-0ir.3. Until then the name follows from the core's pid,
-which the startup manifest reports.
+A KCPC client finds the ring through `FB_INFO`: `transport` 1, `shm_name`
+the OS name below, `fb_seq` the latest frame's sequence number; and each
+`EVT_FRAME` carries the sequence number of its frame (beads-0ir.3,
+[kcpc-binary-v1.md](kcpc-binary-v1.md)). Without KCPC, the name follows from
+the core's pid, which the startup manifest reports.
+
+Two readers live in this repository: `tools/fb_dump.c`, a C program that
+knows the ring only from this document (it copies the latest frame into a
+PNG or PPM and prints its sequence number and CRC32: `fb_dump <name or pid>
+<out.png>`, built by `make fb_dump_tool` and by CMake's `fb_dump` target),
+and `FbRing` in `test/integrated/kcpc/kcpc_client.py`.
 
 ## Terms
 
@@ -104,8 +112,8 @@ Frame n goes to slot `n % 4`:
 
 Step 5 fails only when the producer publishes four frames during one copy
 (at 50 frames a second, 80 ms; an unpaced core can do that, so a reader
-retries). To wait for the next frame, compare `latest_seq` with the last one
-read; `EVT_FRAME` will announce each one (beads-0ir.3).
+retries). To wait for the next frame without polling, subscribe to KCPC's
+`EVT_FRAME`: its `fb_seq` is the frame's sequence number here.
 
 ## Cost
 

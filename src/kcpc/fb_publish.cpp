@@ -16,6 +16,10 @@ namespace {
 shm::Region g_region;
 kcpc::FbRingWriter g_writer;
 std::atomic<bool> g_running{false};
+// Written before g_running is set; read by anyone while it is.
+std::string g_os_name;
+// The writer's seq() for other threads: FB_INFO reads it off a socket thread.
+std::atomic<std::uint64_t> g_seq{0};
 
 }  // namespace
 
@@ -39,6 +43,8 @@ bool fb_publish_start() {
     g_region.close();
     return false;
   }
+  g_os_name = shm::os_name(name);
+  g_seq.store(0, std::memory_order_relaxed);
   g_running.store(true, std::memory_order_release);
   LOG_INFO("Frame ring: publishing to " << shm::os_name(name));
   return true;
@@ -46,10 +52,21 @@ bool fb_publish_start() {
 
 void fb_publish_frame(const std::uint8_t* rgb24) {
   if (rgb24 == nullptr || !g_running.load(std::memory_order_acquire)) return;
-  g_writer.publish(rgb24);
+  g_seq.store(g_writer.publish(rgb24), std::memory_order_release);
 }
 
 void fb_publish_stop() {
   if (!g_running.exchange(false, std::memory_order_acq_rel)) return;
   g_region.close();
+  g_seq.store(0, std::memory_order_relaxed);
+}
+
+std::uint64_t fb_publish_seq() {
+  if (!g_running.load(std::memory_order_acquire)) return 0;
+  return g_seq.load(std::memory_order_acquire);
+}
+
+std::string fb_publish_shm_name() {
+  if (!g_running.load(std::memory_order_acquire)) return {};
+  return g_os_name;
 }

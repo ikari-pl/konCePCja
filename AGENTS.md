@@ -413,7 +413,7 @@ and `MOUSE`, with `INPUT_STATE` for anyone, and the light gun (`GUN`, aimed
 in frame pixels), and what the DevTools show:
 `CHIP_GET` (CRTC, Gate Array, PSG, FDC, ASIC), the memory space `ASIC_PAGE`,
 the symbols (`SYM_LIST` for anyone; `SYM_ADD`, `SYM_DEL`, `SYM_LOAD`) and
-`FB_INFO`, and media, snapshots and configuration: `MEDIA_INSERT`,
+`FB_INFO` (which names the frame ring, `CAP_FB_SHM`), and media, snapshots and configuration: `MEDIA_INSERT`,
 `MEDIA_EJECT`, `TAPE_CONTROL`, `SNAPSHOT_SAVE`, `SNAPSHOT_LOAD`,
 `CONFIG_SET`, `CONFIG_APPLY` (`MEDIA_INFO` and `CONFIG_GET` for anyone). A client
 that sends `SUBSCRIBE` is pushed events (`EVT_STOPPED`, `EVT_RESUMED`,
@@ -590,6 +590,15 @@ binary_port_enabled=1      # 0 = do not open the port (manifest: `binary: null`)
   after it has ended. The layout and the seqlock are `src/kcpc/fb_ring.h`;
   the OS shim (the one `#ifdef _WIN32` for shared memory) is
   `src/shm_region.{h,cpp}`. The producer never waits for a reader.
+  KCPC names the ring (beads-0ir.3): `kcpc_host_fb_info()` reports
+  `fb_publish_shm_name()` and `fb_publish_seq()` (atomics, safe from a
+  socket thread), and `kcpc_service_frame()` puts `fb_publish_seq()` in each
+  `EVT_FRAME`: it runs in `frame_epilogue()`, after the bridge published the
+  frame. `CAP_FB_SHM` is announced only while the ring runs.
+  `tools/fb_dump.c` (`make fb_dump_tool`, CMake `fb_dump`; `make e2e_test`
+  builds it) is a C reader that includes no emulator header: keep it that
+  way, it is the proof the document is enough. `test_fb_ring.py` is phase
+  4's exit test.
 - `KONCPC_KCPC_CONTROLLER_TIMEOUT_MS` in the environment lowers the 30 s a
   controller may stay silent, and `KONCPC_KCPC_EVENT_QUEUE_BYTES` the 4 MiB
   of queue beyond which a client's events are dropped. They exist for the

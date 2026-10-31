@@ -900,7 +900,9 @@ TEST(KcpcCodec, TheServerAnnouncesChipsSymbolsAndTheFrame) {
   EXPECT_NE(kcpc::kServerCaps & kcpc::kCapChips, 0U);
   EXPECT_NE(kcpc::kServerCaps & kcpc::kCapSymbols, 0U);
   EXPECT_NE(kcpc::kServerCaps & kcpc::kCapFbInfo, 0U);
-  EXPECT_EQ(kcpc::kServerCaps & kcpc::kCapFbShm, 0U) << "phase 4";
+  EXPECT_NE(kcpc::kServerCaps & kcpc::kCapFbShm, 0U)
+      << "FB_INFO names the frame ring (beads-0ir.3)";
+  EXPECT_EQ(kcpc::kFbTransportShm, 1);
 }
 
 TEST(KcpcCodec, TheCrtcBlockIsThirtyBytesInWireOrder) {
@@ -1139,6 +1141,24 @@ TEST(KcpcCodec, ASymbolAndFbInfoRoundTrip) {
   ASSERT_TRUE(kcpc::read_fb_info(fr, out));
   EXPECT_EQ(out.stride, 2304U);
   EXPECT_TRUE(out.shm_name.empty());
+
+  // The ring: transport 1, the live sequence number and the OS name.
+  Writer g;
+  in.transport = kcpc::kFbTransportShm;
+  in.fb_seq = 0x0102030405060708ULL;
+  in.shm_name = "/kcpc-fb-4242";
+  kcpc::write_fb_info(g, in);
+  const std::vector<std::uint8_t>& c = g.data();
+  ASSERT_EQ(c.size(), 22U + 13U);
+  EXPECT_EQ(c[5], 1) << "shared-memory ring";
+  EXPECT_EQ(c[12], 0x08) << "fb_seq, little-endian";
+  EXPECT_EQ(c[19], 0x01);
+  Reader gr(c);
+  kcpc::FbInfo ring;
+  ASSERT_TRUE(kcpc::read_fb_info(gr, ring));
+  EXPECT_EQ(ring.transport, kcpc::kFbTransportShm);
+  EXPECT_EQ(ring.fb_seq, 0x0102030405060708ULL);
+  EXPECT_EQ(ring.shm_name, "/kcpc-fb-4242");
 }
 
 TEST(KcpcCodec, TheServerAnnouncesMediaSnapshotsAndConfiguration) {
