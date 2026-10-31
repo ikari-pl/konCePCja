@@ -3507,7 +3507,7 @@ std::string handle_command(const std::string& line) {
     // on_crash <path>
     if (cmd == "trace" && parts.size() >= 2) {
       if (parts[1] == "on") {
-        int size = 65536;
+        int size = g_trace_default_size;
         if (parts.size() >= 3) size = parse_int(parts[2]);
         g_trace.enable(size);
         subcycle_bridge_set_instr_trace(true);  // engine=1 feed (no-op legacy)

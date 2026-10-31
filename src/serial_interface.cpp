@@ -14,7 +14,9 @@
 #ifndef MSG_DONTWAIT
 #define MSG_DONTWAIT 0  // socket is already non-blocking; flag 0 is equivalent
 #endif
+#ifdef _MSC_VER
 typedef int ssize_t;
+#endif
 #endif
 
 #include <cerrno>

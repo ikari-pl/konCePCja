@@ -54,3 +54,6 @@ class TraceRecorder {
 
 // Global trace recorder instance
 extern TraceRecorder g_trace;
+
+// Entry count used by "trace on" and the Registers window toggle ([devtools] trace_buffer_size).
+extern int g_trace_default_size;
