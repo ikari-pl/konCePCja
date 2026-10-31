@@ -3526,19 +3526,23 @@ def test_hash_frame_is_the_machine_frame():
     canonical frame (768x272 RGB24), copied between two frames: the same
     snapshot, run the same 3 frames, hashes the same in the threaded loop and
     the -H loop. The animated GIF of `frames dump` is that frame too, each
-    row shown twice (768x544), in either loop.
+    row shown twice (768x544), in either loop, and so are `screenshot` and
+    the PNG series of `frames dump` (beads-2hoi).
     """
     print("Running hash frame test...")
     with tempfile.TemporaryDirectory() as td:
         sna = os.path.join(td, 'state.sna')
         gif = os.path.join(td, 'rec.gif')
+        shot = os.path.join(td, 'shot.png')
+        series = os.path.join(td, 'series')
         with EmulatorRunner() as emu:
             if not emu.start():
                 print("FAIL: Could not start emulator")
                 return False
             ipc = emu.ipc
             for cmd in ('wait vbl 100', f'snapshot save {sna}',
-                        f'frames dump {gif} 2'):
+                        f'frames dump {gif} 2', f'screenshot {shot}',
+                        f'frames dump {series} 1'):
                 ok, resp = ipc.send_command(cmd)
                 if not ok:
                     print(f"FAIL: {cmd}: {resp}")
@@ -3558,6 +3562,15 @@ def test_hash_frame_is_the_machine_frame():
             print(f"FAIL: frames dump GIF is {head[:6]!r} {size}, want "
                   f"GIF (768, 544)")
             return False
+        for png in (shot, f'{series}_0000.png'):
+            with open(png, 'rb') as f:
+                head = f.read(24)
+            size = (int.from_bytes(head[16:20], 'big'),
+                    int.from_bytes(head[20:24], 'big'))
+            if head[:8] != b'\x89PNG\r\n\x1a\n' or size != (768, 544):
+                print(f"FAIL: {png} is {head[:4]!r} {size}, want PNG "
+                      f"(768, 544)")
+                return False
         # The loop under test, then the other one.
         threaded, why = _hash_frame_after(sna)
         if threaded is None:

@@ -4064,26 +4064,29 @@ void loadBreakpoints() {
 }
 }  // namespace
 
-bool dumpScreenTo(const std::string& path) {
-  // Read the latest PUBLISHED frame — the emulation's actual output. The
-  // presented surface (video_render_surface) can go stale when the present
-  // path stalls (occluded macOS window / remote desktop) even though the
-  // emulation keeps producing frames; screenshots must not photograph that.
-  // Falls back to the presented surface, then back_surface (headless).
-#ifdef KONCPC_SDL
-  HostSurface* surf = video_ring_published_peek();
-  if (!surf) surf = video_render_surface();
-  if (!surf) surf = back_surface;
-#else
-  HostSurface* surf = back_surface;
-#endif
-  if (!surf) return false;
-  std::string error;
-  if (!host_surface_save_png(surf, path, error)) {
-    LOG_ERROR("Could not write screenshot file to " + path + ": " + error);
-    return false;
+kcpc::Status dumpScreenTo(const std::string& path) {
+  // The machine's own frame, copied between two frames (beads-2hoi). Never
+  // back_surface or the ring's published buffer: the frame runner blits into
+  // the one and takes the other back as its next target beside the caller.
+  std::vector<uint8_t> rgb;
+  kcpc::Stamp stamp;
+  if (kcpc::Status const copied = kcpc_host_frame_copy(rgb, stamp);
+      copied != kcpc::Status::kOk) {
+    return copied;
   }
-  return true;
+  constexpr int kWidth = subcycle::kFbWidth;
+  constexpr int kHeight = subcycle::kFbHeight * 2;
+  std::vector<uint8_t> rgba(static_cast<size_t>(kWidth) * kHeight * 4);
+  host_blit_rgb24_to_rgba32_nearest(
+      rgb.data(), subcycle::kFbWidth, subcycle::kFbWidth * 3, 0,
+      subcycle::kFbHeight, rgba.data(), kWidth, kHeight, kWidth * 4);
+  std::string error;
+  if (save_png_rgba32(rgba.data(), kWidth, kHeight, kWidth * 4, path, error) !=
+      0) {
+    LOG_ERROR("Could not write screenshot file to " + path + ": " + error);
+    return kcpc::Status::kInternal;
+  }
+  return kcpc::Status::kOk;
 }
 
 namespace {
@@ -4109,7 +4112,7 @@ void dumpScreen() {
   const std::string path =
       timestamped_dump_path(CPC.sdump_dir, "screenshot", "screenshot", ".png");
   LOG_INFO("Dumping screen to " + path);
-  if (!dumpScreenTo(path)) {
+  if (dumpScreenTo(path) != kcpc::Status::kOk) {
     LOG_ERROR("Could not write screenshot file to " + path);
     set_osd_message("Screenshot failed");
   } else {
