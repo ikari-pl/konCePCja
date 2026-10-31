@@ -386,7 +386,8 @@ void DevToolsUI::render_registers() {
     }
     if (ImGui::IsItemHovered()) {
       ImGui::SetTooltip(
-          "Record every executed instruction (PC, opcode, A, F, BC, DE, HL, SP)\n"
+          "Record every executed instruction (PC, opcode, A, F, BC, DE, HL, "
+          "SP)\n"
           "into a ring buffer; the oldest entries are overwritten when full.\n"
           "Same as the IPC commands 'trace on' / 'trace off'. Unticking frees\n"
           "the buffer. Size: [devtools] trace_buffer_size in the config.\n"
