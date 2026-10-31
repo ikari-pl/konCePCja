@@ -186,7 +186,7 @@ OK available commands (usage: help <command>):
 | `wait bp [timeout]` | Wait for breakpoint hit (reports only after pause lands; drops hits from a previous arming and the hit of a stop the machine has since been run out of) | `wait bp 10000` |
 | `wait vbl <n> [timeout]` | Run N frames of emulation (vertical blanks, not wall time), then pause; same count as `step frame N` from a paused machine. A breakpoint that fires first is `ERR 409 stopped-elsewhere` | `wait vbl 50` |
 | `disasm <addr> <count>` | Disassemble | `disasm 0x4000 10` |
-| `screenshot [path]` | Take screenshot | `screenshot /tmp/shot.bmp` |
+| `screenshot [path]` | Save the machine's frame as a 768x544 PNG (rows doubled, the `hash frame` bytes; same in every build) | `screenshot /tmp/shot.png` |
 | `snapshot save <path>` | Save state | `snapshot save game.sna` |
 | `snapshot load <path>` | Load state | `snapshot load game.sna` |
 | `load <path>` | Load file (.dsk/.sna/.cpr/.bin); a successful disk/tape/snapshot/cartridge load also lands on the matching Recent list, with the path made absolute (GUI saves the config, `--headless` does not) | `load game.dsk` |
@@ -226,7 +226,7 @@ echo "load game.dsk" | nc localhost 6543
 sleep 1
 echo "run" | nc localhost 6543
 echo "wait pc 0xC000 30000" | nc localhost 6543  # Wait for game entry
-echo "screenshot /tmp/game.bmp" | nc localhost 6543
+echo "screenshot /tmp/game.png" | nc localhost 6543
 ```
 
 ### Automated IPC Testing
@@ -529,13 +529,16 @@ binary_port_enabled=1      # 0 = do not open the port (manifest: `binary: null`)
   `kcpc_proto.h`), and the document's table of which window reads what says
   when one has to.
 - The picture, read off the frame runner (the text IPC's `hash frame`,
-  `hash vram` and `frames dump` GIF, the M4 `/preview.bmp`), is the
+  `hash vram`, `screenshot` and `frames dump`, GIF and PNG alike, the F3 /
+  menu screenshot, the M4 `/preview.bmp`), is the
   machine's canonical frame (RGB24 768x272, what `FB_INFO` describes),
   copied through the gate by `kcpc_host_frame_copy()`
   (`subcycle_bridge_framebuffer()` underneath). **Never `back_surface`**
   from another thread: the runner blits into it during the frame and, in the
   GUI, swaps it for the next ring buffer at the boundary, and it is scaled to
-  the window and in the plugin's pixel format (beads-0ir.1). The render
+  the window and in the plugin's pixel format (beads-0ir.1). A saved
+  picture is that frame with each row shown twice, 768x544
+  (`dumpScreenTo()`, beads-2hoi). The render
   thread's own readers (presenting, the dock preview) and the runner's (the
   AVI recorder) keep reading it.
 - `g_symfile` is shared by the render thread, the text IPC and this port.

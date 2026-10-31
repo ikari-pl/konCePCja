@@ -2535,8 +2535,12 @@ std::string handle_command(const std::string& line) {
 #endif
       }
       if (parts.size() >= 2) {
-        if (dumpScreenTo(parts[1])) return "OK\n";
-        return "ERR 503 no-surface\n";
+        kcpc::Status const saved = dumpScreenTo(parts[1]);
+        if (saved == kcpc::Status::kInternal) return "ERR 500 write-failed\n";
+        if (const char* why = frame_copy_refusal(saved)) {
+          return std::string("ERR 503 ") + why + "\n";
+        }
+        return "OK\n";
       }
       dumpScreen();
       return "OK\n";
@@ -3647,7 +3651,17 @@ std::string handle_command(const std::string& line) {
         } else {
           snprintf(fname, sizeof(fname), "%s_%04d.png", pattern.c_str(), i);
         }
-        if (dumpScreenTo(fname)) saved++;
+        // A frame that could not be copied ends the series, as for the GIF;
+        // a file that could not be written is left out of the count.
+        kcpc::Status const status = dumpScreenTo(fname);
+        if (status == kcpc::Status::kOk) {
+          ++saved;
+        } else if (status != kcpc::Status::kInternal) {
+          char buf[96];
+          snprintf(buf, sizeof(buf), "ERR 503 %s frames=%d of %d\n",
+                   frame_copy_refusal(status), saved, frame_count);
+          return {buf};
+        }
       }
       char buf[64];
       snprintf(buf, sizeof(buf), "OK saved=%d\n", saved);
