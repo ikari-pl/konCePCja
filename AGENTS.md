@@ -954,6 +954,42 @@ Recurring patterns from code reviews. Follow these to avoid common pitfalls:
 - **NEVER merge a PR with failing CI checks.** Fix failures first.
 - **Auto-merge** (`gh pr merge --auto`) triggers only when **all CI checks pass AND all review comment threads are resolved**. A PR that is green on CI but has unresolved threads will stay blocked. Always resolve open threads before expecting auto-merge to fire.
 
+### Automated PR review (`review` label)
+
+`.github/workflows/pr-review.yml` runs the compound-engineering plugin's
+`ce-code-review` (a Claude Code skill that sends the diff to several reviewer
+sub-agents, checks their findings and merges them into one report) on a PR,
+and posts the report as **one** PR comment. A re-run edits that comment
+instead of adding a new one.
+
+- **Trigger:** add the `review` label to the PR. The workflow removes the
+  label when it finishes, so adding it again runs a fresh review. Or by hand:
+  `gh workflow run pr-review.yml --repo ikari-pl/konCePCja -f pr=<number>`.
+  It never runs on a push, and PRs from forks are skipped (they get no
+  secrets).
+- **Setup, once:** `gh secret set CROWBOT_API_KEY --repo ikari-pl/konCePCja`
+  (the crowbot.sh API key). Optional: `gh variable set REVIEW_MODEL --body
+  <crowbot model id>` (default `claude-opus-5-5`), and `REVIEW_SUBAGENT_MODEL`
+  for the reviewer sub-agents (default: the same model). `crowbot models`
+  lists the ids.
+- **How it reaches the model:** crowbot.sh serves only the OpenAI API format,
+  Claude Code speaks only Anthropic's, so the job starts a LiteLLM proxy (a
+  local translator, `.github/review/litellm.yaml`) between them.
+- **Cost:** one review is one Claude Code run with roughly 6-10 reviewer
+  sub-agents plus a validator per finding, each reading the diff and the
+  files around it. Expect a few million tokens for a mid-sized PR (more for a
+  big diff), billed to the crowbot account at crowbot's rates, and 10-40
+  minutes of runner time (limit 60). The comment's footer shows the tokens
+  the run used. Label only the PRs worth it.
+- **Safety:** the PR is untrusted input. The job checks out the base commit
+  and reads the PR head with `git show` (none of the PR's code runs), the
+  agent holds only a read-only `GITHUB_TOKEN`, may run only reads, read-only
+  `git`/`gh` and writes under its `/tmp` run directory, and the crowbot key
+  lives only in the proxy, run as a separate user after `sudo` and Docker are
+  taken away. Only the separate posting job has write access, and it runs
+  nothing from the PR. The full run directory is a workflow artifact for 30
+  days.
+
 ## Landing the Plane (Session Completion)
 
 **When ending a work session**, you MUST complete ALL steps below. Work is NOT complete until `git push` succeeds.
