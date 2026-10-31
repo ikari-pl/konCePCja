@@ -50,8 +50,7 @@ std::uint32_t FbRingReader::stride() const {
 }
 
 std::size_t FbRingReader::frame_bytes() const {
-  return header_ != nullptr ? static_cast<std::size_t>(header_->slot_bytes)
-                            : 0;
+  return header_ != nullptr ? static_cast<std::size_t>(header_->slot_bytes) : 0;
 }
 
 std::uint64_t FbRingReader::producer_pid() const {

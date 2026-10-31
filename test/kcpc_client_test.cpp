@@ -10,8 +10,8 @@
 
 #include <gtest/gtest.h>
 
-#include <atomic>
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
@@ -188,10 +188,9 @@ TEST_F(KcpcClientTest, AStopIsDeliveredInOrderAfterTheReplyThatCausedIt) {
     cv.notify_all();
   });
   kcpc::Subscription accepted;
-  ASSERT_TRUE(client
-                  ->subscribe(kcpc::Subscription{kcpc::kEventClassRun, 0},
-                              accepted)
-                  .ok());
+  ASSERT_TRUE(
+      client->subscribe(kcpc::Subscription{kcpc::kEventClassRun, 0}, accepted)
+          .ok());
   // The fake machine posts the stop before it answers, and holds the reply
   // long enough for the fan-out thread to have the event first.
   run_.post_from_request = true;
@@ -263,7 +262,6 @@ TEST_F(KcpcClientTest, AForcedTakeoverDemotesTheClient) {
   EXPECT_TRUE(second->pause(stamp).ok());
   EXPECT_EQ(run_.pauses.load(), 1);
 }
-
 
 TEST_F(KcpcClientTest, ATimedOutCallLeavesTheConnectionUsable) {
   std::atomic<bool> release{false};
@@ -409,32 +407,32 @@ TEST_F(KcpcClientTest, EveryTypedRequestRoundTrips) {
   EXPECT_EQ(media.path, "game.cdt");
   EXPECT_EQ(media.tape.blocks, 3U);
   kcpc::TapeState tape;
-  ASSERT_TRUE(client
-                  ->tape_control(
-                      kcpc::TapeControlRequest{
-                          static_cast<std::uint8_t>(kcpc::TapeAction::kSeek),
-                          2},
-                      tape)
-                  .ok());
+  ASSERT_TRUE(
+      client
+          ->tape_control(
+              kcpc::TapeControlRequest{
+                  static_cast<std::uint8_t>(kcpc::TapeAction::kSeek), 2},
+              tape)
+          .ok());
   EXPECT_EQ(tape.block, 2U);
   ASSERT_TRUE(client->media_eject(kcpc::MediaSlot::kTape, generation).ok());
   EXPECT_EQ(generation, 42U);
   ASSERT_TRUE(client->snapshot_save("state.sna", stamp).ok());
   EXPECT_EQ(stamp.frame, 500U);
-  kcpc::Result const missing = client->snapshot_save("/nowhere/state.sna",
-                                                     stamp);
+  kcpc::Result const missing =
+      client->snapshot_save("/nowhere/state.sna", stamp);
   EXPECT_EQ(missing.status, Status::kNotFound);
   EXPECT_EQ(missing.message, "no such directory");
   ASSERT_TRUE(client
                   ->snapshot_load(
-                      kcpc::SnapshotLoadRequest{
-                          kcpc::kSnapshotFlagStayPaused, "state.sna"},
+                      kcpc::SnapshotLoadRequest{kcpc::kSnapshotFlagStayPaused,
+                                                "state.sna"},
                       stamp)
                   .ok());
   EXPECT_TRUE(stamp.paused);
   kcpc::ConfigEffect effect = kcpc::ConfigEffect::kNow;
-  ASSERT_TRUE(client->config_set(kcpc::ConfigSetRequest{"model", "3"}, effect)
-                  .ok());
+  ASSERT_TRUE(
+      client->config_set(kcpc::ConfigSetRequest{"model", "3"}, effect).ok());
   EXPECT_EQ(effect, kcpc::ConfigEffect::kStaged);
   kcpc::ConfigValue value;
   ASSERT_TRUE(client->config_get("model", value).ok());
@@ -784,9 +782,10 @@ TEST(FbRingReader, NoRegionOrNoRingFailsToOpen) {
   kcpc::FbRingReader reader;
   std::string error;
   EXPECT_FALSE(reader.open("", error));
-  EXPECT_FALSE(reader.open(shm::os_name("kcpc-fbr-none-" +
-                                        std::to_string(startup_manifest_self_pid())),
-                           error));
+  EXPECT_FALSE(
+      reader.open(shm::os_name("kcpc-fbr-none-" +
+                               std::to_string(startup_manifest_self_pid())),
+                  error));
   EXPECT_FALSE(reader.is_open());
   // A region whose magic was never stored is no ring (yet).
   shm::Region blank;

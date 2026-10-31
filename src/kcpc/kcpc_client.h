@@ -78,8 +78,8 @@ using ReplyFn = std::function<void(const Reply&)>;
 
 struct ClientOptions {
   std::string name = "kcpc_client";  // HELLO client_name, for the core's log
-  Role role = Role::kObserver;        // asked for in HELLO
-  std::uint32_t max_frame = 0;        // HELLO max_frame; 0 = 16 MiB
+  Role role = Role::kObserver;       // asked for in HELLO
+  std::uint32_t max_frame = 0;       // HELLO max_frame; 0 = 16 MiB
   std::uint64_t want_caps = 0;
   int connect_timeout_ms = 5000;
   // The timeout of a request that names none.

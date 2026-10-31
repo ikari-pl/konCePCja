@@ -51,8 +51,8 @@ bool Client::connect(int port, const ClientOptions& options, Result& result) {
   }
   socket_ = net::connect_loopback(port, options_.connect_timeout_ms);
   if (socket_ == net::kInvalidSocket) {
-    result = closed_reply("cannot connect to 127.0.0.1:" +
-                          std::to_string(port));
+    result =
+        closed_reply("cannot connect to 127.0.0.1:" + std::to_string(port));
     return false;
   }
   {
@@ -155,9 +155,8 @@ std::shared_ptr<Client::Pending> Client::start(
     id = next_id();
     pending_[id] = pending;
   }
-  if (!write_frame(encode_frame(Kind::kRequest,
-                                static_cast<std::uint16_t>(opcode), id,
-                                payload))) {
+  if (!write_frame(encode_frame(
+          Kind::kRequest, static_cast<std::uint16_t>(opcode), id, payload))) {
     // The connection is unusable. The reader ends it, and with it this
     // request, as it ends every other: once, with kClosed.
     stop_ = true;
@@ -414,9 +413,8 @@ Result Client::ping(int timeout_ms) {
 Result Client::subscribe(const Subscription& wanted, Subscription& accepted) {
   Writer w;
   write_subscription(w, wanted);
-  return exchange(Opcode::kSubscribe, w.data(), [&](Reader& r) {
-    return read_subscription(r, accepted);
-  });
+  return exchange(Opcode::kSubscribe, w.data(),
+                  [&](Reader& r) { return read_subscription(r, accepted); });
 }
 
 Result Client::control(std::uint8_t action, std::uint8_t flags,
