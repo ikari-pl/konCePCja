@@ -607,6 +607,27 @@ binary_port_enabled=1      # 0 = do not open the port (manifest: `binary: null`)
   The text IPC server runs on it too: a reply goes out whole however long
   (the client socket is non-blocking), and every wait is a 200 ms slice, so
   `stop()` never waits for a quiet client.
+- `src/kcpc/kcpc_client.{h,cpp}` is the C++ client (beads-3sp.1), what the
+  GUI's `--connect` will speak: `Client::connect()` does HELLO, one reader
+  thread matches each response to its request by `id` and hands events to
+  `ClientOptions::on_event` (on that thread, in arrival order, so an event a
+  request caused comes after its reply) or to `next_event()`'s queue.
+  `call()` blocks, `send()` does not; there is a typed request per opcode,
+  each a `Result` (`Outcome` kReplied / kTimeout / kClosed / kBadReply, then
+  the `Status`). It PINGs after `keepalive_ms` (10 s) of silence, tracks the
+  role from HELLO, `CONTROL` and `EVT_CONTROL_CHANGED`, and an `ERROR` or the
+  end of the stream ends every pending request with kClosed
+  (`close_status()` says why). Payloads go through `kcpc_proto.h` and
+  `decode_event()` (the mirror of `encode_event()` in `kcpc_events.h`):
+  **no second codec**; a new opcode gets its codec there and a typed request
+  here. A callback must never wait for a reply: the reader delivers replies.
+  `src/kcpc/fb_ring_reader.{h,cpp}` maps the ring by FB_INFO's `shm_name`,
+  read-only, and copies the latest frame with `fb_ring_read_latest()`.
+  `test/kcpc_client_test.cpp` runs it against `kcpc::Server` with the fake
+  machine of `test/kcpc_fake_machine.h` (shared with
+  `kcpc_server_test.cpp`); a request that stays pending until the
+  connection ends needs a peer that never answers (`SilentPeer`), because
+  the real server answers what it has read before it shuts down.
 - `test/integrated/kcpc/kcpc_client.py` is the reference client (standard
   library only); `test_kcpc.py` next to it starts its own cores
   (`-H` by default, `--ui-free`, `--gui`) and runs inside `make e2e_test`.
