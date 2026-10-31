@@ -31,9 +31,6 @@ class TraceRecorder {
   // Dump trace to file as text log
   bool dump(const std::string& path) const;
 
-  // Get trace as string (for IPC response)
-  std::string to_string(int max_lines = 0) const;
-
   // Is tracing active?
   bool is_active() const { return active.load(); }
 

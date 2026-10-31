@@ -98,22 +98,6 @@ bool TraceRecorder::dump(const std::string& path) const {
   return true;
 }
 
-std::string TraceRecorder::to_string(int max_lines) const {
-  std::string result;
-  int const start = (count < static_cast<int>(buffer.size())) ? 0 : head;
-  int const n = (max_lines > 0 && max_lines < count) ? max_lines : count;
-  // Show the most recent n entries
-  int const skip = count - n;
-  char line[128];
-  for (int i = skip; i < count; i++) {
-    int const idx = (start + i) % static_cast<int>(buffer.size());
-    format_entry(buffer[idx], line, sizeof(line));
-    result += line;
-    result += '\n';
-  }
-  return result;
-}
-
 void TraceRecorder::set_crash_path(const std::string& path) {
   crash_dump_path = path;
 }
