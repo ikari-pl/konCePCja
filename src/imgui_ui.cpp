@@ -368,8 +368,7 @@ void process_pending_dialog() {
       CPC.current_cart_path = dir;
       break;
     case FileDialogAction::LoadROM:
-      // Record it AND fit it: setting rom_file alone only took effect at the
-      // next full init, so picking a ROM here appeared to do nothing.
+      // CPC.rom_file is read when the machine is built, so load the slot now too.
       if (rom_slot >= 0 && rom_slot < MAX_ROM_SLOTS) {
         CPC.rom_file[rom_slot] = path;
         if (load_expansion_rom_slot(rom_slot, path) != 0) {
@@ -4055,10 +4054,127 @@ void imgui_render_options() {
 
       // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
       // mutated (out-param/compound-assign/loop/reference)
-      bool joy_emu = CPC.joystick_emulation != JoystickEmulation::None;
-      if (ImGui::Checkbox("Joystick Emulation", &joy_emu)) {
-        CPC.joystick_emulation =
-            joy_emu ? JoystickEmulation::Keyboard : JoystickEmulation::None;
+      // Three-way, not a checkbox: "keys drive the joystick" and "the stick
+      // presses keys" are different things (see JoystickEmulation). Mouse
+      // emulation keeps its own toggle below.
+      static constexpr JoystickEmulation kJoyModes[] = {
+          JoystickEmulation::None, JoystickEmulation::Keyboard,
+          JoystickEmulation::JoystickToKeys};
+      static const char* const kJoyModeNames[] = {"Off", "Keys press joystick",
+                                                  "Stick presses keys"};
+      int joy_mode = 0;
+      for (int i = 0; i < 3; ++i) {
+        if (CPC.joystick_emulation == kJoyModes[i]) joy_mode = i;
+      }
+      if (ImGui::Combo("Joystick Emulation", &joy_mode, kJoyModeNames, 3)) {
+        CPC.joystick_emulation = kJoyModes[joy_mode];
+        // The host map is built from the mode (cursor keys and Z/X become
+        // joystick bits in one of them), so the map is rebuilt here, not by the
+        // assignment above.
+        if (CPC.InputMapper != nullptr)
+          CPC.InputMapper->set_joystick_emulation();
+      }
+      // Which keys the stick presses, for games that never read the joystick
+      // port. Editable here so the config file is not the only way in.
+      if (CPC.joystick_emulation == JoystickEmulation::JoystickToKeys) {
+        if (ImGui::TreeNode("Stick presses these keys")) {
+          static const char* const kSlotLabels[6] = {"Up",     "Down",
+                                                     "Left",   "Right",
+                                                     "Fire 1", "Fire 2"};
+          // Capture on release: the binding is decided once every key is up, so
+          // a modifier on its own binds and Shift+; still resolves to ':'.
+          struct Pressed {
+            int scancode;
+            SDL_Keymod mods;
+          };
+          static int capture_slot = -1;
+          static std::array<bool, SDL_SCANCODE_COUNT> keys_before{};
+          static std::vector<Pressed> pressed;
+          for (int i = 0; i < 6; ++i) {
+            ImGui::PushID(i);
+            bool const capturing = (capture_slot == i);
+            std::string const shown =
+                capturing ? std::string("press a key...")
+                          : InputMapper::CPCkeyToString(
+                                static_cast<CapriceKey>(CPC.joy_to_keys[i]));
+            if (ImGui::Button(shown.c_str(), ImVec2(ui_dpi_px(180), 0))) {
+              capture_slot = i;
+              pressed.clear();
+              int n = 0;
+              if (bool const* state = SDL_GetKeyboardState(&n)) {
+                for (int s = 0; s < n && s < SDL_SCANCODE_COUNT; ++s)
+                  keys_before[s] = state[s];
+              }
+            }
+            ImGui::SameLine();
+            ImGui::TextUnformatted(kSlotLabels[i]);
+            ImGui::PopID();
+          }
+          if (capture_slot >= 0) {
+            int n = 0;
+            bool const* state = SDL_GetKeyboardState(&n);
+            bool any_down = false;
+            bool cancelled = false;
+            for (int s = 0; state != nullptr && s < n && s < SDL_SCANCODE_COUNT;
+                 ++s) {
+              if (state[s]) any_down = true;
+              if (state[s] && !keys_before[s]) {
+                pressed.push_back({s, SDL_GetModState()});
+                if (s == SDL_SCANCODE_ESCAPE) cancelled = true;
+              }
+            }
+            if (state != nullptr) {
+              for (int s = 0; s < n && s < SDL_SCANCODE_COUNT; ++s)
+                keys_before[s] = state[s];
+            }
+            if (cancelled) {
+              capture_slot = -1;
+              pressed.clear();
+            } else if (!any_down && !pressed.empty()) {
+              // The chord is complete. Bind the last non-modifier key; when the
+              // user pressed only modifiers, the last of those is the binding.
+              auto const is_modifier = [](int sc) {
+                switch (sc) {
+                  case SDL_SCANCODE_LSHIFT:
+                  case SDL_SCANCODE_RSHIFT:
+                  case SDL_SCANCODE_LCTRL:
+                  case SDL_SCANCODE_RCTRL:
+                  case SDL_SCANCODE_LALT:
+                  case SDL_SCANCODE_RALT:
+                  case SDL_SCANCODE_LGUI:
+                  case SDL_SCANCODE_RGUI:
+                    return true;
+                  default:
+                    return false;
+                }
+              };
+              Pressed const* chosen = nullptr;
+              for (auto const& p : pressed) {
+                if (!is_modifier(p.scancode)) chosen = &p;
+              }
+              if (chosen == nullptr) chosen = &pressed.back();
+              // Base keysym (modifier not folded in) plus the modifier that was
+              // held when that key went down: the layout table is keyed by pair.
+              SDL_Keycode const code = SDL_GetKeyFromScancode(
+                  static_cast<SDL_Scancode>(chosen->scancode), SDL_KMOD_NONE,
+                  true);
+              CapriceKey const unmapped = static_cast<CapriceKey>(0xff);
+              CapriceKey const key =
+                  CPC.InputMapper != nullptr
+                      ? CPC.InputMapper->CPCkeyFromKeysym(code, chosen->mods)
+                      : unmapped;
+              if (key != unmapped) {
+                CPC.joy_to_keys[capture_slot] = static_cast<int>(key);
+              }
+              capture_slot = -1;
+              pressed.clear();
+            }
+          }
+          ImGui::TextDisabled(
+              "Click a slot, press the key (modifiers allowed), then release "
+              "everything. A modifier on its own binds. Esc cancels.");
+          ImGui::TreePop();
+        }
       }
 
       // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
