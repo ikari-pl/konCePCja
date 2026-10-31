@@ -3180,16 +3180,14 @@ void loadConfiguration(t_CPC& CPC, const std::string& configFilename) {
     for (int i = 0; i < 6; ++i) {
       std::string const name =
           conf.getStringValue("system", kJoyToKeySlots[i], kDefaults[i]);
-      CapriceKey const key = InputMapper::CPCkeyFromName(name);
-      if (key >= 0) {
-        CPC.joy_to_keys[i] = static_cast<int>(key);
-      } else {
+      int key = InputMapper::CPCkeyFromName(name);
+      if (key < 0) {
         LOG_WARNING("Unknown key name '" << name << "' for system."
                                          << kJoyToKeySlots[i] << "; using "
                                          << kDefaults[i]);
-        CPC.joy_to_keys[i] =
-            static_cast<int>(InputMapper::CPCkeyFromName(kDefaults[i]));
+        key = InputMapper::CPCkeyFromName(kDefaults[i]);
       }
+      if (key >= 0) CPC.joy_to_keys[i] = key;
     }
   }
   CPC.joysticks = read_flag("system", "joysticks", 1);

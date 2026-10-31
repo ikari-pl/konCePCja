@@ -405,7 +405,7 @@ class InputMapper {
   static std::string CPCkeyToString(const CapriceKey cpc_key);
   // CPC key by its layout-file name (e.g. "CPC_COLON"): -1 when the name is
   // not in the table. The config loader uses it for stick-to-key bindings.
-  static CapriceKey CPCkeyFromName(const std::string& name);
+  static int CPCkeyFromName(const std::string& name);
   CPCScancode CPCscancodeFromJoystickButton(SDL_JoyButtonEvent jbutton);
   void CPCscancodeFromJoystickAxis(SDL_JoyAxisEvent jaxis, CPCScancode* cpc_key,
                                    bool& release);

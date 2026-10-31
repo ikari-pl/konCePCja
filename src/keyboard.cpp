@@ -742,10 +742,9 @@ CapriceKey InputMapper::CPCkeyFromKeysym(SDL_Keycode key, SDL_Keymod mod) {
   return cpc_key->second;
 }
 
-CapriceKey InputMapper::CPCkeyFromName(const std::string& name) {
+int InputMapper::CPCkeyFromName(const std::string& name) {
   auto const it = CPCkeysFromStrings.find(name);
-  return it == CPCkeysFromStrings.end() ? static_cast<CapriceKey>(-1)
-                                        : it->second;
+  return it == CPCkeysFromStrings.end() ? -1 : static_cast<int>(it->second);
 }
 
 std::string InputMapper::CPCkeyToString(const CapriceKey cpc_key) {
