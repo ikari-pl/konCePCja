@@ -48,6 +48,8 @@ struct Event {
   std::uint32_t previous = 0;
   // EVT_OVERRUN.
   std::uint32_t dropped = 0;
+  // EVT_FRAME: the frame's sequence number in the frame ring, 0 without one.
+  std::uint64_t fb_seq = 0;
   // EVT_BREAKPOINTS_CHANGED: z80_breakpoint_generation() after the edit.
   // EVT_SYMBOLS_CHANGED and EVT_MEDIA_CHANGED: the table's, the slot's.
   std::uint64_t generation = 0;
@@ -91,7 +93,7 @@ inline std::vector<std::uint8_t> encode_event(const Event& e,
       break;
     case Opcode::kEvtFrame:
       w.u64(e.frame);
-      w.u64(0);  // fb_seq: 0 until phase 4
+      w.u64(e.fb_seq);
       break;
     case Opcode::kEvtControlChanged:
       w.u32(e.controller);

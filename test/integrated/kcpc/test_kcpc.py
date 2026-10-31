@@ -343,14 +343,15 @@ def test_manifest_port_and_hello() -> None:
             # The groups implemented so far: the machine reads, with the
             # ROM spaces, the writes with the control role, run control,
             # events, breakpoints, input, chip state, symbols, the
-            # description of the frame, media, snapshots, configuration and
-            # the light gun.
+            # description of the frame with its ring, media, snapshots,
+            # configuration and the light gun.
             assert hello.caps == (kc.CAP_MACHINE_READ | kc.CAP_MEM_ROM
                                   | kc.CAP_MACHINE_WRITE
                                   | kc.CAP_RUN_CONTROL | kc.CAP_EVENTS
                                   | kc.CAP_BREAKPOINTS | kc.CAP_INPUT
                                   | kc.CAP_CHIPS | kc.CAP_SYMBOLS
-                                  | kc.CAP_FB_INFO | kc.CAP_MEDIA
+                                  | kc.CAP_FB_INFO | kc.CAP_FB_SHM
+                                  | kc.CAP_MEDIA
                                   | kc.CAP_SNAPSHOT | kc.CAP_CONFIG
                                   | kc.CAP_GUN), (
                 f'caps {hello.caps:#x}')
@@ -4704,13 +4705,18 @@ def test_symbols_round_trip_and_are_pushed() -> None:
 
 def test_fb_info_describes_the_frame() -> None:
     """Acceptance 5: FB_INFO reports the machine's canonical frame, 768 by
-    272 pixels of RGB24 with 2304 bytes a row, and no transport yet."""
+    272 pixels of RGB24 with 2304 bytes a row, and names the frame ring it
+    is published to (beads-0ir.3), with the number of its latest frame."""
     with Core() as core, core.client() as c:
         hello = c.hello('fb')
         assert hello.caps & kc.CAP_FB_INFO, hex(hello.caps)
+        assert hello.caps & kc.CAP_FB_SHM, hex(hello.caps)
         fb = c.fb_info()
-        assert fb == kc.FbInfo(768, 272, kc.FB_FORMAT_RGB24,
-                               kc.FB_TRANSPORT_NONE, 2304, 0, ''), fb
+        name = (f'Local\\kcpc-fb-{hello.pid}' if sys.platform == 'win32'
+                else f'/kcpc-fb-{hello.pid}')
+        assert (fb.width, fb.height, fb.format, fb.transport, fb.stride,
+                fb.shm_name) == (768, 272, kc.FB_FORMAT_RGB24,
+                                 kc.FB_TRANSPORT_SHM, 2304, name), fb
         c.request(kc.OP_FB_INFO, b'from a later version')
 
 

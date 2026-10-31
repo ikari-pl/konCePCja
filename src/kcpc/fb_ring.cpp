@@ -41,7 +41,7 @@ bool FbRingWriter::init(void* base, std::size_t size, std::uint32_t width,
   auto* h = new (base) FbRingHeader{};
   h->version = kFbRingVersion;
   h->header_bytes = sizeof(FbRingHeader);
-  h->format = kFbFormatRgb24;
+  h->format = kFbRingFormatRgb24;
   h->width = width;
   h->height = height;
   h->stride = stride;
@@ -78,7 +78,7 @@ const FbRingHeader* fb_ring_header(const void* base, std::size_t size) {
   if (base == nullptr || size < sizeof(FbRingHeader)) return nullptr;
   const auto* h = static_cast<const FbRingHeader*>(base);
   if (h->magic.load(std::memory_order_acquire) != kFbRingMagic) return nullptr;
-  if (h->version != kFbRingVersion || h->format != kFbFormatRgb24 ||
+  if (h->version != kFbRingVersion || h->format != kFbRingFormatRgb24 ||
       h->header_bytes != sizeof(FbRingHeader) || h->ring_slots == 0 ||
       h->ring_slots > kFbRingSlots ||
       h->slot_bytes != std::uint64_t{h->stride} * h->height ||

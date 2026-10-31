@@ -150,11 +150,13 @@ inline constexpr std::uint64_t kCapGun = 1ULL << 14;
 // walk the machine (slice 5), input (slice 6), and the DevTools data: chip
 // state with the ASIC's register page, symbols and the description of the
 // frame (slice 7), media, snapshots and configuration (slice 9), and the
-// light gun (beads-il6h). HELLO, PING and MACHINE_INFO need no capability.
+// light gun (beads-il6h), and the frame ring FB_INFO names (beads-0ir.3;
+// announced only while the core publishes it). HELLO, PING and MACHINE_INFO
+// need no capability.
 inline constexpr std::uint64_t kServerCaps =
     kCapMachineRead | kCapMemRom | kCapMachineWrite | kCapRunControl |
     kCapEvents | kCapBreakpoints | kCapInput | kCapChips | kCapSymbols |
-    kCapFbInfo | kCapMedia | kCapSnapshot | kCapConfig | kCapGun;
+    kCapFbInfo | kCapFbShm | kCapMedia | kCapSnapshot | kCapConfig | kCapGun;
 
 // MACHINE_INFO flags.
 inline constexpr std::uint8_t kMachineFlagHeadless = 1U << 0;
@@ -1339,6 +1341,8 @@ inline bool read_symbol(Reader& r, Symbol& out) {
 // FB_INFO reply (section 12): the machine's canonical frame.
 inline constexpr std::uint8_t kFbFormatRgb24 = 1;
 inline constexpr std::uint8_t kFbTransportNone = 0;
+// The frame ring, docs/protocol/fb-ring-v1.md.
+inline constexpr std::uint8_t kFbTransportShm = 1;
 
 struct FbInfo {
   std::uint16_t width = 0;
@@ -1346,8 +1350,8 @@ struct FbInfo {
   std::uint8_t format = kFbFormatRgb24;
   std::uint8_t transport = kFbTransportNone;
   std::uint32_t stride = 0;  // bytes from one row to the next
-  std::uint64_t fb_seq = 0;  // 0 until phase 4
-  std::string shm_name;      // empty until phase 4
+  std::uint64_t fb_seq = 0;  // the ring's latest frame; 0 without a ring
+  std::string shm_name;      // the ring's OS name; empty without a ring
 };
 
 inline void write_fb_info(Writer& w, const FbInfo& f) {

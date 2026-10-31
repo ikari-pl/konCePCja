@@ -41,14 +41,15 @@ namespace kcpc {
 
 inline constexpr std::uint32_t kFbRingMagic = 0x46554246;  // "FBUF" in memory
 inline constexpr std::uint32_t kFbRingVersion = 1;
-inline constexpr std::uint32_t kFbFormatRgb24 = 1;  // 3 bytes a pixel: R, G, B
+// 3 bytes a pixel: R, G, B. (kcpc_proto.h's kFbFormatRgb24 is FB_INFO's.)
+inline constexpr std::uint32_t kFbRingFormatRgb24 = 1;
 inline constexpr std::uint32_t kFbRingSlots = 4;
 
 struct FbRingHeader {
   std::atomic<std::uint32_t> magic;  // kFbRingMagic once the header is whole
   std::uint32_t version;             // kFbRingVersion
   std::uint32_t header_bytes;        // sizeof(FbRingHeader)
-  std::uint32_t format;              // kFbFormatRgb24
+  std::uint32_t format;              // kFbRingFormatRgb24
   std::uint32_t width;               // pixels
   std::uint32_t height;              // rows
   std::uint32_t stride;              // bytes a row

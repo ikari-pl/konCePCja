@@ -1,7 +1,7 @@
 #!/bin/sh
-# Runs the KCPC binary-protocol suite (test_exit_criterion.py, test_kcpc.py)
-# as part of `make e2e_test`. run_tests.sh globs */test.sh, so this directory
-# is all the wiring it needs.
+# Runs the KCPC binary-protocol suite (test_exit_criterion.py, test_kcpc.py,
+# test_fb_ring.py) as part of `make e2e_test`. run_tests.sh globs */test.sh,
+# so this directory is all the wiring it needs.
 #
 # test_kcpc.py twice, because the server sits beside two different emulation loops: under
 # -H the main thread runs the frames, in the GUI build a Z80 thread does while
@@ -26,3 +26,7 @@ cd "$(dirname "$0")/../../.." || exit 1
 "$PYTHON" test/integrated/kcpc/test_exit_criterion.py
 "$PYTHON" test/integrated/kcpc/test_kcpc.py
 "$PYTHON" test/integrated/kcpc/test_kcpc.py --gui
+# The exit criterion of phase 4: the frame ring, read by another process
+# (the reference client and tools/fb_dump), is the frame the core hashes.
+"$PYTHON" test/integrated/kcpc/test_fb_ring.py
+"$PYTHON" test/integrated/kcpc/test_fb_ring.py --gui

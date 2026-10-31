@@ -36,6 +36,7 @@
 #include "imgui_ui_testable.h"
 #include "ipc_mru.h"
 #include "iui_host.h"
+#include "kcpc/fb_publish.h"
 #include "kcpc/kcpc_gate.h"
 #include "kcpc/kcpc_server.h"
 #include "keyboard.h"
@@ -576,6 +577,9 @@ void kcpc_service_frame() {
     kcpc::Event event;
     event.opcode = kcpc::Opcode::kEvtFrame;
     event.frame = frame;
+    // This runs on the frame runner after the frame went to the ring
+    // (subcycle_bridge_frame()), so the latest frame there is this one.
+    event.fb_seq = fb_publish_seq();
     g_kcpc_server.post(event);
   }
 }
@@ -976,10 +980,12 @@ Status kcpc_host_fb_info(kcpc::FbInfo& info) {
   info.width = static_cast<std::uint16_t>(subcycle::kFbWidth);
   info.height = static_cast<std::uint16_t>(subcycle::kFbHeight);
   info.format = kcpc::kFbFormatRgb24;
-  info.transport = kcpc::kFbTransportNone;
   info.stride = static_cast<std::uint32_t>(subcycle::kFbWidth * kBytesPerPixel);
-  info.fb_seq = 0;
-  info.shm_name.clear();
+  // The frame ring (beads-0ir.3), when the core could create it.
+  info.shm_name = fb_publish_shm_name();
+  info.transport =
+      info.shm_name.empty() ? kcpc::kFbTransportNone : kcpc::kFbTransportShm;
+  info.fb_seq = fb_publish_seq();
   return Status::kOk;
 }
 

@@ -42,8 +42,9 @@ stepping, symbols, and input.
 
 - **Video frames.** They travel through shared memory in phase 4 (beads-0ir):
   every core publishes each frame to the ring [fb-ring-v1.md](fb-ring-v1.md)
-  describes (beads-0ir.2). This protocol only describes the frame
-  (`FB_INFO`) and announces each new one (`EVT_FRAME`).
+  describes (beads-0ir.2). This protocol only describes the frame and names
+  the ring (`FB_INFO`) and announces each new frame with its number in the
+  ring (`EVT_FRAME`, beads-0ir.3).
 - **Audio.** Decision D4: none for remote frontends at first.
 - **Recording, disc tools (files and sectors inside a disc image), pokes,
   sessions, the M4 board.** They stay on the text IPC, which a frontend may
@@ -317,7 +318,7 @@ ship one at a time.
 | 6 | `CAP_CHIPS` | `CHIP_GET`, memory space `ASIC_PAGE` |
 | 7 | `CAP_SYMBOLS` | `SYM_*` |
 | 8 | `CAP_FB_INFO` | `FB_INFO` |
-| 9 | `CAP_FB_SHM` | Phase 4: `FB_INFO` names a shared-memory ring |
+| 9 | `CAP_FB_SHM` | `FB_INFO` names the shared-memory frame ring; announced only while the core publishes it |
 | 10 | `CAP_MEM_ROM` | Memory spaces `ROM_LOWER` and `ROM_UPPER` |
 | 11 | `CAP_MEDIA` | `MEDIA_*`, `TAPE_CONTROL` |
 | 12 | `CAP_SNAPSHOT` | `SNAPSHOT_SAVE`, `SNAPSHOT_LOAD` |
@@ -1009,8 +1010,12 @@ program's, and it re-reads. `u64 frame`, `u32 cause_client`,
 `u32 cause_request`.
 
 **`EVT_FRAME` (`0x8004`)** — a frame completed. `u64 frame`, `u64 fb_seq`.
-`fb_seq` is 0 until phase 4, then the sequence number of that frame in the
-shared-memory ring.
+`fb_seq` is the sequence number of that frame in the frame ring
+([fb-ring-v1.md](fb-ring-v1.md)), one more for each frame that ran to its
+end, so a reader that wants this frame copies the slot holding `fb_seq`; 0
+when the core publishes no ring. The event is posted on the frame runner
+after the frame went into the ring: when it arrives, the ring holds that
+frame or a later one.
 
 **`EVT_MEDIA_CHANGED` (`0x8005`)** — `u8 slot` (0 = drive A, 1 = drive B,
 2 = tape, 3 = cartridge), `u8 present`, 2 reserved bytes, `u64 generation`
@@ -1685,15 +1690,19 @@ takes a pause lease or has a stamp.
 | 2 | `width` | 768 (`kFbWidth`) |
 | 2 | `height` | 272 (`kFbHeight`) |
 | 1 | `format` | 1 = RGB24, three bytes per pixel, R first |
-| 1 | `transport` | 0 = none; phase 4 defines 1 = shared-memory ring |
+| 1 | `transport` | 1 = the shared-memory frame ring; 0 = none (the core could not create it) |
 | 2 | reserved | 0 |
 | 4 | `stride` | 2304 |
-| 8 | `fb_seq` | 0 until phase 4 |
-| `str` | `shm_name` | Empty until phase 4 |
+| 8 | `fb_seq` | Sequence number of the ring's latest frame at the time of the reply; 0 before the first, or without a ring |
+| `str` | `shm_name` | The ring's OS name, to open as it is: `/kcpc-fb-<pid>` on Linux and macOS, `Local\kcpc-fb-<pid>` on Windows; empty without a ring |
 
 This is the machine's canonical frame, before scaling or scanlines (epic
-invariant 1). The reply is the same for the life of the core: until phase 4
-there is nothing to read the frame from, and `transport` 0 says so.
+invariant 1). Everything but `fb_seq` is the same for the life of the core.
+The ring's layout and how to read it without a torn frame are
+[fb-ring-v1.md](fb-ring-v1.md); `kcpc_client.FbRing`
+(`test/integrated/kcpc/kcpc_client.py`) and `tools/fb_dump.c` are two
+readers. When the core could not create the region it logs why, runs on
+without it, `transport` is 0 and `HELLO` does not announce `CAP_FB_SHM`.
 
 The text IPC's `hash frame` is the CRC32 of exactly these bytes (`height`
 rows of `stride` bytes, top row first), copied between two frames, and says
@@ -2004,6 +2013,7 @@ test-first against a real `-H` core.
 | 8 | Exit test and documentation (**landed**, beads-3o1.8) | The exit test of beads-3o1 (`test_exit_criterion.py`), a refusal checked for every opcode of [section 13](#13-opcode-table), the documentation brought in line with the code; `SYM_LOAD` takes the `..` rule of the other paths, and a refused disc changes nothing on either port. **No freeze:** the server stays at major 0 |
 | 9 | Media, snapshots, configuration (**landed**, beads-rcyq) | `MEDIA_INSERT`, `MEDIA_EJECT`, `MEDIA_INFO`, `TAPE_CONTROL` on the loaders and the media swap the text IPC and the menus use, with the machine's half applied under the request's lease; `SNAPSHOT_SAVE`, `SNAPSHOT_LOAD` (SNA); `CONFIG_GET`, `CONFIG_SET`, `CONFIG_APPLY` on one table of keys shared with the text IPC; `CAP_MEDIA`, `CAP_SNAPSHOT`, `CAP_CONFIG` |
 | 10 | The light gun (beads-il6h) | `GUN`, aimed in frame pixels, on the staging the text IPC's `input gun` uses; a trigger the controller pulled is let go when it loses control; `CAP_GUN` |
+| 11 | The frame ring named (beads-0ir.3, phase 4) | `FB_INFO` with `transport` 1, `shm_name` and the live `fb_seq`; `EVT_FRAME` with the frame's `fb_seq`; `CAP_FB_SHM`; `tools/fb_dump.c` and the client's `FbRing`; the exit test of phase 4 (`test_fb_ring.py`, below) |
 
 Slice 9 needs slices 3 (the controller role) and 4 (events) and nothing
 later, so it can be built alongside slices 5 to 7. Slice 8 is numbered before
@@ -2124,6 +2134,28 @@ the way it must be refused: as a first frame (`HELLO_REQUIRED`), from an
 observer when the opcode is the controller's (`NOT_CONTROLLER`) and without
 its payload when it has one (`BAD_PAYLOAD`). Every opcode's success, and
 its other failures, are in the slice's own tests.
+
+### Exit criterion of phase 4
+
+From a running core, another process captures the machine's frame out of the
+shared-memory ring, and its hash equals the core's own hash of the same frame
+(beads-0ir). `test/integrated/kcpc/test_fb_ring.py`, in blocking reads only
+like the test above:
+
+1. `HELLO` announces `CAP_FB_SHM`; `FB_INFO` names the ring for the core's
+   pid, with the frame's size;
+2. subscribed to frames, the client is pushed `EVT_FRAME`s whose `fb_seq`
+   grows with `frame`, one for one;
+3. the text IPC's `wait vbl 200` runs the machine to the firmware's banner
+   and pauses it; then the text IPC's `hash frame`, the client's `FbRing`
+   and `tools/fb_dump` give the **same CRC32**, of the same `fb_seq`, which
+   is also `FB_INFO`'s;
+4. the PNG `fb_dump` writes is that frame, each row twice (768x544, as the
+   core's `screenshot`), and a CPC screen: blue paper, yellow ink.
+
+`make e2e_test` runs it under `-H` and `--gui`; the UI-free step of the
+Linux, macOS and MSVC workflows with `--ui-free`, the MSVC one with the
+`fb_dump.exe` CMake builds.
 
 ## 17. Engineering decisions made here
 
