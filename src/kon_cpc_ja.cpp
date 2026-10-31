@@ -3175,8 +3175,8 @@ void loadConfiguration(t_CPC& CPC, const std::string& configFilename) {
     // space by default; any name from the keyboard layout's CPC key table
     // works (the same names the .map layout files use).
     static constexpr const char* kDefaults[6] = {
-        "CPC_CUR_UP", "CPC_CUR_DOWN", "CPC_CUR_LEFT",
-        "CPC_CUR_RIGHT", "CPC_SPACE", "CPC_RETURN"};
+        "CPC_CUR_UP",    "CPC_CUR_DOWN", "CPC_CUR_LEFT",
+        "CPC_CUR_RIGHT", "CPC_SPACE",    "CPC_RETURN"};
     for (int i = 0; i < 6; ++i) {
       std::string const name =
           conf.getStringValue("system", kJoyToKeySlots[i], kDefaults[i]);
@@ -3185,8 +3185,8 @@ void loadConfiguration(t_CPC& CPC, const std::string& configFilename) {
         CPC.joy_to_keys[i] = static_cast<int>(key);
       } else {
         LOG_WARNING("Unknown key name '" << name << "' for system."
-                                         << kJoyToKeySlots[i]
-                                         << "; using " << kDefaults[i]);
+                                         << kJoyToKeySlots[i] << "; using "
+                                         << kDefaults[i]);
         CPC.joy_to_keys[i] =
             static_cast<int>(InputMapper::CPCkeyFromName(kDefaults[i]));
       }
@@ -4810,7 +4810,8 @@ EmuFrameResult emu_handle_stop() {
   }
   if (z80.step_in >= 2) {
     // Step In or Step Out finished. cpc_pause(), not a bare CPC.paused write:
-    // it settles g_emu_paused, the audio pause and the announced state together.
+    // it settles g_emu_paused, the audio pause and the announced state
+    // together.
     CpcRunCause done;
     done.reason = CpcStopReason::StepDone;
     cpc_pause(done);

@@ -368,7 +368,8 @@ void process_pending_dialog() {
       CPC.current_cart_path = dir;
       break;
     case FileDialogAction::LoadROM:
-      // CPC.rom_file is read when the machine is built, so load the slot now too.
+      // CPC.rom_file is read when the machine is built, so load the slot now
+      // too.
       if (rom_slot >= 0 && rom_slot < MAX_ROM_SLOTS) {
         CPC.rom_file[rom_slot] = path;
         if (load_expansion_rom_slot(rom_slot, path) != 0) {
@@ -4078,9 +4079,8 @@ void imgui_render_options() {
       // port. Editable here so the config file is not the only way in.
       if (CPC.joystick_emulation == JoystickEmulation::JoystickToKeys) {
         if (ImGui::TreeNode("Stick presses these keys")) {
-          static const char* const kSlotLabels[6] = {"Up",     "Down",
-                                                     "Left",   "Right",
-                                                     "Fire 1", "Fire 2"};
+          static const char* const kSlotLabels[6] = {
+              "Up", "Down", "Left", "Right", "Fire 1", "Fire 2"};
           // Capture on release: the binding is decided once every key is up, so
           // a modifier on its own binds and Shift+; still resolves to ':'.
           struct Pressed {
@@ -4154,7 +4154,8 @@ void imgui_render_options() {
               }
               if (chosen == nullptr) chosen = &pressed.back();
               // Base keysym (modifier not folded in) plus the modifier that was
-              // held when that key went down: the layout table is keyed by pair.
+              // held when that key went down: the layout table is keyed by
+              // pair.
               SDL_Keycode const code = SDL_GetKeyFromScancode(
                   static_cast<SDL_Scancode>(chosen->scancode), SDL_KMOD_NONE,
                   true);

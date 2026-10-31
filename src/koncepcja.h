@@ -205,7 +205,7 @@ std::string JoystickEmulationToString(JoystickEmulation value);
 // JoystickEmulation::JoystickToKeys, in the order up, down, left, right,
 // fire1, fire2. One list, so the loader and the writer cannot drift.
 inline constexpr const char* kJoyToKeySlots[6] = {
-    "joy_to_keys_up",   "joy_to_keys_down",  "joy_to_keys_left",
+    "joy_to_keys_up",    "joy_to_keys_down",  "joy_to_keys_left",
     "joy_to_keys_right", "joy_to_keys_fire1", "joy_to_keys_fire2"};
 
 // Expansion-device settings from the config file. loadConfiguration() fills

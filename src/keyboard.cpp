@@ -838,8 +838,8 @@ CPCScancode InputMapper::CPCscancodeFromJoystickButton(
     // The stick presses keys, for games that never read the joystick port.
     // Slots: 4 = fire1, 5 = fire2.
     int const slot = 4 + (jbutton.button == 0 ? 0 : 1);
-    return cpc_kbd[CPC->keyboard][static_cast<CPC_KEYS>(
-        CPC->joy_to_keys[slot])];
+    return cpc_kbd[CPC->keyboard]
+                  [static_cast<CPC_KEYS>(CPC->joy_to_keys[slot])];
   }
   return cpc_kbd[CPC->keyboard][fire[jbutton.which][jbutton.button]];
 }
@@ -867,8 +867,8 @@ void InputMapper::CPCscancodeFromJoystickAxis(SDL_JoyAxisEvent jaxis,
     int const neg_slot = (dir == 0) ? 2 : 0;  // left : up
     int const pos_slot = (dir == 0) ? 3 : 1;  // right : down
     auto const key = [&](int slot) {
-      return cpc_kbd[CPC->keyboard][static_cast<CPC_KEYS>(
-          CPC->joy_to_keys[slot])];
+      return cpc_kbd[CPC->keyboard]
+                    [static_cast<CPC_KEYS>(CPC->joy_to_keys[slot])];
     };
     if (jaxis.value < -JOYSTICK_AXIS_THRESHOLD) {
       cpc_key[0] = key(neg_slot);
