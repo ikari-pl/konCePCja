@@ -40,9 +40,10 @@ stepping, symbols, and input.
 
 ### Out of scope for version 1
 
-- **Video frames.** They travel through shared memory in phase 4 (beads-0ir).
-  This protocol only describes the frame (`FB_INFO`) and announces each new
-  one (`EVT_FRAME`).
+- **Video frames.** They travel through shared memory in phase 4 (beads-0ir):
+  every core publishes each frame to the ring [fb-ring-v1.md](fb-ring-v1.md)
+  describes (beads-0ir.2). This protocol only describes the frame
+  (`FB_INFO`) and announces each new one (`EVT_FRAME`).
 - **Audio.** Decision D4: none for remote frontends at first.
 - **Recording, disc tools (files and sectors inside a disc image), pokes,
   sessions, the M4 board.** They stay on the text IPC, which a frontend may

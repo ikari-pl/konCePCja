@@ -578,6 +578,18 @@ binary_port_enabled=1      # 0 = do not open the port (manifest: `binary: null`)
   is ticked along with the board, so a stepped fetch at an armed address
   latches a hit nobody collects; left there, the next frame reported it as a
   breakpoint stop at an address the CPU had left.
+- The frame ring (beads-0ir.2, [docs/protocol/fb-ring-v1.md](docs/protocol/fb-ring-v1.md)):
+  the core publishes the canonical frame to shared memory named
+  `kcpc-fb-<pid>` (`/kcpc-fb-<pid>` on POSIX, `Local\kcpc-fb-<pid>` on
+  Windows) at **every** frame completion, read or not (user decision
+  2026-10-26). `fb_publish_frame()` (`src/kcpc/fb_publish.h`) is called by
+  `subcycle_bridge_frame()` on the frame runner, only for a frame that ran
+  to its end, before the host blit and the pacer's sleep; it takes no lock,
+  so `fb_publish_start()` runs before the frame runner exists and
+  `fb_publish_stop()` (in `doCleanUp()`, which the signal exit takes too)
+  after it has ended. The layout and the seqlock are `src/kcpc/fb_ring.h`;
+  the OS shim (the one `#ifdef _WIN32` for shared memory) is
+  `src/shm_region.{h,cpp}`. The producer never waits for a reader.
 - `KONCPC_KCPC_CONTROLLER_TIMEOUT_MS` in the environment lowers the 30 s a
   controller may stay silent, and `KONCPC_KCPC_EVENT_QUEUE_BYTES` the 4 MiB
   of queue beyond which a client's events are dropped. They exist for the
