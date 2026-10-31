@@ -681,6 +681,23 @@ board_only: sim sim_headless cpct_tap_rig psg_oracle_rig
 	  grep -Eq 'ran $(BOARD_SMOKE_FRAMES) frames, [1-9][0-9]*/'
 	$(MAKE) bench PGO_BENCH_FRAMES=$(BOARD_SMOKE_FRAMES)
 
+# tools/fb_dump: copies the latest frame out of a running core's frame ring
+# into a PNG or PPM (beads-0ir.3, docs/protocol/fb-ring-v1.md). Plain C with
+# no header of the emulator; the KCPC suite of e2e_test runs it.
+ifeq ($(PLATFORM),windows)
+FB_DUMP = fb_dump.exe
+else
+FB_DUMP = fb_dump
+endif
+# shm_open lives in librt before glibc 2.34.
+ifeq ($(ARCH),linux)
+FB_DUMP_LIBS = -lrt
+endif
+$(FB_DUMP): tools/fb_dump.c
+	$(CC) -std=c11 -O2 -Wall -Wextra -o $@ $< $(FB_DUMP_LIBS)
+.PHONY: fb_dump_tool
+fb_dump_tool: $(FB_DUMP)
+
 # --- FPS benchmark + PGO 2-phase flow (beads-lcfa / plan §10-B4, risk #5) -------
 # A FIXED, deterministic headless cold-boot trace (sim/bench_fps.cpp) reusing the
 # sim source set (hw Devices + subcycle) — no SDL, no legacy loop — so the FPS is
@@ -754,13 +771,13 @@ unit_test: $(TEST_TARGET) distrib
 	ln -s -f ../../test $(ARCHIVE_DIR)/test
 	cd $(ARCHIVE_DIR) && ./$(TEST_TARGET) --gtest_shuffle
 
-e2e_test: $(TARGET)
+e2e_test: $(TARGET) $(FB_DUMP)
 	cd test/integrated && ./run_tests.sh
 else
 unit_test: $(TEST_TARGET)
 	./$(TEST_TARGET) --gtest_shuffle
 
-e2e_test: $(TARGET)
+e2e_test: $(TARGET) $(FB_DUMP)
 	cd test/integrated && ./run_tests.sh
 
 # The e2e suite as a slow CI runner sees it: on macOS pinned to the
@@ -771,7 +788,7 @@ E2E_SLOW = taskpolicy -b
 else
 E2E_SLOW = nice -n 19
 endif
-e2e_test_slow: $(TARGET)
+e2e_test_slow: $(TARGET) $(FB_DUMP)
 	cd test/integrated && $(E2E_SLOW) ./run_tests.sh
 endif
 
@@ -869,6 +886,7 @@ coverage-clean:
 clean:
 	rm -rf obj/ release/ .pc/ doxygen/
 	rm -f test_runner test_runner.exe koncepcja koncepcja.exe .debug tags
+	rm -f fb_dump fb_dump.exe
 	rm -f koncepcja_sim koncepcja_sim_headless koncepcja_bench koncepcja_bench_gen
 	rm -f cpct_tap_rig psg_oracle_rig
 	rm -f koncepcja_bench.profraw koncepcja_bench.profdata

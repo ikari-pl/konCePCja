@@ -87,6 +87,7 @@ enum class Opcode : std::uint16_t {
   kConfigGet = 0x0A00,
   kConfigSet = 0x0A01,
   kConfigApply = 0x0A02,
+  kGun = 0x0B00,
   kEvtStopped = 0x8001,
   kEvtResumed = 0x8002,
   kEvtReset = 0x8003,
@@ -141,18 +142,21 @@ inline constexpr std::uint64_t kCapMemRom = 1ULL << 10;
 inline constexpr std::uint64_t kCapMedia = 1ULL << 11;
 inline constexpr std::uint64_t kCapSnapshot = 1ULL << 12;
 inline constexpr std::uint64_t kCapConfig = 1ULL << 13;
+inline constexpr std::uint64_t kCapGun = 1ULL << 14;
 
 // What this server implements today: the machine reads (slice 2), with the
 // ROM spaces, the control role with the machine writes (slice 3), run
 // control with the pushed events (slice 4), breakpoints with the steps that
 // walk the machine (slice 5), input (slice 6), and the DevTools data: chip
 // state with the ASIC's register page, symbols and the description of the
-// frame (slice 7), and media, snapshots and configuration (slice 9). HELLO,
-// PING and MACHINE_INFO need no capability.
+// frame (slice 7), media, snapshots and configuration (slice 9), and the
+// light gun (beads-il6h), and the frame ring FB_INFO names (beads-0ir.3;
+// announced only while the core publishes it). HELLO, PING and MACHINE_INFO
+// need no capability.
 inline constexpr std::uint64_t kServerCaps =
     kCapMachineRead | kCapMemRom | kCapMachineWrite | kCapRunControl |
     kCapEvents | kCapBreakpoints | kCapInput | kCapChips | kCapSymbols |
-    kCapFbInfo | kCapMedia | kCapSnapshot | kCapConfig;
+    kCapFbInfo | kCapFbShm | kCapMedia | kCapSnapshot | kCapConfig | kCapGun;
 
 // MACHINE_INFO flags.
 inline constexpr std::uint8_t kMachineFlagHeadless = 1U << 0;
@@ -905,6 +909,37 @@ inline bool read_mouse_request(Reader& r, MouseRequest& out) {
   return r.u8(out.flags);
 }
 
+// GUN. The aim is in pixels of the machine's frame, the one FB_INFO
+// describes, so a frontend aims at what it shows whatever the core's own
+// window looks like.
+inline constexpr std::uint16_t kGunFrameWidth = 768;
+inline constexpr std::uint16_t kGunFrameHeight = 272;
+// `x` and `y` are to be applied; without it the aim stays where it is.
+inline constexpr std::uint8_t kGunFlagAim = 1U << 0;
+// `trigger` is to be applied; without it the trigger stays as it is.
+inline constexpr std::uint8_t kGunFlagTrigger = 1U << 1;
+
+struct GunRequest {
+  std::uint16_t x = 0;
+  std::uint16_t y = 0;
+  std::uint8_t trigger = 0;  // 1 pulled, 0 let go
+  std::uint8_t flags = 0;
+};
+
+inline void write_gun_request(Writer& w, const GunRequest& g) {
+  w.u16(g.x);
+  w.u16(g.y);
+  w.u8(g.trigger);
+  w.u8(g.flags);
+}
+
+inline bool read_gun_request(Reader& r, GunRequest& out) {
+  r.u16(out.x);
+  r.u16(out.y);
+  r.u8(out.trigger);
+  return r.u8(out.flags);
+}
+
 // RUN_STATE reply.
 struct RunState {
   Stamp stamp;
@@ -1306,6 +1341,8 @@ inline bool read_symbol(Reader& r, Symbol& out) {
 // FB_INFO reply (section 12): the machine's canonical frame.
 inline constexpr std::uint8_t kFbFormatRgb24 = 1;
 inline constexpr std::uint8_t kFbTransportNone = 0;
+// The frame ring, docs/protocol/fb-ring-v1.md.
+inline constexpr std::uint8_t kFbTransportShm = 1;
 
 struct FbInfo {
   std::uint16_t width = 0;
@@ -1313,8 +1350,8 @@ struct FbInfo {
   std::uint8_t format = kFbFormatRgb24;
   std::uint8_t transport = kFbTransportNone;
   std::uint32_t stride = 0;  // bytes from one row to the next
-  std::uint64_t fb_seq = 0;  // 0 until phase 4
-  std::string shm_name;      // empty until phase 4
+  std::uint64_t fb_seq = 0;  // the ring's latest frame; 0 without a ring
+  std::string shm_name;      // the ring's OS name; empty without a ring
 };
 
 inline void write_fb_info(Writer& w, const FbInfo& f) {

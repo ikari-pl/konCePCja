@@ -9,7 +9,10 @@
 #include <stdexcept>
 #include <thread>
 
+#include "emu_frame.h"
+#include "koncepcja.h"
 #include "m4board.h"
+#include "test_bridge_rom.h"
 
 #ifdef _WIN32
 #include <process.h>
@@ -459,12 +462,71 @@ TEST_F(M4HttpTest, MethodNotAllowed) {
   EXPECT_EQ(405, extract_status(resp));
 }
 
-TEST_F(M4HttpTest, PreviewReturns503WhenNoSurface) {
-  // back_surface is null in test environment
+TEST_F(M4HttpTest, PreviewReturns503WithoutAMachine) {
+  // No machine is built in this suite: there is no frame to show.
   auto resp = http_get(port_, "/preview.bmp");
   ASSERT_FALSE(resp.empty());
-  // 503 because back_surface is null in test mode
   EXPECT_EQ(503, extract_status(resp));
+}
+
+// beads-0ir.1: the preview is the machine's own frame (768x272 RGB24, each row
+// shown twice so the picture keeps its shape: 768x544), copied on the HTTP
+// thread through the KCPC gate when it is asked for. It used to be a BMP the
+// render thread made every 10 frames from the scaled host surface, which the
+// frame runner writes and swaps beside it; with no such surface (this test
+// binary, a UI-free core between two snapshots) there was no preview at all.
+TEST_F(M4HttpTest, PreviewIsTheMachineFrame) {
+  bool const saved_paused = CPC.paused;
+  bool const saved_emu_paused = g_emu_paused.load();
+  std::string resp;
+  std::string status;
+  {
+    TestBridgeRom const bridge(test_rom_red_border());
+    ASSERT_TRUE(bridge.started());
+    for (int i = 0; i < 3; ++i)
+      ASSERT_EQ(EmuFrameResult::kFrameComplete, emu_run_frame());
+    CPC.paused = true;
+    g_emu_paused.store(true);
+    resp = http_get(port_, "/preview.bmp");
+    status = http_get(port_, "/status");
+  }
+  CPC.paused = saved_paused;
+  g_emu_paused.store(saved_emu_paused);
+
+  ASSERT_EQ(200, extract_status(resp)) << resp.substr(0, 200);
+  std::string const body = extract_body(resp);
+  auto u32 = [&body](size_t at) {
+    return static_cast<uint32_t>(static_cast<unsigned char>(body[at])) |
+           (static_cast<uint32_t>(static_cast<unsigned char>(body[at + 1]))
+            << 8) |
+           (static_cast<uint32_t>(static_cast<unsigned char>(body[at + 2]))
+            << 16) |
+           (static_cast<uint32_t>(static_cast<unsigned char>(body[at + 3]))
+            << 24);
+  };
+  constexpr uint32_t kW = 768;
+  constexpr uint32_t kH = 544;
+  constexpr size_t kRow = kW * 3;
+  ASSERT_EQ(54 + (kRow * kH), body.size());
+  EXPECT_EQ('B', body[0]);
+  EXPECT_EQ('M', body[1]);
+  EXPECT_EQ(kW, u32(18));
+  EXPECT_EQ(kH, u32(22));
+  EXPECT_EQ(24, static_cast<unsigned char>(body[28]));
+  // BMP rows run bottom-up: the picture's top row is the file's last. Its
+  // first pixel is border, which the ROM painted bright red (BGR here), and
+  // the row under it is the same machine row again.
+  size_t const top = 54 + (kRow * (kH - 1));
+  size_t const second = 54 + (kRow * (kH - 2));
+  EXPECT_LT(static_cast<unsigned char>(body[top + 0]), 0x40);  // B
+  EXPECT_LT(static_cast<unsigned char>(body[top + 1]), 0x40);  // G
+  EXPECT_GT(static_cast<unsigned char>(body[top + 2]), 0xC0);  // R
+  EXPECT_EQ(body.compare(top, kRow, body, second, kRow), 0);
+
+  EXPECT_NE(std::string::npos, status.find("\"screen_w\": 768"))
+      << extract_body(status);
+  EXPECT_NE(std::string::npos, status.find("\"screen_h\": 544"))
+      << extract_body(status);
 }
 
 TEST_F(M4HttpTest, RomsApiReturnsJson) {

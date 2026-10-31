@@ -92,6 +92,7 @@ jobs:
           python3 test/integrated/ipc_harness.py
           python3 test/integrated/kcpc/test_exit_criterion.py --ui-free
           python3 test/integrated/kcpc/test_kcpc.py --ui-free
+          python3 test/integrated/kcpc/test_fb_ring.py --ui-free
 
       # ---- Release-only steps below ----
 

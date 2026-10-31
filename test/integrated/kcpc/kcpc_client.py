@@ -28,12 +28,18 @@ checkout, and nothing outside this repository should be built on this file.
             c.snapshot_save('/path/state.sna')    # SNA, nothing else
             c.config_set('model', '3')            # staged...
             c.config_apply()                      # ...and the machine rebuilt
+        info = c.fb_info()                         # the frame ring, by name
+        with FbRing(info.shm_name) as ring:        # another mapping of it
+            seq, rgb = ring.read_latest()          # one whole frame, RGB24
 
 Never assume port 6545: read it from the startup manifest the core prints.
 """
 
+import mmap
+import os
 import socket
 import struct
+import sys
 from dataclasses import dataclass
 from typing import List, Optional, Tuple
 
@@ -94,7 +100,8 @@ OP_SNAPSHOT_LOAD = 0x0901
 OP_CONFIG_GET = 0x0A00
 OP_CONFIG_SET = 0x0A01
 OP_CONFIG_APPLY = 0x0A02
-OP_RESERVED_INPUT = 0x0B00  # a reserved range: used to test UNKNOWN_OPCODE
+OP_GUN = 0x0B00
+OP_RESERVED_INPUT = 0x0BFF  # a reserved range: used to test UNKNOWN_OPCODE
 
 # Events (section 9): frames of kind 3 the server sends unasked.
 EVT_STOPPED = 0x8001
@@ -177,10 +184,12 @@ CAP_INPUT = 1 << 5
 CAP_CHIPS = 1 << 6
 CAP_SYMBOLS = 1 << 7
 CAP_FB_INFO = 1 << 8
+CAP_FB_SHM = 1 << 9
 CAP_MEM_ROM = 1 << 10
 CAP_MEDIA = 1 << 11
 CAP_SNAPSHOT = 1 << 12
 CAP_CONFIG = 1 << 13
+CAP_GUN = 1 << 14
 
 # CHIP_GET: the chips, and the layout of each one's block.
 CHIP_CRTC = 1
@@ -220,6 +229,7 @@ MAX_SYMBOL_NAME = 255
 # FB_INFO.
 FB_FORMAT_RGB24 = 1
 FB_TRANSPORT_NONE = 0
+FB_TRANSPORT_SHM = 1   # the frame ring, docs/protocol/fb-ring-v1.md
 
 # Input (section 12). A key is a place in the CPC keyboard matrix: (row, bit).
 # Row 9 is joystick 0; a pressed key reads as a clear bit in INPUT_STATE.
@@ -237,6 +247,12 @@ MOUSE_LEFT = 1 << 0
 MOUSE_MIDDLE = 1 << 1
 MOUSE_RIGHT = 1 << 2
 MOUSE_FLAG_BUTTONS = 1 << 0   # MOUSE: the `buttons` field is to be applied
+
+# GUN: the aim is in pixels of the frame FB_INFO describes.
+GUN_FRAME_WIDTH = 768
+GUN_FRAME_HEIGHT = 272
+GUN_FLAG_AIM = 1 << 0         # `x` and `y` are to be applied
+GUN_FLAG_TRIGGER = 1 << 1     # `trigger` is to be applied
 
 # Memory spaces (section 11).
 SPACE_CPU = 0        # what the Z80 would read now
@@ -942,6 +958,15 @@ def mouse_payload(dx: int, dy: int, buttons: Optional[int] = None) -> bytes:
     return struct.pack('<hhBB', dx, dy, buttons or 0, flags)
 
 
+def gun_payload(aim: Optional[Tuple[int, int]] = None,
+                pulled: Optional[bool] = None) -> bytes:
+    """None leaves the aim, or the trigger, as it is."""
+    flags = ((GUN_FLAG_AIM if aim is not None else 0)
+             | (GUN_FLAG_TRIGGER if pulled is not None else 0))
+    x, y = aim if aim is not None else (0, 0)
+    return struct.pack('<HHBB', x, y, 1 if pulled else 0, flags)
+
+
 def mem_read_payload(space: int, addr: int, length: int,
                      bank: int = 0) -> bytes:
     return struct.pack('<BBHII', space, 0, bank, addr, length)
@@ -1314,6 +1339,14 @@ class KcpcClient:
         NOT_PRESENT when no mouse is enabled."""
         self.request(OP_MOUSE, mouse_payload(dx, dy, buttons))
 
+    def gun(self, aim: Optional[Tuple[int, int]] = None,
+            pulled: Optional[bool] = None) -> None:
+        """Aim the light gun at `aim`, (x, y) in frame pixels (FB_INFO's
+        width by height), and pull (True) or let go of (False) its trigger.
+        None leaves either as it is. A trigger still pulled when this client
+        loses control is let go. NOT_PRESENT when no light gun is enabled."""
+        self.request(OP_GUN, gun_payload(aim, pulled))
+
     def input_state(self) -> bytes:
         """The keyboard matrix, one byte per row (KEY_ROWS of them); a clear
         bit is a key that is down. Anyone may ask."""
@@ -1321,3 +1354,121 @@ class KcpcClient:
         if len(rows) != KEY_ROWS:
             raise ValueError(f'INPUT_STATE returned {len(rows)} rows')
         return rows
+
+
+# -- the frame ring (docs/protocol/fb-ring-v1.md) ----------------------------
+
+FB_RING_MAGIC = 0x46554246   # b'FBUF' read little-endian
+FB_RING_VERSION = 1
+FB_RING_HEADER = struct.Struct('<IIIIIIIIQQQQ')   # offsets 0 to 63
+FB_RING_HEADER_BYTES = 256
+FB_RING_LATEST_SEQ = 64
+FB_RING_LATEST_SLOT = 72
+FB_RING_SLOT_SEQ = 80
+_U64 = struct.Struct('<Q')
+
+
+class FbRingError(Exception):
+    """The ring cannot be opened or is not one this reader understands."""
+
+
+class FbRing:
+    """A read-only mapping of a core's frame ring, by the name FB_INFO
+    reports (`shm_name`).
+
+    Python has no acquire load: each 64-bit word is read with one aligned
+    8-byte copy, and what keeps a torn frame out is the document's check,
+    the slot's sequence number read before and after the copy. Good enough
+    for a reference reader and the tests; tools/fb_dump.c is the one that
+    follows the memory ordering to the letter."""
+
+    def __init__(self, shm_name: str):
+        self.name = shm_name
+        self._map = None
+        if sys.platform == 'win32':
+            # A view of the header first: the slots' extent is in it.
+            header = self._map_windows(FB_RING_HEADER_BYTES)
+            try:
+                fields = FB_RING_HEADER.unpack_from(header, 0)
+            finally:
+                header.close()
+            size = fields[10] + fields[7] * fields[9]
+            self._map = self._map_windows(max(size, FB_RING_HEADER_BYTES))
+        else:
+            import _posixshmem   # pylint: disable=import-outside-toplevel
+            try:
+                fd = _posixshmem.shm_open(shm_name, os.O_RDONLY, mode=0)
+            except OSError as error:
+                raise FbRingError(f'no ring named {shm_name}: {error}') \
+                    from error
+            try:
+                size = os.fstat(fd).st_size
+                if size < FB_RING_HEADER_BYTES:
+                    raise FbRingError(f'{shm_name} is not a frame ring')
+                self._map = mmap.mmap(fd, size, mmap.MAP_SHARED,
+                                      mmap.PROT_READ)
+            finally:
+                os.close(fd)
+        (magic, version, header_bytes, fmt, self.width, self.height,
+         self.stride, self.ring_slots, self.slot_bytes, self.slot_stride,
+         self.slots_offset, self.producer_pid) = FB_RING_HEADER.unpack_from(
+             self._map, 0)
+        if magic != FB_RING_MAGIC or version != FB_RING_VERSION:
+            self.close()
+            raise FbRingError(f'{shm_name}: magic {magic:#x} version '
+                              f'{version}: not a version 1 frame ring')
+        if (fmt != 1 or header_bytes != FB_RING_HEADER_BYTES
+                or self.slot_bytes != self.stride * self.height
+                or self.slots_offset + self.ring_slots * self.slot_stride
+                > len(self._map)):
+            self.close()
+            raise FbRingError(f'{shm_name}: a header this reader does not '
+                              f'understand')
+
+    def _map_windows(self, size: int) -> mmap.mmap:
+        # The mapping of that name if the core made one. On a name nobody
+        # made, Windows makes an empty one, whose magic the caller refuses.
+        try:
+            return mmap.mmap(-1, size, tagname=self.name,
+                             access=mmap.ACCESS_READ)
+        except OSError as error:
+            raise FbRingError(f'no ring named {self.name}: {error}') \
+                from error
+
+    def _u64(self, offset: int) -> int:
+        return _U64.unpack_from(self._map, offset)[0]
+
+    def latest_seq(self) -> int:
+        """The sequence number of the latest whole frame, 0 before the
+        first."""
+        return self._u64(FB_RING_LATEST_SEQ)
+
+    def read_latest(self, attempts: int = 64) -> Tuple[int, bytes]:
+        """(seq, pixels): the latest whole frame, `height` rows of `stride`
+        bytes. Steps 2 to 5 of the document's "Reading"."""
+        for _ in range(attempts):
+            if self.latest_seq() == 0:
+                raise FbRingError(f'{self.name}: no frame published yet')
+            slot = self._u64(FB_RING_LATEST_SLOT)
+            if slot >= self.ring_slots:
+                continue
+            stamp = self._u64(FB_RING_SLOT_SEQ + 8 * slot)
+            if stamp == 0 or stamp & 1:
+                continue
+            begin = self.slots_offset + slot * self.slot_stride
+            pixels = self._map[begin:begin + self.slot_bytes]
+            if self._u64(FB_RING_SLOT_SEQ + 8 * slot) != stamp:
+                continue   # the producer lapped the ring during the copy
+            return stamp // 2, pixels
+        raise FbRingError(f'{self.name}: every attempt was torn')
+
+    def close(self) -> None:
+        if self._map is not None:
+            self._map.close()
+            self._map = None
+
+    def __enter__(self) -> 'FbRing':
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self.close()

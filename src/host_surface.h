@@ -3,13 +3,15 @@
 // The host's CPC frame surface, with or without SDL (beads-29zx).
 //
 // back_surface is the frame the bridge blits the machine's RGB24 framebuffer
-// into, and what screenshots, `hash vram`, the GIF/AVI recorders and the M4
-// preview read. In the GUI build it is an SDL_Surface of whatever format the
-// video plugin chose, and HostSurface is SDL_Surface: nothing changes there.
-// In the SDL-free build (KONCPC_MODERN_UI=0) the only surface is the headless
-// one, so HostSurface is a plain RGBA32 buffer with the same w/h/pitch/pixels
-// members the readers use. SDL_PIXELFORMAT_RGBA32 is also what the headless
-// plugin asks SDL for, so both builds hold the same bytes for the same frame.
+// into, and what screenshots and the AVI recorder read. (`hash frame`/`hash
+// vram`, the GIF recorder and the M4 preview read the machine's own frame
+// through kcpc_host_frame_copy(), beads-0ir.1.) In the GUI build it is an
+// SDL_Surface of whatever format the video plugin chose, and HostSurface is
+// SDL_Surface: nothing changes there. In the SDL-free build
+// (KONCPC_MODERN_UI=0) the only surface is the headless one, so HostSurface is
+// a plain RGBA32 buffer with the same w/h/pitch/pixels members the readers use.
+// SDL_PIXELFORMAT_RGBA32 is also what the headless plugin asks SDL for, so both
+// builds hold the same bytes for the same frame.
 
 #include <cstdint>
 #include <string>

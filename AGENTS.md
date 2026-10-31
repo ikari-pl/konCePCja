@@ -28,7 +28,7 @@ src/
 ├── koncepcja_ipc_server.cpp  # TCP IPC server for external debugging
 ├── telnet_console.cpp # TCP text console — mirrors CPC output, injects keyboard
 ├── kcpc/              # KCPC binary frontend server (port 6545): codec, threads, host seam
-├── net_socket.cpp     # the socket shim the KCPC server uses (the one #ifdef _WIN32 for it)
+├── net_socket.cpp     # the socket shim the KCPC server and text IPC use (the one #ifdef _WIN32 for them)
 └── z80_view.cpp       # host-side Z80 view + the firmware/BDOS output hooks
 ```
 
@@ -186,7 +186,7 @@ OK available commands (usage: help <command>):
 | `wait bp [timeout]` | Wait for breakpoint hit (reports only after pause lands; drops hits from a previous arming and the hit of a stop the machine has since been run out of) | `wait bp 10000` |
 | `wait vbl <n> [timeout]` | Run N frames of emulation (vertical blanks, not wall time), then pause; same count as `step frame N` from a paused machine. A breakpoint that fires first is `ERR 409 stopped-elsewhere` | `wait vbl 50` |
 | `disasm <addr> <count>` | Disassemble | `disasm 0x4000 10` |
-| `screenshot [path]` | Take screenshot | `screenshot /tmp/shot.bmp` |
+| `screenshot [path]` | Save the machine's frame as a 768x544 PNG (rows doubled, the `hash frame` bytes; same in every build) | `screenshot /tmp/shot.png` |
 | `snapshot save <path>` | Save state | `snapshot save game.sna` |
 | `snapshot load <path>` | Load state | `snapshot load game.sna` |
 | `load <path>` | Load file (.dsk/.sna/.cpr/.bin); a successful disk/tape/snapshot/cartridge load also lands on the matching Recent list, with the path made absolute (GUI saves the config, `--headless` does not) | `load game.dsk` |
@@ -226,7 +226,7 @@ echo "load game.dsk" | nc localhost 6543
 sleep 1
 echo "run" | nc localhost 6543
 echo "wait pc 0xC000 30000" | nc localhost 6543  # Wait for game entry
-echo "screenshot /tmp/game.bmp" | nc localhost 6543
+echo "screenshot /tmp/game.png" | nc localhost 6543
 ```
 
 ### Automated IPC Testing
@@ -409,10 +409,11 @@ anyone, and the breakpoints `BP_ADD`, `BP_DEL`, `BP_CLEAR` (`BP_LIST` for
 anyone): execution breakpoints, watchpoints and I/O breakpoints, on the
 lists the text IPC and DevTools edit, and input: `KEY` (a keyboard matrix
 position; row 9 is joystick 0), `KEYS_RELEASE`, `TEXT` (the AutoTypeQueue)
-and `MOUSE`, with `INPUT_STATE` for anyone, and what the DevTools show:
+and `MOUSE`, with `INPUT_STATE` for anyone, and the light gun (`GUN`, aimed
+in frame pixels), and what the DevTools show:
 `CHIP_GET` (CRTC, Gate Array, PSG, FDC, ASIC), the memory space `ASIC_PAGE`,
 the symbols (`SYM_LIST` for anyone; `SYM_ADD`, `SYM_DEL`, `SYM_LOAD`) and
-`FB_INFO`, and media, snapshots and configuration: `MEDIA_INSERT`,
+`FB_INFO` (which names the frame ring, `CAP_FB_SHM`), and media, snapshots and configuration: `MEDIA_INSERT`,
 `MEDIA_EJECT`, `TAPE_CONTROL`, `SNAPSHOT_SAVE`, `SNAPSHOT_LOAD`,
 `CONFIG_SET`, `CONFIG_APPLY` (`MEDIA_INFO` and `CONFIG_GET` for anyone). A client
 that sends `SUBSCRIBE` is pushed events (`EVT_STOPPED`, `EVT_RESUMED`,
@@ -506,15 +507,19 @@ binary_port_enabled=1      # 0 = do not open the port (manifest: `binary: null`)
 - Input from this port uses the paths the text IPC's `input` commands use
   and takes no pause lease: `KEY` writes the pending matrix through
   `kbd_matrix_set_line()` (`src/keyboard.h`), `TEXT` enqueues on
-  `g_autotype_queue`, `MOUSE` stages through `ipc_stage_mouse()` for
-  `ipc_drain_input()`. **`KEY` must not go through `ipc_apply_keypress()` or
-  `applyKeypressDirect()`**: those release SHIFT and CONTROL around a plain
-  key, and a frontend sends its modifiers as matrix positions of their own.
-- The server (`Server::press_key()`, `release_held()`) remembers the keys
-  and mouse buttons the controller holds and releases exactly those when it
-  loses control, before `EVT_CONTROL_CHANGED` is posted. A new request that
-  holds something down (a key, a button) must be recorded there, under
-  `held_mutex_`, after re-checking the controller under that mutex.
+  `g_autotype_queue`, `MOUSE` stages through `ipc_stage_mouse()` and `GUN`
+  through `ipc_stage_gun()` for `ipc_drain_input()`. `GUN`'s aim is in frame
+  pixels (`CPC.phazer_x/y`'s units, FB_INFO's 768×272), applied without the
+  window mapping the text IPC's `input gun move` goes through. **`KEY` must
+  not go through `ipc_apply_keypress()` or `applyKeypressDirect()`**: those
+  release SHIFT and CONTROL around a plain key, and a frontend sends its
+  modifiers as matrix positions of their own.
+- The server (`Server::press_key()`, `release_held()`) remembers the keys,
+  mouse buttons and gun trigger the controller holds and releases exactly
+  those when it loses control, before `EVT_CONTROL_CHANGED` is posted. A new
+  request that holds something down (a key, a button, a trigger) must be
+  recorded there, under `held_mutex_`, after re-checking the controller
+  under that mutex.
 - Chip state for this port is read off the Devices, through the gate
   (`kcpc_host_chip_get()`): `crtc_peek()`, `ga_peek()`, `psg_peek()`,
   `fdc_peek()`, `asic_peek()`. **Never from the host view structs** (`CRTC`,
@@ -523,6 +528,19 @@ binary_port_enabled=1      # 0 = do not open the port (manifest: `binary: null`)
   block only grows, by a new layout number (`kChipLayout*` in
   `kcpc_proto.h`), and the document's table of which window reads what says
   when one has to.
+- The picture, read off the frame runner (the text IPC's `hash frame`,
+  `hash vram`, `screenshot` and `frames dump`, GIF and PNG alike, the F3 /
+  menu screenshot, the M4 `/preview.bmp`), is the
+  machine's canonical frame (RGB24 768x272, what `FB_INFO` describes),
+  copied through the gate by `kcpc_host_frame_copy()`
+  (`subcycle_bridge_framebuffer()` underneath). **Never `back_surface`**
+  from another thread: the runner blits into it during the frame and, in the
+  GUI, swaps it for the next ring buffer at the boundary, and it is scaled to
+  the window and in the plugin's pixel format (beads-0ir.1). A saved
+  picture is that frame with each row shown twice, 768x544
+  (`dumpScreenTo()`, beads-2hoi). The render
+  thread's own readers (presenting, the dock preview) and the runner's (the
+  AVI recorder) keep reading it.
 - `g_symfile` is shared by the render thread, the text IPC and this port.
   Every `Symfile` method takes the table's lock; `Symbols()`,
   `Breakpoints()` and `Entrypoints()` hand out references and are only for a
@@ -560,11 +578,35 @@ binary_port_enabled=1      # 0 = do not open the port (manifest: `binary: null`)
   is ticked along with the board, so a stepped fetch at an armed address
   latches a hit nobody collects; left there, the next frame reported it as a
   breakpoint stop at an address the CPU had left.
+- The frame ring (beads-0ir.2, [docs/protocol/fb-ring-v1.md](docs/protocol/fb-ring-v1.md)):
+  the core publishes the canonical frame to shared memory named
+  `kcpc-fb-<pid>` (`/kcpc-fb-<pid>` on POSIX, `Local\kcpc-fb-<pid>` on
+  Windows) at **every** frame completion, read or not (user decision
+  2026-10-26). `fb_publish_frame()` (`src/kcpc/fb_publish.h`) is called by
+  `subcycle_bridge_frame()` on the frame runner, only for a frame that ran
+  to its end, before the host blit and the pacer's sleep; it takes no lock,
+  so `fb_publish_start()` runs before the frame runner exists and
+  `fb_publish_stop()` (in `doCleanUp()`, which the signal exit takes too)
+  after it has ended. The layout and the seqlock are `src/kcpc/fb_ring.h`;
+  the OS shim (the one `#ifdef _WIN32` for shared memory) is
+  `src/shm_region.{h,cpp}`. The producer never waits for a reader.
+  KCPC names the ring (beads-0ir.3): `kcpc_host_fb_info()` reports
+  `fb_publish_shm_name()` and `fb_publish_seq()` (atomics, safe from a
+  socket thread), and `kcpc_service_frame()` puts `fb_publish_seq()` in each
+  `EVT_FRAME`: it runs in `frame_epilogue()`, after the bridge published the
+  frame. `CAP_FB_SHM` is announced only while the ring runs.
+  `tools/fb_dump.c` (`make fb_dump_tool`, CMake `fb_dump`; `make e2e_test`
+  builds it) is a C reader that includes no emulator header: keep it that
+  way, it is the proof the document is enough. `test_fb_ring.py` is phase
+  4's exit test.
 - `KONCPC_KCPC_CONTROLLER_TIMEOUT_MS` in the environment lowers the 30 s a
   controller may stay silent, and `KONCPC_KCPC_EVENT_QUEUE_BYTES` the 4 MiB
   of queue beyond which a client's events are dropped. They exist for the
   tests.
 - `src/net_socket.{h,cpp}` — non-blocking loopback sockets with timeouts.
+  The text IPC server runs on it too: a reply goes out whole however long
+  (the client socket is non-blocking), and every wait is a 200 ms slice, so
+  `stop()` never waits for a quiet client.
 - `test/integrated/kcpc/kcpc_client.py` is the reference client (standard
   library only); `test_kcpc.py` next to it starts its own cores
   (`-H` by default, `--ui-free`, `--gui`) and runs inside `make e2e_test`.
@@ -606,6 +648,7 @@ curl http://localhost:8080/sd/m4/dir.txt  # Directory listing (M4 format)
 | `GET /sd/<path>` | Download file from SD |
 | `GET /sd/m4/dir.txt` | M4-format directory listing |
 | `GET /status` | JSON status (extension) |
+| `GET /preview.bmp` | The machine's frame as a 768x544 BMP (extension; see below) |
 | `POST /` | Upload file (multipart/form-data) |
 | `POST /reset` | Reset CPC (deferred to main thread) |
 | `POST /pause` | Toggle pause (deferred to main thread) |
@@ -910,6 +953,42 @@ Recurring patterns from code reviews. Follow these to avoid common pitfalls:
 
 - **NEVER merge a PR with failing CI checks.** Fix failures first.
 - **Auto-merge** (`gh pr merge --auto`) triggers only when **all CI checks pass AND all review comment threads are resolved**. A PR that is green on CI but has unresolved threads will stay blocked. Always resolve open threads before expecting auto-merge to fire.
+
+### Automated PR review (`review` label)
+
+`.github/workflows/pr-review.yml` runs the compound-engineering plugin's
+`ce-code-review` (a Claude Code skill that sends the diff to several reviewer
+sub-agents, checks their findings and merges them into one report) on a PR,
+and posts the report as **one** PR comment. A re-run edits that comment
+instead of adding a new one.
+
+- **Trigger:** add the `review` label to the PR. The workflow removes the
+  label when it finishes, so adding it again runs a fresh review. Or by hand:
+  `gh workflow run pr-review.yml --repo ikari-pl/konCePCja -f pr=<number>`.
+  It never runs on a push, and PRs from forks are skipped (they get no
+  secrets).
+- **Setup, once:** `gh secret set CROWBOT_API_KEY --repo ikari-pl/konCePCja`
+  (the crowbot.sh API key). Optional: `gh variable set REVIEW_MODEL --body
+  <crowbot model id>` (default `claude-opus-5-5`), and `REVIEW_SUBAGENT_MODEL`
+  for the reviewer sub-agents (default: the same model). `crowbot models`
+  lists the ids.
+- **How it reaches the model:** crowbot.sh serves only the OpenAI API format,
+  Claude Code speaks only Anthropic's, so the job starts a LiteLLM proxy (a
+  local translator, `.github/review/litellm.yaml`) between them.
+- **Cost:** one review is one Claude Code run with roughly 6-10 reviewer
+  sub-agents plus a validator per finding, each reading the diff and the
+  files around it. Expect a few million tokens for a mid-sized PR (more for a
+  big diff), billed to the crowbot account at crowbot's rates, and 10-40
+  minutes of runner time (limit 60). The comment's footer shows the tokens
+  the run used. Label only the PRs worth it.
+- **Safety:** the PR is untrusted input. The job checks out the base commit
+  and reads the PR head with `git show` (none of the PR's code runs), the
+  agent holds only a read-only `GITHUB_TOKEN`, may run only reads, read-only
+  `git`/`gh` and writes under its `/tmp` run directory, and the crowbot key
+  lives only in the proxy, run as a separate user after `sudo` and Docker are
+  taken away. Only the separate posting job has write access, and it runs
+  nothing from the PR. The full run directory is a workflow artifact for 30
+  days.
 
 ## Landing the Plane (Session Completion)
 

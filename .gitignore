@@ -6,6 +6,8 @@
 /.debug
 /googletest
 /test_runner
+/fb_dump
+/fb_dump.exe
 /disk
 /screenshots
 /release

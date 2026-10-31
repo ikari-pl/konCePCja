@@ -146,6 +146,12 @@ kcpc::Status kcpc_host_text(const std::string& text, std::uint32_t& pending,
 kcpc::Status kcpc_host_mouse(int dx, int dy, bool set_buttons,
                              std::uint8_t buttons);
 kcpc::Status kcpc_host_input_state(kcpc::KeyMatrix& rows);
+// GUN: the light gun's aim, in frame pixels, and its trigger, staged for
+// ipc_drain_input() like a mouse movement (ipc_stage_gun(), the staging the
+// text IPC's `input gun` uses). No lease either. kNotPresent when no light
+// gun is enabled (`input.lightgun`).
+kcpc::Status kcpc_host_gun(bool aim, std::uint16_t x, std::uint16_t y,
+                           bool set_trigger, bool pulled);
 
 // Chip state (section 12): the block of state.chip, read off the Devices
 // through the gate like the other machine reads. kNotPresent for the ASIC of
@@ -175,6 +181,16 @@ kcpc::Status kcpc_host_sym_load(std::uint32_t client, std::uint32_t request,
 
 // FB_INFO: the machine's canonical frame, with no transport until phase 4.
 kcpc::Status kcpc_host_fb_info(kcpc::FbInfo& info);
+// That frame, copied whole into `rgb` (sized here: RGB24, the width, height
+// and stride FB_INFO gives), for a reader off the frame runner: the text IPC's
+// `hash frame` and GIF recorder, the M4 /preview.bmp. Taken through the gate
+// like MEM_READ, so never beside a running frame: on a running machine the
+// runner copies it at the next frame boundary, on a stopped one the calling
+// thread does. Called by the runner inside its own frame turn (an IPC event)
+// it copies at once. `stamp` is when the copy was taken. kNotPresent when no
+// machine is built.
+kcpc::Status kcpc_host_frame_copy(std::vector<std::uint8_t>& rgb,
+                                  kcpc::Stamp& stamp);
 
 // Media (section 12): MEDIA_INSERT, MEDIA_EJECT, MEDIA_INFO, TAPE_CONTROL.
 // The changes run on the calling (socket) thread under a pause lease, while

@@ -1,0 +1,24 @@
+# LiteLLM proxy for the PR review workflow (.github/workflows/pr-review.yml).
+# Claude Code speaks the Anthropic Messages API (/v1/messages); crowbot.sh
+# serves only the OpenAI format (/v1/chat/completions). The proxy takes the
+# former and forwards to the latter, passing the model name through, so
+# whatever crowbot id Claude Code asks for (REVIEW_MODEL) is what is billed.
+model_list:
+  - model_name: "*"
+    litellm_params:
+      model: "openai/*"
+      api_base: os.environ/REVIEW_UPSTREAM_BASE
+      api_key: os.environ/CROWBOT_API_KEY
+
+litellm_settings:
+  # Claude Code sends Anthropic-only parameters (thinking budgets, betas);
+  # drop what the OpenAI side does not accept instead of failing the call.
+  drop_params: true
+  telemetry: false
+  request_timeout: 600
+  num_retries: 2
+
+general_settings:
+  # The key Claude Code presents to the proxy: a per-run random value, never
+  # the crowbot key itself.
+  master_key: os.environ/REVIEW_PROXY_KEY

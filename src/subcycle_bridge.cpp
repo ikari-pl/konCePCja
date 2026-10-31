@@ -39,6 +39,7 @@
 #include "hw/psg.h"
 #include "hw_views.h"  // TAPE_LEVEL_HIGH/LOW for the mirrored scope level
 #include "ipc_mru.h"   // ipc_mru_stage: a DSK written beside an archive
+#include "kcpc/fb_publish.h"  // fb_publish_frame: the shared-memory ring
 #include "koncepcja.h"
 #include "koncepcja_ipc_server.h"  // pc= / mem= events armed on the probe
 #include "log.h"
@@ -756,6 +757,10 @@ int subcycle_bridge_bench_fps(int tier) {
 
 subcycle::Machine* subcycle_bridge_machine() {
   return g_bridge.active ? &g_bridge.machine : nullptr;
+}
+
+const uint8_t* subcycle_bridge_framebuffer() {
+  return g_bridge.active ? g_bridge.fb.data() : nullptr;
 }
 
 void subcycle_bridge_silicon_disc_copy_out(uint8_t* dst) {
@@ -2144,7 +2149,8 @@ const std::vector<int16_t>& subcycle_bridge_frame(const uint8_t rows[16],
   // are not pure (z80_bp_should_fire increments hit_count, so pass counts
   // would double-count) and z80_probe_exec_should_break republishes the PC.
   // A hit that breaks is recorded here and handed to the sync unre-evaluated.
-  bool spliced = false;  // did a filtered hit force a mid-frame re-entry?
+  bool spliced = false;    // did a filtered hit force a mid-frame re-entry?
+  bool completed = false;  // did the frame run to its end?
   for (int guard = 0; guard < kMaxProbeContinues; ++guard) {
     ProbeHit hit{};
     bool has_hit = false;
@@ -2166,7 +2172,10 @@ const std::vector<int16_t>& subcycle_bridge_frame(const uint8_t rows[16],
       }
     }
     dispatch_event_hits(b);
-    if (!has_hit) break;  // frame ran to completion
+    if (!has_hit) {  // frame ran to completion
+      completed = true;
+      break;
+    }
     if (disposition != 0) {
       b.pending_hit_disposition = ProbeDisposition::kBreak;  // sync reports it
       b.pending_hit = hit;
@@ -2182,6 +2191,12 @@ const std::vector<int16_t>& subcycle_bridge_frame(const uint8_t rows[16],
                              segment.end());
     }
   }
+
+  // Every whole frame goes to the frame ring, read or not (beads-0ir.2): the
+  // canonical frame as the machine drew it, before the host blit and before
+  // the pacer's sleep, so a reader gets it as early as the core has it. A
+  // frame a breakpoint stopped is published when a later call finishes it.
+  if (completed) fb_publish_frame(b.fb.data());
 
   blit_fb(b, dst);
 

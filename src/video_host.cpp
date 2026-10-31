@@ -188,26 +188,11 @@ void video_ring_present() {
 }
 
 // The surface the render thread should read/write for the displayed frame
-// (OSD text, screenshots, dock preview, thumbnails).  Equals the plugin's
-// front-end surface, now holding the most-recently-presented frame.
+// (OSD text, window screenshots, dock preview, thumbnails).  Equals the
+// plugin's front-end surface, now holding the most-recently-presented frame.
 // NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other
 // translation units/tests; internal linkage would break the link
 SDL_Surface* video_render_surface() { return g_frontend; }
-
-// The most recently PUBLISHED frame — the Z80 thread's actual output —
-// without involving the render thread.  For screenshots/diagnostics: the
-// presented g_frontend goes stale whenever the present path stalls (occluded
-// macOS window, remote desktop) even though emulation keeps running.  The
-// returned buffer becomes the writer's target again after its next publish,
-// so a capture can tear mid-frame at worst; pause the emulation first for an
-// exact frame.  Null when the ring is inactive (headless single-buffer).
-// NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other
-// translation units/tests; internal linkage would break the link
-SDL_Surface* video_ring_published_peek() {
-  if (!g_ring_active) return nullptr;
-  return g_cpc_ring[g_ring_shared.load(std::memory_order_acquire) &
-                    RING_INDEX_MASK];
-}
 
 void video_ring_shutdown() {
   for (auto& i : g_cpc_ring) {

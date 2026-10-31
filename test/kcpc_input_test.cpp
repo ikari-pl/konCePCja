@@ -15,7 +15,12 @@
 #include "kcpc/kcpc_host.h"
 #include "kcpc/kcpc_proto.h"
 #include "keyboard.h"
+#include "koncepcja.h"
 #include "koncepcja_ipc_server.h"
+#include "video_plugin.h"
+
+extern t_CPC CPC;
+extern video_plugin* vid_plugin;
 
 namespace {
 
@@ -154,4 +159,44 @@ TEST_F(KcpcHostInputTest, MouseNeedsAMouse) {
   ipc_publish_device_gates(true, false);
   EXPECT_EQ(kcpc_host_mouse(5, -5, true, kcpc::kMouseButtonLeft), Status::kOk);
   EXPECT_TRUE(ipc_stage_mouse(1, 1, std::nullopt));
+}
+
+TEST_F(KcpcHostInputTest, GunNeedsAGun) {
+  ipc_publish_device_gates(false, false);
+  EXPECT_EQ(kcpc_host_gun(true, 10, 10, true, true), Status::kNotPresent);
+  EXPECT_FALSE(ipc_stage_gun(IpcGunAim{1, 1}, std::nullopt));
+}
+
+// GUN aims in the frame's pixels, which are CPC.phazer_x/y's own: nothing
+// maps them through the window. The headless plugin's scale is 0, so a
+// window mapping would put every aim at the top left corner.
+TEST_F(KcpcHostInputTest, GunAimsInFramePixelsWhateverTheWindow) {
+  static video_plugin headless{};
+  headless.x_scale = 0.0f;
+  headless.y_scale = 0.0f;
+  video_plugin* const saved_plugin = vid_plugin;
+  vid_plugin = &headless;
+  auto const saved_type = CPC.phazer_emulation;
+  CPC.phazer_emulation = PhazerType::AmstradMagnumPhaser;
+  CPC.phazer_x = 0;
+  CPC.phazer_y = 0;
+  CPC.phazer_pressed = false;
+  ipc_publish_device_gates(false, true);
+
+  ASSERT_EQ(kcpc_host_gun(true, 400, 120, true, true), Status::kOk);
+  ipc_drain_input();
+  EXPECT_EQ(CPC.phazer_x, 400U);
+  EXPECT_EQ(CPC.phazer_y, 120U);
+  EXPECT_TRUE(CPC.phazer_pressed);
+
+  // The trigger alone leaves the aim where it is, and needs no plugin.
+  vid_plugin = nullptr;
+  ASSERT_EQ(kcpc_host_gun(false, 0, 0, true, false), Status::kOk);
+  ipc_drain_input();
+  EXPECT_EQ(CPC.phazer_x, 400U);
+  EXPECT_EQ(CPC.phazer_y, 120U);
+  EXPECT_FALSE(CPC.phazer_pressed);
+
+  vid_plugin = saved_plugin;
+  CPC.phazer_emulation = saved_type;
 }

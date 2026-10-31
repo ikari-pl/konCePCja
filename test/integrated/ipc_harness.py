@@ -3493,6 +3493,105 @@ def test_frames_dump_stops_at_a_breakpoint():
         return True
 
 
+def _hash_frame_after(snapshot: str, *args) -> Tuple[Optional[str], str]:
+    """Start a core, load `snapshot`, run 3 frames, and hash its frame.
+
+    Returns (crc, the whole reply), or (None, why).
+    """
+    with EmulatorRunner() as emu:
+        if not emu.start(*args):
+            return None, "could not start emulator"
+        ipc = emu.ipc
+        for cmd in ('pause', f'snapshot load {snapshot}', 'wait vbl 3'):
+            ok, resp = ipc.send_command(cmd)
+            if not ok:
+                return None, f"{cmd}: {resp}"
+        ok, resp = ipc.send_command('hash frame')
+        if not ok or not resp.startswith('OK crc32='):
+            return None, f"hash frame: {resp!r}"
+        ok, vram = ipc.send_command('hash vram')
+        crc = resp.split()[1]
+        if not ok or vram.strip() != f'OK {crc}':
+            return None, f"hash vram {vram!r} is not hash frame's {crc}"
+        return crc, resp.strip()
+
+
+def test_hash_frame_is_the_machine_frame():
+    """`hash frame` hashes the machine's own frame, whoever presents it.
+
+    beads-0ir.1: `hash vram` hashed the host surface the frame runner blits
+    the frame into, scaled to the window and in the video plugin's pixel
+    format, read from the IPC thread beside the runner. The same machine state
+    hashed differently under the GUI build and -H. Both now hash the
+    canonical frame (768x272 RGB24), copied between two frames: the same
+    snapshot, run the same 3 frames, hashes the same in the threaded loop and
+    the -H loop. The animated GIF of `frames dump` is that frame too, each
+    row shown twice (768x544), in either loop, and so are `screenshot` and
+    the PNG series of `frames dump` (beads-2hoi).
+    """
+    print("Running hash frame test...")
+    with tempfile.TemporaryDirectory() as td:
+        sna = os.path.join(td, 'state.sna')
+        gif = os.path.join(td, 'rec.gif')
+        shot = os.path.join(td, 'shot.png')
+        series = os.path.join(td, 'series')
+        with EmulatorRunner() as emu:
+            if not emu.start():
+                print("FAIL: Could not start emulator")
+                return False
+            ipc = emu.ipc
+            for cmd in ('wait vbl 100', f'snapshot save {sna}',
+                        f'frames dump {gif} 2', f'screenshot {shot}',
+                        f'frames dump {series} 1'):
+                ok, resp = ipc.send_command(cmd)
+                if not ok:
+                    print(f"FAIL: {cmd}: {resp}")
+                    return False
+            ok, resp = ipc.send_command('hash frame')
+            fields = dict(f.split('=', 1) for f in resp.split()[1:] if '=' in f)
+            want = {'width': '768', 'height': '272', 'stride': '2304',
+                    'format': 'rgb24', 'paused': '1'}
+            if not ok or any(fields.get(k) != v for k, v in want.items()):
+                print(f"FAIL: hash frame reply {resp!r}, want {want}")
+                return False
+        with open(gif, 'rb') as f:
+            head = f.read(10)
+        size = (int.from_bytes(head[6:8], 'little'),
+                int.from_bytes(head[8:10], 'little'))
+        if head[:3] != b'GIF' or size != (768, 544):
+            print(f"FAIL: frames dump GIF is {head[:6]!r} {size}, want "
+                  f"GIF (768, 544)")
+            return False
+        for png in (shot, f'{series}_0000.png'):
+            with open(png, 'rb') as f:
+                head = f.read(24)
+            size = (int.from_bytes(head[16:20], 'big'),
+                    int.from_bytes(head[20:24], 'big'))
+            if head[:8] != b'\x89PNG\r\n\x1a\n' or size != (768, 544):
+                print(f"FAIL: {png} is {head[:4]!r} {size}, want PNG "
+                      f"(768, 544)")
+                return False
+        # The loop under test, then the other one.
+        threaded, why = _hash_frame_after(sna)
+        if threaded is None:
+            print(f"FAIL: first core: {why}")
+            return False
+        other_args = ('--headless',)
+        if os.environ.get('KONCPC_E2E_HEADLESS') == '1':
+            # Both -H: still a fresh core, at another window scale.
+            other_args = ('--headless', '-O', 'video.scr_scale=1')
+        other, why = _hash_frame_after(sna, *other_args)
+        if other is None:
+            print(f"FAIL: second core: {why}")
+            return False
+        if threaded != other:
+            print(f"FAIL: the same frame hashed {threaded} in one loop and "
+                  f"{other} in the other")
+            return False
+    print(f"PASS: hash frame agrees across loops ({threaded})")
+    return True
+
+
 def test_disk_status_save_eject():
     """File-menu Save Disk / Eject Disk over IPC (live FDC, not host t_drive).
 
@@ -5019,6 +5118,7 @@ def main():
 
     tests = [
         test_wait_vbl_counts_real_frames,
+        test_hash_frame_is_the_machine_frame,
         test_wait_vbl_timeout_ends_stopped,
         test_pause_replies_once_stopped,
         test_config_set_machine_keys_on_a_running_machine,

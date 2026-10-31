@@ -17,8 +17,10 @@
 #include <zlib.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <chrono>
+#include <cstdint>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -33,16 +35,6 @@
 #include <thread>
 #include <utility>
 #include <vector>
-
-#ifdef _WIN32
-#include <winsock2.h>
-#include <ws2tcpip.h>
-#else
-#include <netinet/in.h>
-#include <sys/select.h>
-#include <sys/socket.h>
-#include <unistd.h>
-#endif
 
 #include "amx_mouse.h"
 #include "asic_debug.h"
@@ -60,6 +52,7 @@
 #include "expr_parser.h"
 #include "flux_save.h"
 #include "gif_recorder.h"
+#include "host_surface.h"
 #include "imgui_ui_testable.h"
 #include "ipc_mru.h"
 #include "iui_host.h"
@@ -68,6 +61,7 @@
 #include "koncepcja.h"
 #include "m4board.h"
 #include "m4board_http.h"
+#include "net_socket.h"
 #include "phazer_type.h"
 #include "plotter.h"
 #include "plotter_view.h"
@@ -96,7 +90,6 @@ extern t_CPC CPC;
 extern t_CRTC CRTC;
 extern t_GateArray GateArray;
 extern t_PSG PSG;
-extern HostSurface* back_surface;
 extern byte* pbRAM;
 extern video_plugin* vid_plugin;
 
@@ -286,6 +279,23 @@ std::string err_with_context(int code, const std::string& msg) {
 }
 }  // namespace
 
+// Why a copy of the machine's frame (kcpc_host_frame_copy()) was refused, as
+// the `ERR 503` replies name it, or nullptr when it was taken.
+namespace {
+const char* frame_copy_refusal(kcpc::Status status) {
+  switch (status) {
+    case kcpc::Status::kOk:
+      return nullptr;
+    case kcpc::Status::kNotPresent:
+      return "no-machine";
+    case kcpc::Status::kShuttingDown:
+      return "shutting-down";
+    default:
+      return "busy";
+  }
+}
+}  // namespace
+
 // A pause lease whose bounded wait timed out: the Z80 thread is stuck inside a
 // frame, so the command must not touch machine state. Give the machine back
 // in the run state the lease found it in and say why.
@@ -408,6 +418,9 @@ struct IpcGunPending {
   // a multi-monitor setup) is a valid aim and must not read as "untouched".
   std::optional<int32_t> x;  // staged window px (motion.x equivalent)
   std::optional<int32_t> y;
+  // x/y are already frame pixels (CPC.phazer_x/y's own units: KCPC's GUN),
+  // not window pixels to map through the video plugin.
+  bool aim_in_frame = false;
   std::optional<int> trigger;  // 0 = released, 1 = pressed; nullopt = untouched
   std::atomic<bool> dirty{false};  // fast-path: skip the lock when idle
   // Published by the main thread each frame (phazer_emulation != None) so the
@@ -882,6 +895,20 @@ bool ipc_gun_gate_open() {
   return g_ipc_gun.device_active.load(std::memory_order_relaxed);
 }
 
+bool ipc_stage_gun(std::optional<IpcGunAim> frame_aim,
+                   std::optional<bool> pulled) {
+  if (!ipc_gun_gate_open()) return false;
+  std::scoped_lock const lock(g_ipc_gun.mutex);
+  if (frame_aim) {
+    g_ipc_gun.x = frame_aim->x;
+    g_ipc_gun.y = frame_aim->y;
+    g_ipc_gun.aim_in_frame = true;
+  }
+  if (pulled) g_ipc_gun.trigger = *pulled ? 1 : 0;
+  g_ipc_gun.dirty.store(true, std::memory_order_release);
+  return true;
+}
+
 bool ipc_stage_mouse(int dx, int dy, std::optional<uint32_t> buttons) {
   if (!ipc_mouse_gate_open()) return false;
   std::scoped_lock const lock(g_ipc_mouse.mutex);
@@ -963,34 +990,46 @@ void ipc_drain_input() {
   if (g_ipc_gun.dirty.load(std::memory_order_acquire)) {
     std::optional<int32_t> gx, gy;
     std::optional<int> trig;
+    bool in_frame = false;
     {
       std::scoped_lock const lock(g_ipc_gun.mutex);
       if (g_ipc_gun.dirty.load(std::memory_order_relaxed)) {
         gx = g_ipc_gun.x;
         gy = g_ipc_gun.y;
         trig = g_ipc_gun.trigger;
+        in_frame = g_ipc_gun.aim_in_frame;
         g_ipc_gun.x.reset();
         g_ipc_gun.y.reset();
         g_ipc_gun.trigger.reset();
         g_ipc_gun.dirty.store(false, std::memory_order_relaxed);
       }
     }
-    // vid_plugin is set up by video_init on this same main thread, but a drain
-    // can land before that (or in a headless/test context) — never deref null.
-    if (CPC.phazer_emulation && vid_plugin != nullptr) {
-      // Same window-px -> CPC-frame mapping the SDL mouse-motion path uses.
-      // Clamp at 0: a point left/above the offset (off the active window) maps
-      // negative, and a negative float -> unsigned int cast is undefined.
-      if (gx)
-        CPC.phazer_x = static_cast<unsigned int>(
-            std::max(0.0f, (*gx - vid_plugin->x_offset) * vid_plugin->x_scale));
-      if (gy)
-        CPC.phazer_y = static_cast<unsigned int>(
-            std::max(0.0f, (*gy - vid_plugin->y_offset) * vid_plugin->y_scale));
+    if (CPC.phazer_emulation) {
+      if (in_frame) {
+        // Frame pixels, which the KCPC server has checked against the frame:
+        // there is no window to map them through.
+        if (gx) CPC.phazer_x = static_cast<unsigned int>(std::max(0, *gx));
+        if (gy) CPC.phazer_y = static_cast<unsigned int>(std::max(0, *gy));
+      } else if (vid_plugin != nullptr) {
+        // vid_plugin is set up by video_init on this same main thread, but a
+        // drain can land before that (or in a headless/test context) — never
+        // deref null.
+        // Same window-px -> CPC-frame mapping the SDL mouse-motion path uses.
+        // Clamp at 0: a point left/above the offset (off the active window)
+        // maps negative, and a negative float -> unsigned int cast is
+        // undefined.
+        if (gx)
+          CPC.phazer_x = static_cast<unsigned int>(std::max(
+              0.0f, (*gx - vid_plugin->x_offset) * vid_plugin->x_scale));
+        if (gy)
+          CPC.phazer_y = static_cast<unsigned int>(std::max(
+              0.0f, (*gy - vid_plugin->y_offset) * vid_plugin->y_scale));
+      }
       if (trig) {
         // Trojan wires the trigger to joystick Fire 1 (see the SDL button
         // path).
-        if (CPC.phazer_emulation == PhazerType::TrojanLightPhazer) {
+        if (CPC.phazer_emulation == PhazerType::TrojanLightPhazer &&
+            CPC.InputMapper != nullptr) {
           auto scancode = CPC.InputMapper->CPCscancodeFromCPCkey(CPC_J0_FIRE1);
           ipc_apply_keypress(scancode, keyboard_matrix, *trig == 1);
         }
@@ -1719,10 +1758,15 @@ void init_command_registry() {
                    "  list: Show all registered events.");
 
   register_command("hash", "DEBUG",
-                   "hash vram | hash mem <addr> <len> | hash regs",
+                   "hash frame | hash vram | hash mem <addr> <len> | hash regs",
                    "CRC32 hashes for CI assertions",
-                   "Compute CRC32 of screen surface, memory range, or packed "
-                   "register state.\n"
+                   "Compute CRC32 of the machine's frame, a memory range, or "
+                   "packed register state.\n"
+                   "frame: the canonical frame (RGB24 768x272, stride 2304), "
+                   "the bytes FB_INFO\n"
+                   "describes, copied between two frames; the reply names the "
+                   "frame it was taken\n"
+                   "after. vram: the same hash, in the one-field reply.\n"
                    "Useful for deterministic regression testing.");
 
   register_command(
@@ -1961,14 +2005,30 @@ std::string handle_command(const std::string& line) {
     }
     if (cmd == "hash" && parts.size() >= 2) {
       char buf[64];
-      if (parts[1] == "vram") {
-        // Hash the visible video memory (back_surface pixels)
-        if (!back_surface) return "ERR 503 no-surface\n";
+      if (parts[1] == "frame" || parts[1] == "vram") {
+        // The machine's own frame, copied between two frames (beads-0ir.1):
+        // never the host surface the runner blits it into, which is scaled
+        // to the window and written beside this thread.
+        std::vector<uint8_t> rgb;
+        kcpc::Stamp stamp;
+        if (const char* why =
+                frame_copy_refusal(kcpc_host_frame_copy(rgb, stamp))) {
+          return std::string("ERR 503 ") + why + "\n";
+        }
         uLong crc = crc32(0L, nullptr, 0);
-        crc = crc32(crc, static_cast<const Bytef*>(back_surface->pixels),
-                    static_cast<uInt>(back_surface->h * back_surface->pitch));
-        snprintf(buf, sizeof(buf), "OK crc32=%08lX\n", crc);
-        return {buf};
+        crc = crc32(crc, rgb.data(), static_cast<uInt>(rgb.size()));
+        if (parts[1] == "vram") {
+          snprintf(buf, sizeof(buf), "OK crc32=%08lX\n", crc);
+          return {buf};
+        }
+        char reply[160];
+        snprintf(reply, sizeof(reply),
+                 "OK crc32=%08lX frame=%llu paused=%d width=%d height=%d "
+                 "stride=%d format=rgb24\n",
+                 crc, static_cast<unsigned long long>(stamp.frame),
+                 stamp.paused ? 1 : 0, subcycle::kFbWidth, subcycle::kFbHeight,
+                 subcycle::kFbWidth * 3);
+        return {reply};
       }
       if (parts[1] == "mem" && parts.size() >= 4) {
         unsigned int addr, len;
@@ -2035,7 +2095,7 @@ std::string handle_command(const std::string& line) {
         snprintf(buf, sizeof(buf), "OK crc32=%08lX\n", crc);
         return {buf};
       }
-      return "ERR 400 bad-args (hash vram|mem|regs)\n";
+      return "ERR 400 bad-args (hash frame|vram|mem|regs)\n";
     }
 
     if (cmd == "pause") {
@@ -2475,8 +2535,12 @@ std::string handle_command(const std::string& line) {
 #endif
       }
       if (parts.size() >= 2) {
-        if (dumpScreenTo(parts[1])) return "OK\n";
-        return "ERR 503 no-surface\n";
+        kcpc::Status const saved = dumpScreenTo(parts[1]);
+        if (saved == kcpc::Status::kInternal) return "ERR 500 write-failed\n";
+        if (const char* why = frame_copy_refusal(saved)) {
+          return std::string("ERR 503 ") + why + "\n";
+        }
+        return "OK\n";
       }
       dumpScreen();
       return "OK\n";
@@ -3519,19 +3583,42 @@ std::string handle_command(const std::string& line) {
         return err_with_context(409, "frame-step-busy");
       }
       if (is_gif) {
-        // Animated GIF output
-        if (!back_surface) return "ERR 503 no-surface\n";
+        // Animated GIF of the machine's own frame, each row shown twice so
+        // the picture keeps its shape (768x544), copied once the step has
+        // stopped the machine (beads-0ir.1). Not the host surface: that is
+        // the window's size, and the runner has moved on to its next buffer.
         int delay_cs = 2;  // default: 50fps (matches CPC VBL rate)
         if (parts.size() >= 5) delay_cs = parse_int(parts[4]);
+        int const gif_w = subcycle::kFbWidth;
+        int const gif_h = subcycle::kFbHeight * 2;
+        std::vector<uint8_t> rgb;
+        std::vector<uint8_t> rgba(static_cast<size_t>(gif_w) * gif_h * 4);
+        kcpc::Stamp stamp;
+        if (const char* why =
+                frame_copy_refusal(kcpc_host_frame_copy(rgb, stamp))) {
+          return std::string("ERR 503 ") + why + "\n";
+        }
         GifRecorder gif;
-        if (!gif.begin(back_surface->w, back_surface->h, delay_cs)) {
+        if (!gif.begin(gif_w, gif_h, delay_cs)) {
           return "ERR 500 gif-begin-failed\n";
         }
         int recorded = 0;
         for (int i = 0; i < frame_count; i++) {
           if (!step_one_frame()) break;
-          gif.add_frame(static_cast<const uint8_t*>(back_surface->pixels),
-                        back_surface->pitch);
+          // A frame that could not be copied is not a short recording: the
+          // GIF is dropped and the reply says how far it got.
+          if (const char* why =
+                  frame_copy_refusal(kcpc_host_frame_copy(rgb, stamp))) {
+            gif.abort();
+            char buf[96];
+            snprintf(buf, sizeof(buf), "ERR 503 %s frames=%d of %d\n", why,
+                     recorded, frame_count);
+            return {buf};
+          }
+          host_blit_rgb24_to_rgba32_nearest(
+              rgb.data(), subcycle::kFbWidth, subcycle::kFbWidth * 3, 0,
+              subcycle::kFbHeight, rgba.data(), gif_w, gif_h, gif_w * 4);
+          gif.add_frame(rgba.data(), gif_w * 4);
           ++recorded;
         }
         if (gif.end(pattern)) {
@@ -3564,7 +3651,17 @@ std::string handle_command(const std::string& line) {
         } else {
           snprintf(fname, sizeof(fname), "%s_%04d.png", pattern.c_str(), i);
         }
-        if (dumpScreenTo(fname)) saved++;
+        // A frame that could not be copied ends the series, as for the GIF;
+        // a file that could not be written is left out of the count.
+        kcpc::Status const status = dumpScreenTo(fname);
+        if (status == kcpc::Status::kOk) {
+          ++saved;
+        } else if (status != kcpc::Status::kInternal) {
+          char buf[96];
+          snprintf(buf, sizeof(buf), "ERR 503 %s frames=%d of %d\n",
+                   frame_copy_refusal(status), saved, frame_count);
+          return {buf};
+        }
       }
       char buf[64];
       snprintf(buf, sizeof(buf), "OK saved=%d\n", saved);
@@ -3898,6 +3995,7 @@ std::string handle_command(const std::string& line) {
           std::scoped_lock const lock(g_ipc_gun.mutex);
           g_ipc_gun.x = parse_int(parts[3]);
           g_ipc_gun.y = parse_int(parts[4]);
+          g_ipc_gun.aim_in_frame = false;
           g_ipc_gun.dirty.store(true, std::memory_order_release);
           return "OK\n";
         }
@@ -6924,149 +7022,43 @@ int ipc_event_mem_addresses(uint16_t* out, int max) {
                         : 0;
 }
 
-#ifdef _WIN32
+namespace {
+// How long a wait on a socket lasts before the server looks at its stop flag.
+constexpr int kStopCheckMs = 200;
+// A client that sends nothing for this long is dropped.
+constexpr auto kClientIdleTimeout = std::chrono::seconds(60);
 
-void KoncepcjaIpcServer::run() {
-  WSADATA wsa;
-  if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) return;
-
-  SOCKET server_fd = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-  if (server_fd == INVALID_SOCKET) {
-    WSACleanup();
-    return;
-  }
-
-  // SO_EXCLUSIVEADDRUSE, not SO_REUSEADDR: on Windows SO_REUSEADDR lets a
-  // second process bind a port another process is already listening on, and
-  // connections are then handed out between them unpredictably.  That makes
-  // the 6543..6552 scan below silently useless — a second instance, or the
-  // unit tests run while the emulator is open, would "bind" 6543 and then
-  // answer, or be answered by, the wrong process.  SO_EXCLUSIVEADDRUSE makes
-  // bind() fail on a port in use, so the scan moves to the next one.
-  int opt = 1;
-  setsockopt(server_fd, SOL_SOCKET, SO_EXCLUSIVEADDRUSE,
-             reinterpret_cast<const char*>(&opt), sizeof(opt));
-
-  sockaddr_in addr{};
-  addr.sin_family = AF_INET;
-  addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-
-  int bound_port = 0;
-  for (int p = kBasePort; p < kBasePort + kMaxPortAttempts; p++) {
-    addr.sin_port = htons(static_cast<uint16_t>(p));
-    if (bind(server_fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) !=
-        SOCKET_ERROR) {
-      bound_port = p;
-      break;
+// Sends all of `reply`. The client socket is non-blocking, so a reply larger
+// than what the socket buffers hold goes out in pieces as the client reads.
+// False when the connection failed or the server is stopping.
+bool send_reply(net::Socket s, const std::string& reply,
+                const std::atomic<bool>& running) {
+  auto const* p = reinterpret_cast<const std::uint8_t*>(reply.data());
+  std::size_t left = reply.size();
+  while (left > 0) {
+    net::IoResult const r = net::send_some(s, p, left);
+    if (r.status == net::IoStatus::kOk) {
+      p += r.bytes;
+      left -= r.bytes;
+    } else if (r.status == net::IoStatus::kWouldBlock) {
+      if (!running.load()) return false;
+      net::wait_writable(s, kStopCheckMs);
+    } else {
+      return false;
     }
   }
-  if (bound_port == 0) {
-    LOG_ERROR("IPC: could not bind to any port in range "
-              << kBasePort << "-" << (kBasePort + kMaxPortAttempts - 1));
-    closesocket(server_fd);
-    WSACleanup();
-    return;
-  }
-
-  if (listen(server_fd, 1) == SOCKET_ERROR) {
-    closesocket(server_fd);
-    WSACleanup();
-    return;
-  }
-
-  actual_port.store(bound_port);
-  LOG_INFO("IPC: listening on port " << bound_port);
-
-  while (running.load()) {
-    fd_set readfds;
-    FD_ZERO(&readfds);
-    FD_SET(server_fd, &readfds);
-    timeval tv{0, 200000};  // 200ms
-
-    int ready = select(0, &readfds, nullptr, nullptr, &tv);
-    if (ready <= 0) continue;
-
-    sockaddr_in client{};
-    int len = sizeof(client);
-    SOCKET client_fd =
-        accept(server_fd, reinterpret_cast<sockaddr*>(&client), &len);
-    if (client_fd == INVALID_SOCKET) continue;
-
-    // Persistent connection: read lines until client disconnects, sends
-    // "disconnect", or idle timeout.
-    std::string buffer;
-    char buf[1024];
-    bool client_quit = false;
-    while (running.load() && !client_quit) {
-      fd_set cfds;
-      FD_ZERO(&cfds);
-      FD_SET(client_fd, &cfds);
-      timeval ctv{60, 0};  // 60s idle timeout
-
-      int cready = select(0, &cfds, nullptr, nullptr, &ctv);
-      if (cready <= 0) break;  // timeout or error
-
-      int n = recv(client_fd, buf, sizeof(buf) - 1, 0);
-      if (n <= 0) break;  // client disconnected or error
-      buf[n] = 0;
-      buffer.append(buf);
-
-      // Extract and dispatch complete lines
-      size_t pos;
-      while ((pos = buffer.find('\n')) != std::string::npos) {
-        std::string raw_line = buffer.substr(0, pos);
-        buffer.erase(0, pos + 1);
-        if (!raw_line.empty() && raw_line.back() == '\r') raw_line.pop_back();
-
-        // Split on semicolons for command chaining
-        auto cmds = split_semicolons(raw_line);
-        for (const auto& cmd : cmds) {
-          if (cmd == "disconnect") {
-            client_quit = true;
-            break;
-          }
-          auto reply = handle_command(cmd);
-          send(client_fd, reply.c_str(), static_cast<int>(reply.size()), 0);
-        }
-        if (client_quit) break;
-      }
-    }
-    // Dispatch any trailing data without newline (for single-shot clients like
-    // echo|nc)
-    if (!client_quit && !buffer.empty()) {
-      if (!buffer.empty() && buffer.back() == '\r') buffer.pop_back();
-      auto cmds = split_semicolons(buffer);
-      for (const auto& cmd : cmds) {
-        if (cmd == "disconnect") break;
-        auto reply = handle_command(cmd);
-        send(client_fd, reply.c_str(), static_cast<int>(reply.size()), 0);
-      }
-    }
-    closesocket(client_fd);
-  }
-
-  closesocket(server_fd);
-  WSACleanup();
+  return true;
 }
-
-#else  // POSIX
+}  // namespace
 
 void KoncepcjaIpcServer::run() {
-  int const server_fd = ::socket(AF_INET, SOCK_STREAM, 0);
-  if (server_fd < 0) return;
+  if (!net::startup()) return;
 
-  int opt = 1;
-  setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
-
-  sockaddr_in addr{};
-  addr.sin_family = AF_INET;
-  addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-
+  net::Socket listener = net::kInvalidSocket;
   int bound_port = 0;
   for (int p = kBasePort; p < kBasePort + kMaxPortAttempts; p++) {
-    addr.sin_port = htons(static_cast<uint16_t>(p));
-    if (bind(server_fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) ==
-        0) {
+    listener = net::listen_loopback(p, 1);
+    if (listener != net::kInvalidSocket) {
       bound_port = p;
       break;
     }
@@ -7074,12 +7066,7 @@ void KoncepcjaIpcServer::run() {
   if (bound_port == 0) {
     LOG_ERROR("IPC: could not bind to any port in range "
               << kBasePort << "-" << (kBasePort + kMaxPortAttempts - 1));
-    ::close(server_fd);
-    return;
-  }
-
-  if (listen(server_fd, 1) < 0) {
-    ::close(server_fd);
+    net::cleanup();
     return;
   }
 
@@ -7087,40 +7074,29 @@ void KoncepcjaIpcServer::run() {
   LOG_INFO("IPC: listening on port " << bound_port);
 
   while (running.load()) {
-    fd_set readfds;
-    FD_ZERO(&readfds);
-    FD_SET(server_fd, &readfds);
-    timeval tv{0, 200000};  // 200ms
-
-    int const ready = select(server_fd + 1, &readfds, nullptr, nullptr, &tv);
-    if (ready <= 0) continue;
-
-    sockaddr_in client{};
-    socklen_t len = sizeof(client);
-    int const client_fd =
-        accept(server_fd, reinterpret_cast<sockaddr*>(&client), &len);
-    if (client_fd < 0) continue;
+    if (!net::wait_readable(listener, kStopCheckMs)) continue;
+    net::Socket const client = net::accept_client(listener);
+    if (client == net::kInvalidSocket) continue;
 
     // Persistent connection: read lines until client disconnects, sends
     // "disconnect", or idle timeout.
     std::string buffer;
-    char buf[1024];
+    std::uint8_t buf[1024];
     // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
     // mutated (out-param/compound-assign/loop/reference)
     bool client_quit = false;
+    auto idle_deadline = std::chrono::steady_clock::now() + kClientIdleTimeout;
     while (running.load() && !client_quit) {
-      fd_set cfds;
-      FD_ZERO(&cfds);
-      FD_SET(client_fd, &cfds);
-      timeval ctv{60, 0};  // 60s idle timeout
-
-      int const cready = select(client_fd + 1, &cfds, nullptr, nullptr, &ctv);
-      if (cready <= 0) break;  // timeout or error
-
-      ssize_t const n = read(client_fd, buf, sizeof(buf) - 1);
-      if (n <= 0) break;  // client disconnected or error
-      buf[n] = 0;
-      buffer.append(buf);
+      // Waits in short slices, so stop() is not held up by a quiet client.
+      if (!net::wait_readable(client, kStopCheckMs)) {
+        if (std::chrono::steady_clock::now() >= idle_deadline) break;
+        continue;
+      }
+      net::IoResult const r = net::recv_some(client, buf, sizeof(buf));
+      if (r.status == net::IoStatus::kWouldBlock) continue;
+      if (r.status != net::IoStatus::kOk) break;  // disconnected or error
+      idle_deadline = std::chrono::steady_clock::now() + kClientIdleTimeout;
+      buffer.append(reinterpret_cast<const char*>(buf), r.bytes);
 
       // Extract and dispatch complete lines
       size_t pos;
@@ -7137,7 +7113,7 @@ void KoncepcjaIpcServer::run() {
             break;
           }
           auto reply = handle_command(cmd);
-          (void)write(client_fd, reply.c_str(), reply.size());
+          (void)send_reply(client, reply, running);
         }
         if (client_quit) break;
       }
@@ -7150,13 +7126,12 @@ void KoncepcjaIpcServer::run() {
       for (const auto& cmd : cmds) {
         if (cmd == "disconnect") break;
         auto reply = handle_command(cmd);
-        (void)write(client_fd, reply.c_str(), reply.size());
+        (void)send_reply(client, reply, running);
       }
     }
-    ::close(client_fd);
+    net::close_socket(client);
   }
 
-  ::close(server_fd);
+  net::close_socket(listener);
+  net::cleanup();
 }
-
-#endif  // _WIN32

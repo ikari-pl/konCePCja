@@ -163,6 +163,17 @@ TEST(KcpcEvents, StoppedIsTwentyFourBytesInWireOrder) {
   EXPECT_EQ(request, 9U);
 }
 
+TEST(KcpcEvents, AFrameEventCarriesItsSequenceInTheRing) {
+  Event e = frame_event(0x1122);
+  e.fb_seq = 0x0807060504030201ULL;
+  std::vector<std::uint8_t> const payload = kcpc::encode_event(e);
+  ASSERT_EQ(payload.size(), 16U);
+  EXPECT_EQ(payload[0], 0x22) << "u64 frame first";
+  EXPECT_EQ(payload[1], 0x11);
+  EXPECT_EQ(payload[8], 0x01) << "then u64 fb_seq, little-endian";
+  EXPECT_EQ(payload[15], 0x08);
+}
+
 TEST(KcpcEvents, PayloadSizesMatchTheDocument) {
   Event e;
   e.opcode = Opcode::kEvtResumed;

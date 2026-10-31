@@ -36,6 +36,7 @@
 #include "imgui_ui_testable.h"
 #include "ipc_mru.h"
 #include "iui_host.h"
+#include "kcpc/fb_publish.h"
 #include "kcpc/kcpc_gate.h"
 #include "kcpc/kcpc_server.h"
 #include "keyboard.h"
@@ -576,6 +577,9 @@ void kcpc_service_frame() {
     kcpc::Event event;
     event.opcode = kcpc::Opcode::kEvtFrame;
     event.frame = frame;
+    // This runs on the frame runner after the frame went to the ring
+    // (subcycle_bridge_frame()), so the latest frame there is this one.
+    event.fb_seq = fb_publish_seq();
     g_kcpc_server.post(event);
   }
 }
@@ -976,11 +980,34 @@ Status kcpc_host_fb_info(kcpc::FbInfo& info) {
   info.width = static_cast<std::uint16_t>(subcycle::kFbWidth);
   info.height = static_cast<std::uint16_t>(subcycle::kFbHeight);
   info.format = kcpc::kFbFormatRgb24;
-  info.transport = kcpc::kFbTransportNone;
   info.stride = static_cast<std::uint32_t>(subcycle::kFbWidth * kBytesPerPixel);
-  info.fb_seq = 0;
-  info.shm_name.clear();
+  // The frame ring (beads-0ir.3), when the core could create it.
+  info.shm_name = fb_publish_shm_name();
+  info.transport =
+      info.shm_name.empty() ? kcpc::kFbTransportNone : kcpc::kFbTransportShm;
+  info.fb_seq = fb_publish_seq();
   return Status::kOk;
+}
+
+Status kcpc_host_frame_copy(std::vector<std::uint8_t>& rgb,
+                            kcpc::Stamp& stamp) {
+  constexpr std::size_t kBytes =
+      static_cast<std::size_t>(subcycle::kFbWidth) * subcycle::kFbHeight * 3;
+  rgb.resize(kBytes);  // the copy itself must not allocate
+  auto copy = [&rgb, &stamp](const kcpc::Stamp& taken) {
+    std::uint8_t const* fb = subcycle_bridge_framebuffer();
+    if (fb == nullptr) return Status::kNotPresent;
+    std::memcpy(rgb.data(), fb, kBytes);
+    stamp = taken;
+    return Status::kOk;
+  };
+  if (cpc_in_frame_turn()) {
+    kcpc::Stamp now;
+    now.frame = g_gate.frame();
+    now.paused = g_emu_paused.load(std::memory_order_acquire);
+    return copy(now);
+  }
+  return gated(kBytes, copy);
 }
 
 Status kcpc_host_regs_get(kcpc::Stamp& stamp, kcpc::Regs& regs) {
@@ -1721,6 +1748,18 @@ kcpc::Status kcpc_host_mouse(int dx, int dy, bool set_buttons,
   return ipc_stage_mouse(dx, dy, mask) ? Status::kOk : Status::kNotPresent;
 }
 
+kcpc::Status kcpc_host_gun(bool aim, std::uint16_t x, std::uint16_t y,
+                           bool set_trigger, bool pulled) {
+  static_assert(kcpc::kGunFrameWidth == subcycle::kFbWidth &&
+                    kcpc::kGunFrameHeight == subcycle::kFbHeight,
+                "GUN aims at the frame FB_INFO describes");
+  std::optional<IpcGunAim> frame_aim;
+  if (aim) frame_aim = IpcGunAim{x, y};
+  std::optional<bool> trigger;
+  if (set_trigger) trigger = pulled;
+  return ipc_stage_gun(frame_aim, trigger) ? Status::kOk : Status::kNotPresent;
+}
+
 kcpc::Status kcpc_host_input_state(kcpc::KeyMatrix& rows) {
   static_assert(kcpc::kKeyRows == kKbdMatrixRows,
                 "INPUT_STATE is the matrix, row for row");
@@ -1775,6 +1814,7 @@ void kcpc_host_start(bool enabled) {
   config.text = &kcpc_host_text;
   config.mouse = &kcpc_host_mouse;
   config.input_state = &kcpc_host_input_state;
+  config.gun = &kcpc_host_gun;
   config.chip_get = &kcpc_host_chip_get;
   config.sym_list = &kcpc_host_sym_list;
   config.sym_add = [](const kcpc::Cause& cause, const kcpc::Symbol& symbol,

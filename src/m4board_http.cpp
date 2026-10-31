@@ -28,12 +28,13 @@
 #include <sstream>
 
 #include "autotype.h"
-#include "host_surface.h"
+#include "kcpc/kcpc_host.h"
 #include "koncepcja.h"
 #include "log.h"
 #include "m4board.h"
 #include "m4board_web_assets.h"
 #include "rom_identify.h"
+#include "subcycle/machine.h"
 #include "z80_view.h"
 
 #ifdef _WIN32
@@ -53,7 +54,11 @@
 
 extern t_CPC CPC;
 
-extern HostSurface* back_surface;
+namespace {
+// The /preview.bmp picture: the machine's frame, each row shown twice.
+constexpr int kPreviewWidth = subcycle::kFbWidth;
+constexpr int kPreviewHeight = subcycle::kFbHeight * 2;
+}  // namespace
 extern byte* memmap_ROM[256];
 
 static constexpr int MAX_REQ = 256 * 1024;  // max HTTP request body size
@@ -977,8 +982,8 @@ M4HttpServer::HttpResponse M4HttpServer::handle_status(
        << ",\n"
        << "  \"http_port\": " << actual_port.load() << ",\n"
        << R"(  "bind_ip": ")" << json_escape(bind_ip_) << "\",\n"
-       << "  \"screen_w\": " << snapshot_screen_w.load() << ",\n"
-       << "  \"screen_h\": " << snapshot_screen_h.load() << ",\n"
+       << "  \"screen_w\": " << kPreviewWidth << ",\n"
+       << "  \"screen_h\": " << kPreviewHeight << ",\n"
        << "  \"version\": \"koncepcja-m4\"\n"
        << "}\n";
 
@@ -1071,25 +1076,20 @@ M4HttpServer::HttpResponse M4HttpServer::handle_static(const HttpRequest& req) {
   return resp;
 }
 
-// ── Live preview (BMP snapshot, thread-safe) ─────────────
-// update_preview_snapshot() is called from the main thread each frame
-// (in drain_pending). handle_preview() returns the cached BMP under a mutex,
-// avoiding direct back_surface access from the HTTP thread.
+// ── Live preview (BMP of the machine's frame) ────────────
+// The machine's canonical frame (RGB24, kFbWidth x kFbHeight), copied on the
+// HTTP thread through the KCPC gate when a client asks for it, each row shown
+// twice so the picture keeps its shape (beads-0ir.1). Never back_surface: the
+// frame runner writes that, and swaps it in the GUI, beside this thread.
 
-void M4HttpServer::update_preview_snapshot() {
-  if (!back_surface || !back_surface->pixels) {
-    std::scoped_lock const lock(preview_mutex_);
-    preview_bmp_.clear();  // clear stale snapshot
-    return;
-  }
+namespace {
 
-  int const w = back_surface->w;
-  int const h = back_surface->h;
-  int const pitch = back_surface->pitch;
-  int const bpp = 4;  // RGBA32
-
+// A 24-bit BMP (rows bottom-up, BGR) of an RGB24 frame `w` x `h`, each source
+// row written twice: w x 2h.
+std::vector<uint8_t> preview_bmp(const uint8_t* rgb, int w, int h) {
+  int const out_h = h * 2;
   int const row_size = (((w * 3) + 3) / 4) * 4;
-  int const pixel_data_size = row_size * h;
+  int const pixel_data_size = row_size * out_h;
   int const file_size = 14 + 40 + pixel_data_size;
 
   std::vector<uint8_t> bmp(static_cast<size_t>(file_size));
@@ -1109,7 +1109,7 @@ void M4HttpServer::update_preview_snapshot() {
   write32(p + 10, 14 + 40);
   write32(p + 14, 40);
   write32(p + 18, static_cast<uint32_t>(w));
-  write32(p + 22, static_cast<uint32_t>(h));
+  write32(p + 22, static_cast<uint32_t>(out_h));
   p[26] = 1;
   p[27] = 0;
   p[28] = 24;
@@ -1121,37 +1121,36 @@ void M4HttpServer::update_preview_snapshot() {
   write32(p + 46, 0);
   write32(p + 50, 0);
 
-  const uint8_t* src = static_cast<const uint8_t*>(back_surface->pixels);
-  for (int y = h - 1; y >= 0; y--) {
-    const uint8_t* row = src + (y * pitch);
-    uint8_t* dst_row = p + 54 + ((h - 1 - y) * row_size);
+  for (int y = 0; y < out_h; y++) {
+    const uint8_t* row = rgb + (static_cast<size_t>(y / 2) * w * 3);
+    uint8_t* dst_row = p + 54 + (static_cast<size_t>(out_h - 1 - y) * row_size);
     for (int x = 0; x < w; x++) {
-      dst_row[(x * 3) + 0] = row[(x * bpp) + 2];  // B
-      dst_row[(x * 3) + 1] = row[(x * bpp) + 1];  // G
-      dst_row[(x * 3) + 2] = row[(x * bpp) + 0];  // R
+      dst_row[(x * 3) + 0] = row[(x * 3) + 2];  // B
+      dst_row[(x * 3) + 1] = row[(x * 3) + 1];  // G
+      dst_row[(x * 3) + 2] = row[(x * 3) + 0];  // R
     }
   }
-
-  {
-    std::scoped_lock const lock(preview_mutex_);
-    preview_bmp_ = std::move(bmp);
-  }
+  return bmp;
 }
+
+}  // namespace
 
 M4HttpServer::HttpResponse M4HttpServer::handle_preview(
     const HttpRequest& /*unused*/) {
   HttpResponse resp;
 
-  std::scoped_lock const lock(preview_mutex_);
-  if (preview_bmp_.empty()) {
+  std::vector<uint8_t> rgb;
+  kcpc::Stamp stamp;
+  if (kcpc_host_frame_copy(rgb, stamp) != kcpc::Status::kOk) {
     resp.status = 503;
     resp.status_text = "Service Unavailable";
-    resp.body = "No video surface";
+    resp.body = "No machine frame";
     return resp;
   }
 
-  resp.body.assign(reinterpret_cast<const char*>(preview_bmp_.data()),
-                   preview_bmp_.size());
+  std::vector<uint8_t> const bmp =
+      preview_bmp(rgb.data(), subcycle::kFbWidth, subcycle::kFbHeight);
+  resp.body.assign(reinterpret_cast<const char*>(bmp.data()), bmp.size());
   resp.content_type = "image/bmp";
   return resp;
 }
@@ -1339,8 +1338,6 @@ extern dword dwMF2Flags;
 void M4HttpServer::drain_pending() {
   // Update status snapshots for thread-safe reads from HTTP handlers
   snapshot_paused.store(CPC.paused);
-  snapshot_screen_w.store(back_surface ? back_surface->w : 0);
-  snapshot_screen_h.store(back_surface ? back_surface->h : 0);
 
   if (pending_reset.exchange(false)) {
     emulator_reset();
@@ -1353,17 +1350,6 @@ void M4HttpServer::drain_pending() {
       cpc_pause();
     LOG_INFO("M4 HTTP: " << (CPC.paused ? "paused" : "resumed"));
   }
-  // Update preview snapshot for the HTTP thread (~5fps, only when server is
-  // running)
-  {
-    static int preview_frame_counter = 0;
-    if (running.load() &&
-        ++preview_frame_counter >= 10) {  // every 10 frames = ~5fps at 50Hz
-      preview_frame_counter = 0;
-      update_preview_snapshot();
-    }
-  }
-
   if (pending_nmi.exchange(false)) {
     if (CPC.mf2 && !(dwMF2Flags & MF2_ACTIVE)) {
       z80_mf2stop();
