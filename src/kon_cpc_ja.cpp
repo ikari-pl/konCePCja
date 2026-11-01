@@ -497,9 +497,11 @@ std::string JoystickEmulationToString(JoystickEmulation value) {
     case JoystickEmulation::None:
       return "off";
     case JoystickEmulation::Keyboard:
-      return "keyboard";
+      return "keys-press-joystick";
     case JoystickEmulation::Mouse:
       return "mouse";
+    case JoystickEmulation::JoystickToKeys:
+      return "joystick-presses-keys";
     case JoystickEmulation::Last:
       return "<invalid joystick emulation: last>";
   }
@@ -3168,6 +3170,26 @@ void loadConfiguration(t_CPC& CPC, const std::string& configFilename) {
     }
     CPC.joystick_emulation = static_cast<JoystickEmulation>(joy_emu_val);
   }
+  {
+    // Which CPC keys a stick presses in JoystickToKeys mode. Cursor keys +
+    // space by default; any name from the keyboard layout's CPC key table
+    // works (the same names the .map layout files use).
+    static constexpr const char* kDefaults[6] = {
+        "CPC_CUR_UP",    "CPC_CUR_DOWN", "CPC_CUR_LEFT",
+        "CPC_CUR_RIGHT", "CPC_SPACE",    "CPC_RETURN"};
+    for (int i = 0; i < 6; ++i) {
+      std::string const name =
+          conf.getStringValue("system", kJoyToKeySlots[i], kDefaults[i]);
+      int key = InputMapper::CPCkeyFromName(name);
+      if (key < 0) {
+        LOG_WARNING("Unknown key name '" << name << "' for system."
+                                         << kJoyToKeySlots[i] << "; using "
+                                         << kDefaults[i]);
+        key = InputMapper::CPCkeyFromName(kDefaults[i]);
+      }
+      if (key >= 0) CPC.joy_to_keys[i] = key;
+    }
+  }
   CPC.joysticks = read_flag("system", "joysticks", 1);
   CPC.joystick_menu_button =
       conf.getIntValue("system", "joystick_menu_button", 9) - 1;
@@ -3471,6 +3493,11 @@ bool saveConfiguration(t_CPC& CPC, const std::string& configFilename) {
   conf.setIntValue("system", "boot_time", CPC.boot_time);
   conf.setIntValue("system", "joystick_emulation",
                    static_cast<int>(CPC.joystick_emulation));
+  for (int i = 0; i < 6; ++i) {
+    conf.setStringValue("system", kJoyToKeySlots[i],
+                        InputMapper::CPCkeyToString(
+                            static_cast<CapriceKey>(CPC.joy_to_keys[i])));
+  }
   conf.setIntValue("system", "joysticks", CPC.joysticks);
   conf.setIntValue("system", "joystick_menu_button",
                    CPC.joystick_menu_button + 1);
@@ -4782,9 +4809,9 @@ EmuFrameResult emu_handle_stop() {
     return EmuFrameResult::kStopped;
   }
   if (z80.step_in >= 2) {
-    // Step In completed (one instruction) or Step Out completed (RET
-    // reached). cpc_pause(), not a bare CPC.paused write: g_emu_paused and
-    // the audio pause must follow (the -H loop used to skip both).
+    // Step In or Step Out finished. cpc_pause(), not a bare CPC.paused write:
+    // it settles g_emu_paused, the audio pause and the announced state
+    // together.
     CpcRunCause done;
     done.reason = CpcStopReason::StepDone;
     cpc_pause(done);

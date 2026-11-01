@@ -402,7 +402,10 @@ class InputMapper {
   CPCScancode CPCscancodeFromCPCkey(CPC_KEYS cpc_key);
   CPCScancode CPCscancodeFromKeysym(SDL_Keycode key, SDL_Keymod mod);
   CapriceKey CPCkeyFromKeysym(SDL_Keycode key, SDL_Keymod mod);
-  std::string CPCkeyToString(const CapriceKey cpc_key);
+  static std::string CPCkeyToString(const CapriceKey cpc_key);
+  // CPC key by its layout-file name (e.g. "CPC_COLON"): -1 when the name is
+  // not in the table. The config loader uses it for stick-to-key bindings.
+  static int CPCkeyFromName(const std::string& name);
   CPCScancode CPCscancodeFromJoystickButton(SDL_JoyButtonEvent jbutton);
   void CPCscancodeFromJoystickAxis(SDL_JoyAxisEvent jaxis, CPCScancode* cpc_key,
                                    bool& release);

@@ -181,9 +181,14 @@ struct t_slot {
 
 enum class JoystickEmulation : std::uint8_t {
   None = 0,
+  // Host keys drive the CPC joystick (arrows + Z/X).
   Keyboard = 1,
+  // Host mouse drives the CJoy (AMX-style); see CPCscancodeFromMouse.
   Mouse = 2,
-  Last = 3,
+  // A physical stick presses CPC keyboard keys instead of joystick bits,
+  // for games that never read the joystick port.
+  JoystickToKeys = 3,
+  Last = 4,
 };
 
 enum class KeyboardSupportMode : std::uint8_t {
@@ -195,6 +200,13 @@ enum class KeyboardSupportMode : std::uint8_t {
 
 JoystickEmulation nextJoystickEmulation(JoystickEmulation current);
 std::string JoystickEmulationToString(JoystickEmulation value);
+
+// Config keys for the six CPC keys a stick presses in
+// JoystickEmulation::JoystickToKeys, in the order up, down, left, right,
+// fire1, fire2. One list, so the loader and the writer cannot drift.
+inline constexpr const char* kJoyToKeySlots[6] = {
+    "joy_to_keys_up",    "joy_to_keys_down",  "joy_to_keys_left",
+    "joy_to_keys_right", "joy_to_keys_fire1", "joy_to_keys_fire2"};
 
 // Expansion-device settings from the config file. loadConfiguration() fills
 // this and saveConfiguration() writes it back; neither touches the device
@@ -239,6 +251,10 @@ class t_CPC {
   unsigned int keyboard;
   KeyboardSupportMode keyboard_support_mode = KeyboardSupportMode::Direct;
   JoystickEmulation joystick_emulation;
+  // CPC keys a physical stick presses in JoystickEmulation::JoystickToKeys,
+  // as CPC_KEYS values: {up, down, left, right, fire1, fire2}. Filled by
+  // loadConfiguration() from system.joy_to_keys_* (defaults: cursor + space).
+  int joy_to_keys[6] = {0, 0, 0, 0, 0, 0};
   unsigned int joysticks;
   unsigned int joystick_menu_button;
   unsigned int joystick_vkeyboard_button;
