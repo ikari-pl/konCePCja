@@ -67,9 +67,14 @@ jobs:
 
       - run: make -j 3 ARCH=macos
       - run: make -j 3 ARCH=macos unit_test
+      # The per-test cap (run_tests.sh) must cover the kcpc group's five
+      # cold-boot scripts, which need ~350s on these shared runners; at the
+      # 300s default it killed a fully-passing group. A hung emulator still
+      # fails, just after 600s.
       - run: alias sed=gsed && make -j 3 e2e_test
         env:
           DYLD_FALLBACK_LIBRARY_PATH: ${{ github.workspace }}/vendor/SDL/install/lib
+          E2E_TEST_TIMEOUT: '600'
       # The sub-cycle board links on its own (no SDL, ImGui or host globals)
       # and boots: sim_headless + bench + the rig tools, see `board_only` in
       # the makefile. The -H loop's smoke runs inside e2e_test
