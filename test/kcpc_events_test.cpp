@@ -293,8 +293,30 @@ TEST(KcpcEvents, DecodeReadsBackEveryEventEncodeWrites) {
   media.slot = 1;
   media.generation = 12;
   kcpc::MediaNote const note{true, "/discs/b.dsk"};
+  Event resumed;
+  resumed.opcode = Opcode::kEvtResumed;
+  resumed.frame = 10;
+  resumed.cause_client = 5;
+  resumed.cause_request = 6;
+  Event reset;
+  reset.opcode = Opcode::kEvtReset;
+  reset.frame = 11;
+  reset.cause_client = 7;
+  reset.cause_request = 8;
+  Event overrun;
+  overrun.opcode = Opcode::kEvtOverrun;
+  overrun.dropped = 42;
+  Event bps;
+  bps.opcode = Opcode::kEvtBreakpointsChanged;
+  bps.generation = 7;
+  Event syms;
+  syms.opcode = Opcode::kEvtSymbolsChanged;
+  syms.generation = 8;
+  Event shutdown;
+  shutdown.opcode = Opcode::kEvtShutdown;
 
-  for (Event const& in : {stopped, control, frame, machine, media}) {
+  for (Event const& in : {stopped, control, frame, machine, media, resumed,
+                          reset, overrun, bps, syms, shutdown}) {
     Event out;
     kcpc::MediaNote out_note;
     ASSERT_TRUE(kcpc::decode_event(static_cast<std::uint16_t>(in.opcode),
@@ -318,7 +340,11 @@ TEST(KcpcEvents, DecodeReadsBackEveryEventEncodeWrites) {
     EXPECT_EQ(out.machine.model, in.machine.model);
     EXPECT_EQ(out.machine.flags, in.machine.flags);
     EXPECT_EQ(out.machine.ram_bytes, in.machine.ram_bytes);
-    bool const wire_cause = in.opcode == Opcode::kEvtStopped;
+    EXPECT_EQ(out.dropped, in.dropped);
+    // The cause is on the wire for a stop, a resume and a reset only.
+    bool const wire_cause = in.opcode == Opcode::kEvtStopped ||
+                            in.opcode == Opcode::kEvtResumed ||
+                            in.opcode == Opcode::kEvtReset;
     EXPECT_EQ(out.cause_client, wire_cause ? in.cause_client : 0U);
     EXPECT_EQ(out.cause_request, wire_cause ? in.cause_request : 0U);
     if (in.opcode == Opcode::kEvtMediaChanged) {

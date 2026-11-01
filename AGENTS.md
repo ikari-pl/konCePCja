@@ -614,13 +614,21 @@ binary_port_enabled=1      # 0 = do not open the port (manifest: `binary: null`)
   request caused comes after its reply) or to `next_event()`'s queue.
   `call()` blocks, `send()` does not; there is a typed request per opcode,
   each a `Result` (`Outcome` kReplied / kTimeout / kClosed / kBadReply, then
-  the `Status`). It PINGs after `keepalive_ms` (10 s) of silence, tracks the
-  role from HELLO, `CONTROL` and `EVT_CONTROL_CHANGED`, and an `ERROR` or the
-  end of the stream ends every pending request with kClosed
-  (`close_status()` says why). Payloads go through `kcpc_proto.h` and
-  `decode_event()` (the mirror of `encode_event()` in `kcpc_events.h`):
+  the `Status`). A request's timeout bounds its send as well as the wait: a
+  frame the socket took nothing of in time is that request's kTimeout, one
+  it took part of ends the connection (beads-3sp.11). It PINGs after
+  `keepalive_ms` (10 s) of silence, from the reader thread, only while no
+  other frame is being sent and the socket takes it at once (a stalled
+  sender never parks the reader), tracks the role from HELLO, `CONTROL` and
+  `EVT_CONTROL_CHANGED`, and an `ERROR` or the end of the stream ends every
+  pending request with kClosed carrying `close_status()` (so a HELLO refused
+  with TOO_MANY_CLIENTS says so in its `Result`) and half-closes the socket,
+  so the server's linger ends at once. Payloads go through `kcpc_proto.h`
+  and `decode_event()` (the mirror of `encode_event()` in `kcpc_events.h`):
   **no second codec**; a new opcode gets its codec there and a typed request
   here. A callback must never wait for a reply: the reader delivers replies.
+  It may `close()` the client; `connect()` from one is refused (kClosed) and
+  destroying the client from one is not allowed (the reader is running it).
   `src/kcpc/fb_ring_reader.{h,cpp}` maps the ring by FB_INFO's `shm_name`,
   read-only, and copies the latest frame with `fb_ring_read_latest()`.
   `test/kcpc_client_test.cpp` runs it against `kcpc::Server` with the fake
