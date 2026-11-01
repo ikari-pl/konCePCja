@@ -221,3 +221,8 @@ rom_mf2=MF2.rom
 
 [devtools]
 scale=2
+# trace_buffer_size
+#   Number of instructions kept in the CPU trace ring buffer (PC, opcode and
+#   registers per entry, about 24 bytes each). Used by the IPC "trace on" and
+#   the Registers window trace toggle. Default 65536, range 1-16777216.
+#trace_buffer_size=65536

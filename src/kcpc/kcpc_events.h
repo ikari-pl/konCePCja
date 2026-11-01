@@ -124,6 +124,66 @@ inline std::vector<std::uint8_t> encode_event(const Event& e,
   return w.take();
 }
 
+// encode_event() read back: what a client makes of an event frame. False
+// when `opcode` is no event or the payload is shorter than its fields; bytes
+// beyond them are ignored (section 4, "Growing a payload"). `media` is
+// filled for EVT_MEDIA_CHANGED alone.
+inline bool decode_event(std::uint16_t opcode,
+                         const std::vector<std::uint8_t>& payload, Event& e,
+                         MediaNote& media) {
+  Reader r(payload);
+  e = Event{};
+  media = MediaNote{};
+  e.opcode = static_cast<Opcode>(opcode);
+  switch (e.opcode) {
+    case Opcode::kEvtStopped:
+      r.u64(e.frame);
+      r.u8(e.reason);
+      r.u8(e.access);
+      r.u16(e.pc);
+      r.u16(e.addr);
+      r.u8(e.value);
+      r.u8(e.old_value);
+      r.u32(e.cause_client);
+      return r.u32(e.cause_request);
+    case Opcode::kEvtResumed:
+    case Opcode::kEvtReset:
+      r.u64(e.frame);
+      r.u32(e.cause_client);
+      return r.u32(e.cause_request);
+    case Opcode::kEvtFrame:
+      r.u64(e.frame);
+      return r.u64(e.fb_seq);
+    case Opcode::kEvtControlChanged:
+      r.u32(e.controller);
+      r.u32(e.previous);
+      r.u8(e.reason);
+      return r.skip(3);
+    case Opcode::kEvtOverrun:
+      return r.u32(e.dropped);
+    case Opcode::kEvtBreakpointsChanged:
+    case Opcode::kEvtSymbolsChanged:
+      return r.u64(e.generation);
+    case Opcode::kEvtMediaChanged: {
+      std::uint8_t present = 0;
+      r.u8(e.slot);
+      r.u8(present);
+      r.skip(2);
+      r.u64(e.generation);
+      media.present = present != 0;
+      return r.str(media.path);
+    }
+    case Opcode::kEvtMachineChanged:
+      if (!read_machine_info(r, e.machine)) return false;
+      e.frame = e.machine.stamp.frame;
+      return true;
+    case Opcode::kEvtShutdown:
+      return true;
+    default:
+      return false;
+  }
+}
+
 // The class bit of SUBSCRIBE an event belongs to, or 0 for the events that
 // ignore the mask and reach every client.
 inline std::uint32_t event_class(Opcode opcode) {
