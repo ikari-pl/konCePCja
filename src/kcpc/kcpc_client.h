@@ -13,14 +13,18 @@
 // second one here.
 //
 // Threads: any number of threads may send at once (frames are written whole,
-// one at a time). Callbacks run on the reader thread, in the order the frames
-// arrived, so an event caused by a request is seen after that request's
-// response, as the server sends them. A callback must not wait for a reply:
-// the reader thread is the one that would deliver it.
+// one at a time, each within its request's timeout). Callbacks run on the
+// reader thread, in the order the frames arrived, so an event caused by a
+// request is seen after that request's response, as the server sends them. A
+// callback must not wait for a reply: the reader thread is the one that would
+// deliver it. It may close() the client, but not connect() it again (refused
+// with kClosed: the reader cannot join itself) and not destroy it (the reader
+// is running it); reconnect from a thread of the owner's.
 //
 // Emulator-free, like the server: test_runner runs it against kcpc::Server.
 
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
@@ -49,6 +53,10 @@ enum class Outcome : std::uint8_t {
 
 struct Result {
   Outcome outcome = Outcome::kClosed;
+  // The server's answer; with kClosed, close_status(): the status of the
+  // ERROR the server ended the connection with (TOO_MANY_CLIENTS,
+  // SHUTTING_DOWN, ...), or kOk when it ended without one. kInternal with
+  // kClosed names a misuse: connect() from a callback.
   Status status = Status::kInternal;
   std::string message;  // the server's, or why the connection ended
 
@@ -85,7 +93,10 @@ struct ClientOptions {
   // The timeout of a request that names none.
   int call_timeout_ms = 5000;
   // A PING is sent when nothing was for this long; the server drops a silent
-  // controller after 30 s. 0: never.
+  // controller after 30 s. 0: never. It is sent by the reader thread, and
+  // only while no other frame is being sent and the socket can take it at
+  // once: a stalled send never parks the reader behind it (a frame in flight
+  // is itself the sign of life).
   int keepalive_ms = 10000;
   // With a callback, every event goes to it. Without one events are queued
   // for next_event(), at most `max_queued_events`; beyond that the oldest is
@@ -103,11 +114,14 @@ class Client {
 
   // Connects to 127.0.0.1:port and completes HELLO. On failure the client is
   // closed again and `result` says why: kClosed for no connection, the
-  // server's status for a refused HELLO.
+  // server's status for a refused HELLO, whether it answered the HELLO with
+  // it (kReplied) or ended the connection with an ERROR (kClosed, the status
+  // copied from it). Refused with kClosed from a callback (see Threads).
   bool connect(int port, const ClientOptions& options, Result& result);
   // Closes the connection and joins the reader thread. Every request still
   // waiting ends with kClosed. Safe to call twice; from a callback it only
-  // asks the reader to stop (the destructor joins it).
+  // asks the reader to stop (the destructor joins it): the reader then
+  // half-closes the socket, so the server sees the client go at once.
   void close();
 
   bool connected() const { return open_.load(std::memory_order_acquire); }
@@ -128,12 +142,16 @@ class Client {
   Status close_status() const;
 
   // One request; blocks until its response, the timeout (-1: the options'),
-  // or the end of the connection.
+  // or the end of the connection. The timeout bounds the whole call, the
+  // send included: a request the socket took nothing of in time is kTimeout
+  // and the connection is as it was; one it took only part of ends the
+  // connection (kClosed), since the stream is cut.
   Reply call(Opcode opcode, const std::vector<std::uint8_t>& payload,
              int timeout_ms = -1);
   // One request without waiting: `done` (may be empty) gets the response.
-  // Returns the request's id, 0 when nothing could be sent (and `done` was
-  // called with kClosed).
+  // Returns the request's id, 0 when it could not be sent: `done` was then
+  // called with kClosed, or with kTimeout when the socket took nothing of it
+  // within the options' call timeout.
   std::uint32_t send(Opcode opcode, const std::vector<std::uint8_t>& payload,
                      ReplyFn done);
 
@@ -208,21 +226,46 @@ class Client {
     ReplyFn fn;
   };
 
+  using TimePoint = std::chrono::steady_clock::time_point;
+
+  // How write_frame() ended.
+  enum class SendOutcome : std::uint8_t {
+    kSent,
+    kNotSent,   // nothing of it was taken by the deadline; nothing changed
+    kCutShort,  // part of it was: the stream is unusable
+    kFailed,    // the socket failed, or the client is stopping
+  };
+
   void reader_loop();
   void dispatch(const FrameHeader& header,
                 const std::vector<std::uint8_t>& payload);
   void deliver(const ClientEvent& event);
   // Ends every pending request with kClosed and marks the connection shut.
   void fail_all(const std::string& why);
-  bool write_frame(const std::vector<std::uint8_t>& frame);
+  // Writes one frame whole, by `deadline`. With `only_if_idle` it does not
+  // wait for its turn at the socket, nor for the socket to take anything.
+  SendOutcome write_frame(const std::vector<std::uint8_t>& frame,
+                          TimePoint deadline, bool only_if_idle);
   void keepalive();
   std::uint32_t next_id();
-  std::string close_reason();
-  // Registers a request and sends it; nullptr when the connection is shut.
-  // A send that fails ends the connection, and the request with it.
-  std::shared_ptr<Pending> start(Opcode opcode,
-                                 const std::vector<std::uint8_t>& payload,
-                                 ReplyFn fn, bool async, std::uint32_t& id);
+  void set_close_reason(const std::string& why);
+  // A kClosed reply with why the connection ended and the status it ended
+  // with (mutex_ held).
+  Reply closed_reply_locked() const;
+  Reply closed_reply_now();
+  // How start() ended.
+  enum class Started : std::uint8_t {
+    kSent,    // the request is pending
+    kUnsent,  // `pending` is done: kTimeout when nothing of it went out,
+              // kClosed when the send failed (the connection is then over);
+              // its `fn`, if any, has not been called
+    kShut,    // the connection was shut already; nothing was registered
+  };
+  // Registers a request and sends it by `deadline`.
+  Started start(Opcode opcode, const std::vector<std::uint8_t>& payload,
+                ReplyFn fn, bool async, int timeout_ms, TimePoint deadline,
+                bool only_if_idle, std::shared_ptr<Pending>& pending,
+                std::uint32_t& id);
   Reply call_with_id(Opcode opcode, const std::vector<std::uint8_t>& payload,
                      int timeout_ms, std::uint32_t& id);
   // A request whose reply is the status header alone, or one `parse` reads;
@@ -245,7 +288,9 @@ class Client {
   std::atomic<std::int64_t> last_send_ns_{0};
   std::thread reader_;
 
-  std::mutex send_mutex_;  // one frame on the socket at a time
+  // One frame on the socket at a time; a sender waits for its turn no longer
+  // than its deadline, and the keepalive not at all.
+  std::timed_mutex send_mutex_;
 
   mutable std::mutex mutex_;  // everything below
   std::condition_variable cv_;

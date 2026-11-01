@@ -1,5 +1,6 @@
 #include "kcpc/kcpc_client.h"
 
+#include <algorithm>
 #include <chrono>
 #include <utility>
 
@@ -24,6 +25,19 @@ Reply closed_reply(const std::string& why) {
   return r;
 }
 
+Reply timeout_reply(const std::string& what, int timeout_ms) {
+  Reply r;
+  r.outcome = Outcome::kTimeout;
+  r.message = what + " within " + std::to_string(timeout_ms) + " ms";
+  return r;
+}
+
+using Clock = std::chrono::steady_clock;
+
+Clock::time_point deadline_in(int timeout_ms) {
+  return Clock::now() + std::chrono::milliseconds(timeout_ms);
+}
+
 std::vector<std::uint8_t> one_str(const std::string& s) {
   Writer w;
   w.str(s);
@@ -41,18 +55,26 @@ std::vector<std::uint8_t> slot_payload(std::uint8_t slot) {
 Client::~Client() { close(); }
 
 bool Client::connect(int port, const ClientOptions& options, Result& result) {
+  if (reader_.joinable() && std::this_thread::get_id() == reader_.get_id()) {
+    // The reader cannot join itself, and the HELLO's reply is one only it
+    // could deliver. kInternal: a misuse, not something the server said.
+    result = closed_reply("connect() cannot be called from a callback");
+    return false;
+  }
   close();
   options_ = options;
   hello_ = HelloReply{};
   if (!net_started_) net_started_ = net::startup();
   if (!net_started_) {
     result = closed_reply("socket setup failed");
+    set_close_reason(result.message);
     return false;
   }
   socket_ = net::connect_loopback(port, options_.connect_timeout_ms);
   if (socket_ == net::kInvalidSocket) {
     result =
         closed_reply("cannot connect to 127.0.0.1:" + std::to_string(port));
+    set_close_reason(result.message);
     return false;
   }
   {
@@ -116,6 +138,11 @@ Status Client::close_status() const {
   return close_status_;
 }
 
+void Client::set_close_reason(const std::string& why) {
+  std::scoped_lock const lock(mutex_);
+  close_reason_ = why;
+}
+
 std::uint32_t Client::next_id() {
   std::uint32_t id = ids_.fetch_add(1, std::memory_order_relaxed) + 1;
   // 0 is the server's own ERROR; a wrapped counter skips it.
@@ -123,63 +150,112 @@ std::uint32_t Client::next_id() {
   return id;
 }
 
-bool Client::write_frame(const std::vector<std::uint8_t>& frame) {
-  std::scoped_lock const lock(send_mutex_);
+Client::SendOutcome Client::write_frame(const std::vector<std::uint8_t>& frame,
+                                        TimePoint deadline, bool only_if_idle) {
+  std::unique_lock lock(send_mutex_, std::defer_lock);
+  if (only_if_idle) {
+    if (!lock.try_lock()) return SendOutcome::kNotSent;
+    // Writable: room for a small frame at least (the low-water mark), so a
+    // PING goes whole or not at all.
+    if (socket_ == net::kInvalidSocket || !net::wait_writable(socket_, 0)) {
+      return SendOutcome::kNotSent;
+    }
+  } else if (!lock.try_lock_until(deadline)) {
+    return SendOutcome::kNotSent;
+  }
   std::size_t sent = 0;
   while (sent < frame.size()) {
-    if (socket_ == net::kInvalidSocket || stop_.load()) return false;
+    if (socket_ == net::kInvalidSocket || stop_.load()) {
+      return SendOutcome::kFailed;
+    }
     net::IoResult const r =
         net::send_some(socket_, frame.data() + sent, frame.size() - sent);
     if (r.status == net::IoStatus::kOk) {
       sent += r.bytes;
     } else if (r.status == net::IoStatus::kWouldBlock) {
-      net::wait_writable(socket_, kSliceMs);
+      auto const now = Clock::now();
+      if (now >= deadline) {
+        return sent == 0 ? SendOutcome::kNotSent : SendOutcome::kCutShort;
+      }
+      auto const left =
+          std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now)
+              .count();
+      net::wait_writable(socket_,
+                         static_cast<int>(std::min<long long>(left, kSliceMs)));
     } else {
-      return false;
+      return SendOutcome::kFailed;
     }
   }
   last_send_ns_.store(now_ns(), std::memory_order_relaxed);
-  return true;
+  return SendOutcome::kSent;
 }
 
-std::shared_ptr<Client::Pending> Client::start(
-    Opcode opcode, const std::vector<std::uint8_t>& payload, ReplyFn fn,
-    bool async, std::uint32_t& id) {
-  auto pending = std::make_shared<Pending>();
+Client::Started Client::start(Opcode opcode,
+                              const std::vector<std::uint8_t>& payload,
+                              ReplyFn fn, bool async, int timeout_ms,
+                              TimePoint deadline, bool only_if_idle,
+                              std::shared_ptr<Pending>& pending,
+                              std::uint32_t& id) {
+  pending = std::make_shared<Pending>();
   pending->opcode = opcode;
   pending->async = async;
   pending->fn = std::move(fn);
   {
     std::scoped_lock const lock(mutex_);
-    if (closed_) return nullptr;
+    if (closed_) return Started::kShut;
     id = next_id();
     pending_[id] = pending;
   }
-  if (!write_frame(encode_frame(
-          Kind::kRequest, static_cast<std::uint16_t>(opcode), id, payload))) {
-    // The connection is unusable. The reader ends it, and with it this
-    // request, as it ends every other: once, with kClosed.
-    stop_ = true;
+  SendOutcome const sent =
+      write_frame(encode_frame(Kind::kRequest,
+                               static_cast<std::uint16_t>(opcode), id, payload),
+                  deadline, only_if_idle);
+  if (sent == SendOutcome::kSent) return Started::kSent;
+  std::scoped_lock const lock(mutex_);
+  pending_.erase(id);
+  if (sent == SendOutcome::kNotSent) {
+    // Nothing went out: this request alone is over, the connection stays.
+    pending->reply = timeout_reply("nothing could be sent", timeout_ms);
+  } else {
+    // The connection is unusable. Whoever stops it first names why (close()
+    // alone stops it without a word); the reader then ends every other
+    // request with kClosed, and this one is ended here, the same way.
+    bool const stopping = stop_.exchange(true);
+    if (close_reason_.empty()) {
+      if (stopping) {
+        close_reason_ = "closed by the client";
+      } else if (sent == SendOutcome::kCutShort) {
+        close_reason_ = "a request was cut short: the server stopped reading";
+      } else {
+        close_reason_ = "the connection failed";
+      }
+    }
+    pending->reply = closed_reply_locked();
   }
-  return pending;
+  pending->done = true;
+  return Started::kUnsent;
 }
 
 Reply Client::call_with_id(Opcode opcode,
                            const std::vector<std::uint8_t>& payload,
                            int timeout_ms, std::uint32_t& id) {
   id = 0;
-  std::shared_ptr<Pending> const pending =
-      start(opcode, payload, nullptr, false, id);
-  if (!pending) return closed_reply(close_reason());
   if (timeout_ms < 0) timeout_ms = options_.call_timeout_ms;
+  TimePoint const deadline = deadline_in(timeout_ms);
+  std::shared_ptr<Pending> pending;
+  switch (start(opcode, payload, nullptr, false, timeout_ms, deadline, false,
+                pending, id)) {
+    case Started::kShut:
+      return closed_reply_now();
+    case Started::kUnsent:
+      return pending->reply;
+    case Started::kSent:
+      break;
+  }
   std::unique_lock lock(mutex_);
-  if (!cv_.wait_for(lock, std::chrono::milliseconds(timeout_ms),
-                    [&] { return pending->done; })) {
+  if (!cv_.wait_until(lock, deadline, [&] { return pending->done; })) {
     pending_.erase(id);
-    Reply r;
-    r.outcome = Outcome::kTimeout;
-    r.message = "no reply within " + std::to_string(timeout_ms) + " ms";
-    return r;
+    return timeout_reply("no reply", timeout_ms);
   }
   return pending->reply;
 }
@@ -194,16 +270,32 @@ std::uint32_t Client::send(Opcode opcode,
                            const std::vector<std::uint8_t>& payload,
                            ReplyFn done) {
   std::uint32_t id = 0;
-  if (!start(opcode, payload, done, true, id)) {
-    if (done) done(closed_reply(close_reason()));
-    return 0;
+  int const timeout_ms = options_.call_timeout_ms;
+  std::shared_ptr<Pending> pending;
+  switch (start(opcode, payload, std::move(done), true, timeout_ms,
+                deadline_in(timeout_ms), false, pending, id)) {
+    case Started::kShut:
+      if (pending->fn) pending->fn(closed_reply_now());
+      return 0;
+    case Started::kUnsent:
+      if (pending->fn) pending->fn(pending->reply);
+      return 0;
+    case Started::kSent:
+      break;
   }
   return id;
 }
 
-std::string Client::close_reason() {
+Reply Client::closed_reply_locked() const {
+  Reply r =
+      closed_reply(close_reason_.empty() ? "not connected" : close_reason_);
+  r.status = close_status_;
+  return r;
+}
+
+Reply Client::closed_reply_now() {
   std::scoped_lock const lock(mutex_);
-  return close_reason_.empty() ? "not connected" : close_reason_;
+  return closed_reply_locked();
 }
 
 bool Client::next_event(ClientEvent& out, int timeout_ms) {
@@ -221,7 +313,13 @@ void Client::keepalive() {
   std::int64_t const quiet =
       now_ns() - last_send_ns_.load(std::memory_order_relaxed);
   if (quiet < std::int64_t{options_.keepalive_ms} * 1000000) return;
-  send(Opcode::kPing, {}, nullptr);
+  // Only while nobody else is sending and the socket takes it at once: the
+  // reader must never wait behind a stalled sender. A PING the socket did
+  // not take is simply tried again next time round.
+  std::shared_ptr<Pending> pending;
+  std::uint32_t id = 0;
+  start(Opcode::kPing, {}, nullptr, true, kSliceMs, deadline_in(kSliceMs), true,
+        pending, id);
 }
 
 void Client::reader_loop() {
@@ -266,6 +364,17 @@ void Client::reader_loop() {
   {
     std::scoped_lock const lock(mutex_);
     if (close_status_ != Status::kOk) why = close_reason_;
+    if (close_reason_.empty()) close_reason_ = why;
+    // No more frames go out: a sender still waiting for the socket gives
+    // up within its slice.
+    stop_ = true;
+  }
+  // FIN, so a server lingering for this client's close (after its ERROR,
+  // or because the owner closed from a callback) is done at once; the
+  // descriptor itself is the owner's to close.
+  {
+    std::scoped_lock const lock(send_mutex_);
+    if (socket_ != net::kInvalidSocket) net::shutdown_send(socket_);
   }
   fail_all(why);
 }
@@ -375,11 +484,15 @@ void Client::fail_all(const std::string& why) {
   std::map<std::uint32_t, std::shared_ptr<Pending>> ended;
   {
     std::scoped_lock const lock(mutex_);
-    closed_ = true;
-    if (close_reason_.empty()) close_reason_ = why;
+    // The first to shut a connection names why; a close() of one that was
+    // never open, or is shut already, changes nothing.
+    if (!closed_) {
+      closed_ = true;
+      if (close_reason_.empty()) close_reason_ = why;
+    }
     ended.swap(pending_);
     for (auto& [id, pending] : ended) {
-      pending->reply = closed_reply(close_reason_);
+      pending->reply = closed_reply_locked();
       pending->done = true;
     }
   }

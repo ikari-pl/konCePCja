@@ -83,15 +83,30 @@ class KcpcClientTest : public ::testing::Test {
   // A client connected with HELLO.
   std::unique_ptr<kcpc::Client> join(kcpc::Role role,
                                      kcpc::EventFn on_event = nullptr) {
-    auto client = std::make_unique<kcpc::Client>();
     kcpc::ClientOptions options;
-    options.name = "kcpc_client_test";
     options.role = role;
     options.on_event = std::move(on_event);
+    return join_with(options);
+  }
+
+  std::unique_ptr<kcpc::Client> join_with(kcpc::ClientOptions options) {
+    auto client = std::make_unique<kcpc::Client>();
+    options.name = "kcpc_client_test";
     kcpc::Result result;
     EXPECT_TRUE(client->connect(server_.port(), options, result))
         << result.message;
     return client;
+  }
+
+  // Polls `done` every 10 ms for up to 5 s.
+  static bool soon(const std::function<bool()>& done) {
+    auto const deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (!done()) {
+      if (std::chrono::steady_clock::now() >= deadline) return false;
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    return true;
   }
 
   // The next queued EVT_CONTROL_CHANGED with this reason; the events
@@ -477,6 +492,112 @@ TEST_F(KcpcClientTest, AQuietControllerIsKeptAliveByPing) {
   EXPECT_EQ(quiet.close_status(), Status::kIdleTimeout);
 }
 
+// A refusal the server sends as ERROR (id 0) ends the HELLO with kClosed; the
+// server's status is in the result all the same, not just in close_status().
+TEST_F(KcpcClientTest, AClientBeyondTheLimitIsRefusedWithTooManyClients) {
+  start_with([](kcpc::ServerConfig& c) { c.max_clients = 1; });
+  auto first = join(kcpc::Role::kObserver);
+  kcpc::Client second;
+  kcpc::Result result;
+  EXPECT_FALSE(second.connect(server_.port(), kcpc::ClientOptions{}, result));
+  EXPECT_EQ(result.outcome, Outcome::kClosed);
+  EXPECT_EQ(result.status, Status::kTooManyClients);
+  EXPECT_EQ(second.close_status(), Status::kTooManyClients);
+  EXPECT_FALSE(second.connected());
+  // The same status again, from the shut connection.
+  kcpc::Stamp stamp;
+  kcpc::Result const later = second.pause(stamp);
+  EXPECT_EQ(later.outcome, Outcome::kClosed);
+  EXPECT_EQ(later.status, Status::kTooManyClients);
+}
+
+// A refusal the server answers the HELLO itself with is a reply.
+TEST_F(KcpcClientTest, AHelloTheMachineRefusesCarriesTheMachinesStatus) {
+  start_with([](kcpc::ServerConfig& c) {
+    c.machine_info = [](kcpc::MachineInfo&) { return Status::kBusy; };
+  });
+  kcpc::Client client;
+  kcpc::Result result;
+  EXPECT_FALSE(client.connect(server_.port(), kcpc::ClientOptions{}, result));
+  EXPECT_EQ(result.outcome, Outcome::kReplied);
+  EXPECT_EQ(result.status, Status::kBusy);
+  EXPECT_FALSE(client.connected());
+}
+
+TEST_F(KcpcClientTest, AFailedConnectIsTheReasonLaterCallsReport) {
+  int const port = server_.port();
+  server_.stop();
+  kcpc::Client client;
+  kcpc::Result result;
+  ASSERT_FALSE(client.connect(port, kcpc::ClientOptions{}, result));
+  EXPECT_NE(result.message.find("cannot connect"), std::string::npos)
+      << result.message;
+  kcpc::Stamp stamp;
+  kcpc::Result const later = client.pause(stamp);
+  EXPECT_EQ(later.outcome, Outcome::kClosed);
+  EXPECT_EQ(later.message, result.message);
+  EXPECT_EQ(client.send(Opcode::kPing, {}, nullptr), 0U);
+}
+
+// close() from a callback cannot join the reader (it is the reader); the
+// reader stops once the callback returns, half-closes the socket so the
+// server sees the client go, and the destructor joins it.
+TEST_F(KcpcClientTest, CloseFromACallbackStopsTheReaderAndFreesThePlace) {
+  start_with([](kcpc::ServerConfig& c) { c.max_clients = 1; });
+  std::atomic<bool> closed_from_callback{false};
+  std::unique_ptr<kcpc::Client> client;
+  client = join(kcpc::Role::kObserver, [&](const kcpc::ClientEvent& e) {
+    if (e.event.opcode != Opcode::kEvtResumed) return;
+    client->close();
+    closed_from_callback = true;
+  });
+  kcpc::Subscription accepted;
+  ASSERT_TRUE(
+      client->subscribe(kcpc::Subscription{kcpc::kEventClassAll, 0}, accepted)
+          .ok());
+  kcpc::Event e;
+  e.opcode = Opcode::kEvtResumed;
+  e.frame = 1;
+  server_.post(e);
+  ASSERT_TRUE(soon([&] { return closed_from_callback.load(); }));
+  EXPECT_TRUE(soon([&] { return !client->connected(); }));
+  kcpc::Stamp stamp;
+  EXPECT_EQ(client->pause(stamp).outcome, Outcome::kClosed);
+  // The server sees the end of the stream and gives the place back before
+  // the client object is gone.
+  EXPECT_TRUE(soon([&] { return server_.client_count() == 0; }));
+  auto next = join(kcpc::Role::kObserver);
+  EXPECT_TRUE(next->connected());
+  client.reset();  // joins the reader
+}
+
+TEST_F(KcpcClientTest, TheOldestQueuedEventsAreDroppedAndCounted) {
+  kcpc::ClientOptions options;
+  options.role = kcpc::Role::kObserver;
+  options.max_queued_events = 2;
+  auto client = join_with(options);
+  kcpc::Subscription accepted;
+  ASSERT_TRUE(
+      client->subscribe(kcpc::Subscription{kcpc::kEventClassAll, 0}, accepted)
+          .ok());
+  for (std::uint64_t frame = 1; frame <= 5; ++frame) {
+    kcpc::Event e;
+    e.opcode = Opcode::kEvtResumed;
+    e.frame = frame;
+    server_.post(e);
+  }
+  ASSERT_TRUE(soon([&] { return client->dropped_events() == 3; }));
+  for (std::uint64_t frame = 4; frame <= 5; ++frame) {
+    kcpc::ClientEvent event;
+    ASSERT_TRUE(client->next_event(event, 5000));
+    EXPECT_EQ(event.event.frame, frame);
+    EXPECT_EQ(event.seq, frame);
+  }
+  kcpc::ClientEvent none;
+  EXPECT_FALSE(client->next_event(none, 50));
+  EXPECT_EQ(client->dropped_events(), 3U);
+}
+
 // -- a peer that never answers ------------------------------------------------
 
 namespace {
@@ -505,8 +626,9 @@ class SilentPeer {
 
   int port() const { return listener_ != net::kInvalidSocket ? port_ : 0; }
 
-  // Accepts the client and answers its HELLO, granting control.
-  bool greet() {
+  // Accepts the client and answers its HELLO, granting control. With
+  // `whole` false the answer is the status alone, without the HELLO fields.
+  bool greet(bool whole = true) {
     auto const deadline =
         std::chrono::steady_clock::now() + std::chrono::seconds(5);
     while (peer_ == net::kInvalidSocket &&
@@ -526,9 +648,30 @@ class SilentPeer {
     hello.client_id = 5;
     kcpc::Writer w;
     kcpc::write_status(w, Status::kOk);
-    kcpc::write_hello_reply(w, hello);
-    return write(kcpc::encode_frame(kcpc::Kind::kResponse, header.opcode,
-                                    header.id, w.data()));
+    if (whole) kcpc::write_hello_reply(w, hello);
+    return answer(header, header.opcode, w.data());
+  }
+
+  // Answers one request, as whatever opcode and payload the test says.
+  bool answer(const kcpc::FrameHeader& request, std::uint16_t opcode,
+              const std::vector<std::uint8_t>& payload) const {
+    return write(
+        kcpc::encode_frame(kcpc::Kind::kResponse, opcode, request.id, payload));
+  }
+
+  // Reads and discards until the client half-closes (end of stream): false
+  // when it has not within `timeout_ms`.
+  bool read_end(int timeout_ms) const {
+    auto const deadline = std::chrono::steady_clock::now() +
+                          std::chrono::milliseconds(timeout_ms);
+    while (std::chrono::steady_clock::now() < deadline) {
+      if (!net::wait_readable(peer_, 100)) continue;
+      std::uint8_t sink[4096];
+      net::IoResult const r = net::recv_some(peer_, sink, sizeof sink);
+      if (r.status == net::IoStatus::kClosed) return true;
+      if (r.status == net::IoStatus::kError) return false;
+    }
+    return false;
   }
 
   // Reads one frame and answers nothing.
@@ -558,7 +701,7 @@ class SilentPeer {
     return false;
   }
 
-  bool write(const std::vector<std::uint8_t>& frame) {
+  bool write(const std::vector<std::uint8_t>& frame) const {
     std::size_t sent = 0;
     while (sent < frame.size()) {
       net::IoResult const r =
@@ -575,7 +718,7 @@ class SilentPeer {
   }
 
   // What a core that quits sends: EVT_SHUTDOWN, then ERROR, then the end.
-  void shut_down() {
+  void shut_down() const {
     write(kcpc::encode_frame(kcpc::Kind::kEvent,
                              static_cast<std::uint16_t>(Opcode::kEvtShutdown),
                              1, {}));
@@ -597,37 +740,54 @@ class SilentPeer {
   std::vector<std::uint8_t> buffer_;
 };
 
-// Two blocking calls and two asynchronous requests the peer has read and
-// will never answer, then `end` ends the connection.
-void expect_pending_calls_end(SilentPeer& peer,
-                              const std::function<void()>& end,
-                              Status close_status) {
-  ASSERT_NE(peer.port(), 0);
-  std::atomic<int> shutdowns{0};
+// Connects `client` to `peer`, which greets it on a thread of its own.
+bool greeted(SilentPeer& peer, kcpc::Client& client,
+             const kcpc::ClientOptions& options, kcpc::Result& result,
+             bool whole_hello = true) {
+  if (peer.port() == 0) return false;
+  std::thread greeter([&] { EXPECT_TRUE(peer.greet(whole_hello)); });
+  bool const ok = client.connect(peer.port(), options, result);
+  greeter.join();
+  return ok;
+}
+
+kcpc::ClientOptions controller_options() {
   kcpc::ClientOptions options;
   options.role = kcpc::Role::kController;
   options.call_timeout_ms = 20000;
+  return options;
+}
+
+// Two blocking calls and two asynchronous requests the peer has read and
+// will never answer, then `end` ends the connection. Every one of them ends
+// with kClosed and the status the connection ended with.
+void expect_pending_calls_end(SilentPeer& peer,
+                              const std::function<void()>& end,
+                              Status close_status) {
+  std::atomic<int> shutdowns{0};
+  kcpc::ClientOptions options = controller_options();
   options.on_event = [&](const kcpc::ClientEvent& e) {
     if (e.event.opcode == Opcode::kEvtShutdown) shutdowns.fetch_add(1);
   };
   kcpc::Client client;
   kcpc::Result result;
-  std::thread greeter([&] { EXPECT_TRUE(peer.greet()); });
-  ASSERT_TRUE(client.connect(peer.port(), options, result)) << result.message;
-  greeter.join();
+  ASSERT_TRUE(greeted(peer, client, options, result)) << result.message;
   EXPECT_TRUE(client.is_controller());
 
   std::atomic<int> ended{0};
+  auto const count = [&](const kcpc::Result& r) {
+    if (r.outcome == Outcome::kClosed && r.status == close_status) {
+      ended.fetch_add(1);
+    }
+  };
   std::vector<std::thread> callers;
   for (int i = 0; i < 2; ++i) {
     callers.emplace_back([&] {
       kcpc::Stamp stamp;
-      kcpc::Result const r = client.pause(stamp);
-      if (r.outcome == Outcome::kClosed) ended.fetch_add(1);
+      count(client.pause(stamp));
     });
-    client.send(Opcode::kPing, {}, [&](const kcpc::Reply& reply) {
-      if (reply.outcome == Outcome::kClosed) ended.fetch_add(1);
-    });
+    client.send(Opcode::kPing, {},
+                [&](const kcpc::Reply& reply) { count(reply); });
   }
   for (int i = 0; i < 4; ++i) {
     kcpc::FrameHeader header;
@@ -636,13 +796,18 @@ void expect_pending_calls_end(SilentPeer& peer,
   }
   end();
   for (std::thread& t : callers) t.join();
+  // The asynchronous replies run on the reader thread, after the blocking
+  // callers were woken: joining it settles the count.
+  client.close();
   EXPECT_EQ(ended.load(), 4);
   EXPECT_FALSE(client.connected());
   EXPECT_EQ(client.close_status(), close_status);
   EXPECT_EQ(shutdowns.load(), close_status == Status::kOk ? 0 : 1);
   // Nothing more is sent, and asking again fails at once.
   kcpc::Stamp stamp;
-  EXPECT_EQ(client.pause(stamp).outcome, Outcome::kClosed);
+  kcpc::Result const later = client.pause(stamp);
+  EXPECT_EQ(later.outcome, Outcome::kClosed);
+  EXPECT_EQ(later.status, close_status);
   EXPECT_EQ(client.send(Opcode::kPing, {}, nullptr), 0U);
 }
 
@@ -651,12 +816,298 @@ void expect_pending_calls_end(SilentPeer& peer,
 TEST(KcpcClientClose, ShutdownWakesEveryPendingCallWithAnError) {
   SilentPeer peer;
   expect_pending_calls_end(
-      peer, [&] { peer.shut_down(); }, Status::kShuttingDown);
+      peer,
+      [&] {
+        peer.shut_down();
+        // The client answers the ERROR by half-closing at once, so a
+        // server's linger ends as soon as it has been read: no close()
+        // from the owner is needed for that.
+        EXPECT_TRUE(peer.read_end(5000));
+      },
+      Status::kShuttingDown);
 }
 
 TEST(KcpcClientClose, AConnectionThatJustEndsWakesThemToo) {
   SilentPeer peer;
   expect_pending_calls_end(peer, [&] { peer.drop(); }, Status::kOk);
+}
+
+// connect() from a callback would have the reader thread join itself; it is
+// refused with kClosed instead, and the client stays usable from a thread of
+// the owner's.
+TEST(KcpcClientClose, ConnectFromACallbackIsRefusedNotACrash) {
+  SilentPeer first;
+  SilentPeer second;
+  ASSERT_NE(first.port(), 0);
+  ASSERT_NE(second.port(), 0);
+  std::atomic<bool> tried{false};
+  kcpc::Result inner;
+  kcpc::Client client;
+  kcpc::ClientOptions options = controller_options();
+  options.on_event = [&](const kcpc::ClientEvent& e) {
+    if (e.event.opcode != Opcode::kEvtShutdown) return;
+    EXPECT_FALSE(client.connect(second.port(), controller_options(), inner));
+    tried = true;
+  };
+  kcpc::Result result;
+  ASSERT_TRUE(greeted(first, client, options, result)) << result.message;
+  first.shut_down();
+  auto const deadline =
+      std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  while (!tried.load() && std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  ASSERT_TRUE(tried.load());
+  EXPECT_EQ(inner.outcome, Outcome::kClosed);
+  EXPECT_NE(inner.message.find("callback"), std::string::npos) << inner.message;
+  EXPECT_TRUE(greeted(second, client, controller_options(), result))
+      << result.message;
+  EXPECT_TRUE(client.connected());
+  EXPECT_TRUE(client.is_controller());
+}
+
+// -- a send the peer does not take --------------------------------------------
+
+// A call's timeout bounds the send too. The peer reads nothing, so a writer
+// fills the socket and then holds the client's one turn at it, for as long
+// as its timeout; meanwhile another caller times out at its own deadline
+// with the connection as it was, and the reader thread (which would send a
+// PING now) keeps reading. The held send ends at its deadline: untouched
+// (kTimeout, connection intact) or cut short (the connection ends).
+TEST(KcpcClientSend, AStalledSendEndsAtItsDeadlineAndHoldsNobodyElse) {
+  SilentPeer peer;
+  kcpc::ClientOptions options = controller_options();
+  options.call_timeout_ms = 3000;
+  options.keepalive_ms = 50;
+  std::atomic<int> events{0};
+  options.on_event = [&](const kcpc::ClientEvent&) { events.fetch_add(1); };
+  kcpc::Client client;
+  kcpc::Result result;
+  ASSERT_TRUE(greeted(peer, client, options, result)) << result.message;
+
+  std::vector<std::uint8_t> const big(kcpc::kMaxRequestPayload, 0x5A);
+  std::atomic<int> started{0};
+  std::atomic<int> finished{0};
+  std::atomic<std::uint32_t> last_id{1};
+  std::atomic<Outcome> last_outcome{Outcome::kReplied};
+  std::thread writer([&] {
+    while (last_id.load() != 0) {
+      started.fetch_add(1);
+      last_id = client.send(Opcode::kMemWrite, big, [&](const kcpc::Reply& r) {
+        last_outcome = r.outcome;
+      });
+      finished.fetch_add(1);
+    }
+  });
+  // Until one send has been inside the client for 100 ms: stuck.
+  auto const deadline =
+      std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  bool stuck = false;
+  while (!stuck && std::chrono::steady_clock::now() < deadline) {
+    int const seen = started.load();
+    if (seen != finished.load() + 1) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+      continue;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    stuck = started.load() == seen && finished.load() == seen - 1;
+  }
+  ASSERT_TRUE(stuck);
+
+  // Another caller: its own timeout, the connection untouched.
+  std::atomic<bool> pinged{false};
+  kcpc::Result ping;
+  std::thread pinger([&] {
+    ping = client.ping(100);
+    pinged = true;
+  });
+  auto const ping_deadline =
+      std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (!pinged.load() && std::chrono::steady_clock::now() < ping_deadline) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  EXPECT_TRUE(pinged.load()) << "ping(100) is held by the stalled send";
+  if (pinged.load()) {
+    EXPECT_EQ(ping.outcome, Outcome::kTimeout) << ping.message;
+    EXPECT_TRUE(client.connected());
+  }
+
+  // The reader is not parked behind the stalled send: an event gets through.
+  kcpc::Event resumed;
+  resumed.opcode = Opcode::kEvtResumed;
+  resumed.frame = 1;
+  ASSERT_TRUE(peer.write(kcpc::encode_frame(
+      kcpc::Kind::kEvent, static_cast<std::uint16_t>(Opcode::kEvtResumed), 1,
+      kcpc::encode_event(resumed))));
+  auto const event_deadline =
+      std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (events.load() == 0 &&
+         std::chrono::steady_clock::now() < event_deadline) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  EXPECT_EQ(events.load(), 1) << "the reader is held by the stalled send";
+
+  // The stalled send itself ends at its deadline.
+  auto const send_deadline =
+      std::chrono::steady_clock::now() + std::chrono::seconds(6);
+  while (last_id.load() != 0 &&
+         std::chrono::steady_clock::now() < send_deadline) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  EXPECT_EQ(last_id.load(), 0U) << "the stalled send never ended";
+  if (last_id.load() == 0) {
+    if (last_outcome.load() == Outcome::kTimeout) {
+      // Nothing of it was taken: the connection is as it was.
+      EXPECT_TRUE(client.connected());
+    } else {
+      // Part of it was: the stream is cut, so the connection is over (the
+      // reader notices within its slice).
+      EXPECT_EQ(last_outcome.load(), Outcome::kClosed);
+      auto const close_deadline =
+          std::chrono::steady_clock::now() + std::chrono::seconds(2);
+      while (client.connected() &&
+             std::chrono::steady_clock::now() < close_deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+      }
+      EXPECT_FALSE(client.connected());
+      kcpc::Stamp stamp;
+      kcpc::Result const later = client.pause(stamp);
+      EXPECT_EQ(later.outcome, Outcome::kClosed);
+      EXPECT_NE(later.message.find("cut short"), std::string::npos)
+          << later.message;
+    }
+  }
+  client.close();
+  if (pinger.joinable()) pinger.join();
+  writer.join();
+}
+
+// -- answers the client cannot use --------------------------------------------
+
+namespace {
+
+// `request` on a thread, while the test answers it through the peer.
+class Asked {
+ public:
+  explicit Asked(std::function<kcpc::Result()> request)
+      : thread_([this, request = std::move(request)] { result_ = request(); }) {
+  }
+  ~Asked() {
+    if (thread_.joinable()) thread_.join();
+  }
+  Asked(const Asked&) = delete;
+  Asked& operator=(const Asked&) = delete;
+
+  const kcpc::Result& result() {
+    if (thread_.joinable()) thread_.join();
+    return result_;
+  }
+
+ private:
+  kcpc::Result result_;
+  std::thread thread_;
+};
+
+std::vector<std::uint8_t> status_only(Status status) {
+  kcpc::Writer w;
+  kcpc::write_status(w, status);
+  return w.data();
+}
+
+}  // namespace
+
+TEST(KcpcClientBadReply, AResponseWithoutItsStatusIsABadReply) {
+  SilentPeer peer;
+  kcpc::Client client;
+  kcpc::Result result;
+  ASSERT_TRUE(greeted(peer, client, controller_options(), result));
+  Asked asked([&] {
+    kcpc::Stamp stamp;
+    return client.pause(stamp);
+  });
+  kcpc::FrameHeader header;
+  std::vector<std::uint8_t> payload;
+  ASSERT_TRUE(peer.read_frame(header, payload));
+  ASSERT_TRUE(peer.answer(header, header.opcode, {0x00}));
+  EXPECT_EQ(asked.result().outcome, Outcome::kBadReply);
+  EXPECT_EQ(asked.result().message, "a response without its status");
+  EXPECT_TRUE(client.connected());
+}
+
+TEST(KcpcClientBadReply, AResponseNamingAnotherOpcodeIsABadReply) {
+  SilentPeer peer;
+  kcpc::Client client;
+  kcpc::Result result;
+  ASSERT_TRUE(greeted(peer, client, controller_options(), result));
+  Asked asked([&] {
+    kcpc::Stamp stamp;
+    return client.pause(stamp);
+  });
+  kcpc::FrameHeader header;
+  std::vector<std::uint8_t> payload;
+  ASSERT_TRUE(peer.read_frame(header, payload));
+  ASSERT_TRUE(peer.answer(header, static_cast<std::uint16_t>(Opcode::kPing),
+                          status_only(Status::kOk)));
+  EXPECT_EQ(asked.result().outcome, Outcome::kBadReply);
+  EXPECT_EQ(asked.result().message, "the response names another opcode");
+}
+
+TEST(KcpcClientBadReply, AReplyShorterThanItsFieldsIsABadReply) {
+  SilentPeer peer;
+  kcpc::Client client;
+  kcpc::Result result;
+  ASSERT_TRUE(greeted(peer, client, controller_options(), result));
+  Asked asked([&] {
+    kcpc::Stamp stamp;
+    kcpc::Regs regs;
+    return client.regs_get(stamp, regs);
+  });
+  kcpc::FrameHeader header;
+  std::vector<std::uint8_t> payload;
+  ASSERT_TRUE(peer.read_frame(header, payload));
+  std::vector<std::uint8_t> three = status_only(Status::kOk);
+  three.insert(three.end(), {1, 2, 3});
+  ASSERT_TRUE(peer.answer(header, header.opcode, three));
+  EXPECT_EQ(asked.result().outcome, Outcome::kBadReply);
+  EXPECT_EQ(asked.result().message, "the reply is shorter than its fields");
+  // The connection is fine: the next request is answered as usual.
+  EXPECT_TRUE(client.connected());
+  Asked ping([&] { return client.ping(); });
+  ASSERT_TRUE(peer.read_frame(header, payload));
+  ASSERT_TRUE(peer.answer(header, header.opcode, status_only(Status::kOk)));
+  EXPECT_TRUE(ping.result().ok()) << ping.result().message;
+}
+
+TEST(KcpcClientBadReply, AHelloWithoutItsFieldsIsABadReply) {
+  SilentPeer peer;
+  kcpc::Client client;
+  kcpc::Result result;
+  EXPECT_FALSE(
+      greeted(peer, client, controller_options(), result, /*whole=*/false));
+  EXPECT_EQ(result.outcome, Outcome::kBadReply);
+  EXPECT_EQ(result.message, "HELLO reply too short");
+  EXPECT_FALSE(client.connected());
+}
+
+TEST(KcpcClientBadReply, AFrameTheClientCannotReadEndsTheConnection) {
+  SilentPeer peer;
+  kcpc::Client client;
+  kcpc::Result result;
+  ASSERT_TRUE(greeted(peer, client, controller_options(), result));
+  Asked asked([&] {
+    kcpc::Stamp stamp;
+    return client.pause(stamp);
+  });
+  kcpc::FrameHeader header;
+  std::vector<std::uint8_t> payload;
+  ASSERT_TRUE(peer.read_frame(header, payload));
+  ASSERT_TRUE(peer.write(std::vector<std::uint8_t>(16, 0xFF)));
+  EXPECT_EQ(asked.result().outcome, Outcome::kClosed);
+  EXPECT_EQ(asked.result().message,
+            "the server sent a frame this client cannot read");
+  EXPECT_EQ(asked.result().status, Status::kOk);
+  EXPECT_TRUE(peer.read_end(5000));
+  EXPECT_FALSE(client.connected());
 }
 
 // -- the frame ring ----------------------------------------------------------
