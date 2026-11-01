@@ -3511,29 +3511,45 @@ std::string handle_command(const std::string& line) {
     // on_crash <path>
     if (cmd == "trace" && parts.size() >= 2) {
       if (parts[1] == "on") {
-        int size = 65536;
+        int size = g_trace_default_size;
         if (parts.size() >= 3) size = parse_int(parts[2]);
+        CpcPauseLease lease;
+        if (!lease.idle()) return z80_not_idle(lease);
         g_trace.enable(size);
         subcycle_bridge_set_instr_trace(true);  // engine=1 feed (no-op legacy)
+        lease.restore_run_state();
         return "OK\n";
       }
       if (parts[1] == "off") {
+        CpcPauseLease lease;
+        if (!lease.idle()) return z80_not_idle(lease);
         subcycle_bridge_set_instr_trace(false);
         g_trace.disable();
+        lease.restore_run_state();
         return "OK\n";
       }
       if (parts[1] == "dump" && parts.size() >= 3) {
-        if (g_trace.dump(parts[2])) {
+        std::vector<TraceEntry> entries;
+        {
+          CpcPauseLease lease;
+          if (!lease.idle()) return z80_not_idle(lease);
+          g_trace.snapshot(entries);
+          lease.restore_run_state();
+        }
+        if (TraceRecorder::write_entries(entries, parts[2])) {
           char buf[64];
-          snprintf(buf, sizeof(buf), "OK entries=%d\n", g_trace.entry_count());
+          snprintf(buf, sizeof(buf), "OK entries=%zu\n", entries.size());
           return {buf};
         }
         return "ERR 500 trace-dump-failed\n";
       }
       if (parts[1] == "on_crash" && parts.size() >= 3) {
+        CpcPauseLease lease;
+        if (!lease.idle()) return z80_not_idle(lease);
         g_trace.set_crash_path(parts[2]);
-        if (!g_trace.is_active()) g_trace.enable();
+        if (!g_trace.is_active()) g_trace.enable(g_trace_default_size);
         subcycle_bridge_set_instr_trace(true);  // engine=1 feed (no-op legacy)
+        lease.restore_run_state();
         return "OK\n";
       }
       if (parts[1] == "status") {
