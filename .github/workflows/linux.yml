@@ -104,9 +104,11 @@ jobs:
 
       - run: make -j 3 clean
       - run: make -j 3 debug CFLAGS="-Wno-literal-suffix -Wno-old-style-cast"
-      # clang-tidy: non-blocking while baseline issues exist. Remove
-      # continue-on-error once all warnings are fixed.
-      - name: clang-tidy
+      # clang-tidy: the whole tree is informational only. The tree carries a
+      # few hundred findings, and every file prints "N warnings generated"
+      # whether or not it has one, so this can never pass -- it reports and
+      # moves on. The gate is the step below (beads-myd6).
+      - name: clang-tidy (whole tree, informational)
         continue-on-error: true
         run: |
           # Pinned: .clang-tidy uses ExcludeHeaderFilterRegex (a 19+ key);
@@ -114,6 +116,32 @@ jobs:
           # EVERY translation unit — an endless per-TU error spew.
           pip install --break-system-packages clang-tidy==22.1.8
           make -j 3 clang-tidy
+
+      # The gate: clang-tidy over the files this PR changes, failing on a
+      # finding that is not already at the merge base. Blocking on purpose --
+      # the informational run above is what let a new finding through.
+      #
+      # Needs the merge base: checkout is shallow by default, and the baseline
+      # run checks the same files out at that commit in a worktree. On a
+      # merge_group run the "PR" is the whole queue entry, so the base is the
+      # branch master is at (github.event.merge_group.base_sha).
+      - name: clang-tidy (changed files, blocking)
+        if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
+        run: |
+          pip install --break-system-packages clang-tidy==22.1.8
+          # The merge base must be in the local object store: actions/checkout
+          # is shallow, and the baseline run checks the changed files out at
+          # that commit. A merge_group run has no pull_request payload, so its
+          # base is the sha of the master the queue entry is tested against.
+          if [ "${{ github.event_name }}" = "merge_group" ]; then
+            BASE_REF="${{ github.event.merge_group.base_sha }}"
+          else
+            BASE_REF="${{ github.event.pull_request.base.sha }}"
+          fi
+          echo "clang-tidy gate base: $BASE_REF"
+          # --depth=1 on the base sha is enough: it is a single commit.
+          git fetch --no-tags --depth=1 origin "$BASE_REF"
+          make clang-tidy-changed BASE="$BASE_REF"
 
       - name: Check clang-format
         run: |
