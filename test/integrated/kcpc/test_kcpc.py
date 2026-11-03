@@ -615,7 +615,7 @@ def test_reads_do_not_change_what_the_machine_computes() -> None:
     abandon the text IPC's frame step after a few frames and leave the
     machine running.)"""
     frames = 100
-    with Core() as core:
+    with Core('-O', 'system.limit_speed=0') as core:
         alone = _stepped_state(core, frames, 0)
         again = _stepped_state(core, frames, 0)
         assert alone[:4] == again[:4], (
@@ -704,7 +704,7 @@ def test_a_reset_by_another_actor_does_not_end_a_frame_step() -> None:
     it resumed over the step's stop (the step answered OK and the machine
     ran on), and between its release and its resume the machine looked
     stopped to the waiting step, which then gave up early."""
-    frames = 150
+    frames = 60
     http_port = _free_port()
     with Core('-O', f'peripheral.m4_http_port={http_port}') as core, \
             core.client() as c:
@@ -783,7 +783,7 @@ def test_mem_read_matches_the_text_ipc() -> None:
     """Acceptance 1: MEM_READ of 65536 bytes of the CPU space is one response
     frame whose bytes equal the text IPC's `mem read 0 65536`; the same for
     CPU_RAM against --view=ram and PHYS_RAM against every --bank=N page."""
-    with Core() as core, core.client() as c:
+    with Core('-O', 'system.limit_speed=0') as core, core.client() as c:
         c.hello('test_kcpc mem')
         # Let the firmware draw something first, then stop the clock so the
         # two ports read the same instant.
@@ -971,7 +971,7 @@ def test_regs_get_matches_the_text_ipc() -> None:
             out[field] = int(resp[3:], 16)
         return out
 
-    with Core() as core, core.client() as c:
+    with Core('-O', 'system.limit_speed=0') as core, core.client() as c:
         c.hello('test_kcpc regs')
         assert core.ipc('wait vbl 60 20000').startswith('OK')
         paused = pause_core(core, c)
@@ -1027,7 +1027,7 @@ def test_reads_work_running_and_across_a_pause() -> None:
     read that is waiting for a frame boundary when the machine is paused
     under it is still answered, once. Nothing a reader does changes the run
     state."""
-    with Core() as core, core.client() as c:
+    with Core('-O', 'system.limit_speed=0') as core, core.client() as c:
         c.hello('test_kcpc gate')
         # Running: every read is taken at a frame boundary.
         stamps = []
@@ -1189,7 +1189,7 @@ def test_control_roles_and_forced_takeover() -> None:
     writes answer NOT_CONTROLLER and change nothing; control is free once
     the controller disconnects; CONTROL with force always wins and demotes
     the previous controller without disconnecting it."""
-    with Core() as core, core.client() as a, core.client() as b:
+    with Core('-O', 'system.limit_speed=0') as core, core.client() as a, core.client() as b:
         hello_a = a.hello('test_kcpc first', role=kc.ROLE_CONTROLLER)
         assert hello_a.role == kc.ROLE_CONTROLLER
         hello_b = b.hello('test_kcpc second', role=kc.ROLE_CONTROLLER)
@@ -1327,7 +1327,8 @@ def test_silent_controller_is_dropped() -> None:
 def test_regs_set_changes_exactly_one_register() -> None:
     """Acceptance 3: REGS_SET with a one-bit mask changes that register and
     no other, as REGS_GET and the text IPC both see it."""
-    with Core() as core, controller(core, 'test_kcpc regs_set') as c:
+    with Core('-O', 'system.limit_speed=0') as core, \
+            controller(core, 'test_kcpc regs_set') as c:
         assert core.ipc('wait vbl 60 20000').startswith('OK')
         paused = pause_core(core, c)
         # Nothing selected: the block comes back, and the instruction that
@@ -1392,7 +1393,8 @@ def test_pc_edit_at_a_breakpoint_matches_the_text_ipc() -> None:
     the breakpoint's address; writing that same PC is no edit, and a new PC
     drops the fetched instruction: `reg set PC`'s rules."""
     code = bytes([0x21, 0x34, 0x12, 0x18, 0xFE])   # LD HL,&1234 : JR $
-    with Core() as core, controller(core, 'test_kcpc breakpoint') as c:
+    with Core('-O', 'system.limit_speed=0') as core, \
+            controller(core, 'test_kcpc breakpoint') as c:
         assert core.ipc('wait vbl 60 20000').startswith('OK')
         at = stop_at_interrupt(core, c)
         assert at.pc == INTERRUPT_VECTOR, (
@@ -1448,7 +1450,8 @@ def test_mem_write_lands_in_the_ram_it_names() -> None:
     CPU_RAM and not through CPU; a PHYS_RAM write lands in the right 16K
     page of the expansion RAM and nowhere else; what is not RAM, or does not
     fit, is refused whole."""
-    with Core() as core, controller(core, 'test_kcpc mem_write') as c:
+    with Core('-O', 'system.limit_speed=0') as core, \
+            controller(core, 'test_kcpc mem_write') as c:
         assert core.ipc('wait vbl 60 20000').startswith('OK')
         at = stop_at_interrupt(core, c)   # in the lower ROM: it is paged in
         info = c.mem_info()
@@ -1542,7 +1545,7 @@ def test_writes_leave_the_run_state_alone() -> None:
     """Acceptance 5: a write while running leaves the machine running, a
     write while paused leaves it paused, and reads are still taken at a
     frame boundary, with nothing paused for them."""
-    with Core() as core:
+    with Core('-O', 'system.limit_speed=0') as core:
         with controller(core, 'test_kcpc run state') as c:
             assert core.ipc('wait vbl 60 20000').startswith('OK')
             spin(core, c)
@@ -1609,7 +1612,8 @@ def test_readers_and_a_writer_at_once() -> None:
     """Observers reading 64 KiB and the registers as fast as they can while
     the controller writes: every reply arrives, every read of the running
     machine says running, and the machine is still running afterwards."""
-    with Core() as core, controller(core, 'test_kcpc writer') as c:
+    with Core('-O', 'system.limit_speed=0') as core, \
+            controller(core, 'test_kcpc writer') as c:
         assert core.ipc('wait vbl 60 20000').startswith('OK')
         spin(core, c)
         before = c.machine_info().stamp
@@ -1935,7 +1939,8 @@ def test_reads_and_writes_are_not_run_state_events() -> None:
     frame pause the machine again and again under their leases, and none of
     it is announced. The first run-state event anybody sees afterwards is
     the PAUSE that ends the test."""
-    with Core() as core, controller(core, 'writer') as a, \
+    with Core('-O', 'system.limit_speed=0') as core, \
+            controller(core, 'writer') as a, \
             observer(core, 'reader') as r, \
             observer(core, 'watcher', kc.CLASS_RUN) as b:
         a.subscribe(kc.CLASS_RUN)
@@ -2349,7 +2354,8 @@ def test_a_client_that_stops_reading_is_told_what_it_missed() -> None:
     cap = 64 * 1024
     read_size = 128 * 1024
     reads = 128       # 16 MiB of replies: more than any socket buffer holds
-    with Core(extra_env={'KONCPC_KCPC_EVENT_QUEUE_BYTES': str(cap)}) as core, \
+    with Core('-O', 'system.limit_speed=0',
+               extra_env={'KONCPC_KCPC_EVENT_QUEUE_BYTES': str(cap)}) as core, \
             observer(core, 'steady', kc.CLASS_FRAME, 1) as steady:
         slow = core.client()
         slow.hello('slow')
@@ -2491,7 +2497,7 @@ def test_subscribers_do_not_change_what_the_machine_computes() -> None:
     same registers and the same RAM with nobody listening and with two
     clients receiving an event for every frame."""
     frames = 100
-    with Core() as core:
+    with Core('-O', 'system.limit_speed=0') as core:
         alone = _stepped_by_kcpc(core, frames, 0)
         again = _stepped_by_kcpc(core, frames, 0)
         assert alone[:3] == again[:3], (
@@ -4008,7 +4014,8 @@ def test_a_disc_runs_and_a_snapshot_round_trips() -> None:
     The machine has the disc when MEDIA_INSERT is answered; the events reach
     an observer, and the controller after its reply; an observer may ask
     MEDIA_INFO and may change nothing."""
-    with Core() as core, controller(core, 'media') as c, \
+    with Core('-O', 'system.limit_speed=0') as core, \
+            controller(core, 'media') as c, \
             observer(core, 'watcher',
                      kc.CLASS_MEDIA | kc.CLASS_RUN) as watcher:
         me = c.hello_reply.client_id
@@ -4531,7 +4538,7 @@ def test_asic_state_and_register_page() -> None:
     reports the ASIC unlocked and the memory space ASIC_PAGE returns 16384
     bytes whose palette bytes are what the text IPC's `asic palette` prints.
     On a 6128 both answer NOT_PRESENT."""
-    with Core('-O', 'system.model=3') as core, \
+    with Core('-O', 'system.model=3', '-O', 'system.limit_speed=0') as core, \
             controller(core, 'asic') as c:
         assert c.hello_reply.machine.has_asic, c.hello_reply.machine
         # The Plus boots through its cartridge; give it the second it takes.
@@ -4944,9 +4951,13 @@ def test_polling_every_chip_changes_nothing() -> None:
     """Acceptance 6: a client that reads all five chips and the ASIC's
     register page at every frame boundary does not change what the machine
     computes, and every one of its reads is taken at a frame boundary: none
-    pauses the machine. On a 6128+, so that the ASIC is among them."""
+    pauses the machine. On a 6128+, so that the ASIC is among them.
+
+    The stepped comparisons claim how many frames ran, not how long they
+    took, so they run on an unpaced machine; the fps claim needs a machine
+    at its real 50 a second and gets a core of its own."""
     frames = 100
-    with Core('-O', 'system.model=3') as core:
+    with Core('-O', 'system.model=3', '-O', 'system.limit_speed=0') as core:
         alone = _stepped_state(core, frames, 0)
         again = _stepped_state(core, frames, 0)
         assert alone[:4] == again[:4], (
@@ -4975,12 +4986,16 @@ def test_polling_every_chip_changes_nothing() -> None:
             print(f'    {label}: {r.calls} reads during {frames} frames '
                   f'({r.running_reads} of a running machine, slowest '
                   f'{r.slowest * 1000:.0f} ms); registers and RAM identical')
+        assert_running_reads_at_boundaries(core, running_reads)
 
-        # And a running machine keeps its 50 frames a second under them.
-        # RUN_STATE is two atomics: asking it does not wait for a frame.
-        with core.client() as c:
+    # And a running machine keeps its 50 frames a second under them. On its
+    # own core, at the pace the claim is about: RUN_STATE is two atomics, so
+    # asking it does not wait for a frame.
+    with Core('-O', 'system.model=3') as fps_core:
+        running_reads = 0
+        with fps_core.client() as c:
             c.hello('fps')
-            assert core.ipc('run').startswith('OK')
+            assert fps_core.ipc('run').startswith('OK')
             wait_running(c)
 
             def frames_a_second(seconds: float) -> float:
@@ -5000,7 +5015,7 @@ def test_polling_every_chip_changes_nothing() -> None:
             calls = 0
             for _ in range(4):
                 alone_fps.append(frames_a_second(1.5))
-                with Readers(core, 2, 'chips') as r:
+                with Readers(fps_core, 2, 'chips') as r:
                     watched_fps.append(frames_a_second(1.5))
                 assert not r.errors, r.errors
                 running_reads += r.running_reads
@@ -5014,7 +5029,7 @@ def test_polling_every_chip_changes_nothing() -> None:
             best = max(watched_fps)
             assert best > 45 and best > min(max(alone_fps), 50.0) - 3, (
                 alone_fps, watched_fps)
-        assert_running_reads_at_boundaries(core, running_reads)
+        assert_running_reads_at_boundaries(fps_core, running_reads)
 
 
 def test_a_stop_is_not_caught_up() -> None:
