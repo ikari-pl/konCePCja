@@ -966,6 +966,33 @@ host_chords=1     # Cmd/Ctrl+K/O/S drive the host UI (palette, Load Disk A,
   (`dsk_beside_archive()` in `src/subcycle_bridge.cpp`, beads-lels).
 - ImGui state is in global `imgui_state` struct
 
+### Linting: clang-tidy and clang-format
+
+- **`make clang-tidy-changed` is the gate.** It runs clang-tidy over the
+  `.cpp` files a change touches and fails on a finding that is not already at
+  `BASE` (default `origin/master`; pass a sha to mean that commit exactly).
+  CI runs it on every pull request and merge-queue entry, blocking. Run it
+  before pushing if you changed a source file:
+  `make clang-tidy-changed BASE=origin/master`.
+  - The baseline is subtracted on purpose: a changed file inherits the
+    findings of the first-party headers it includes (`-header-filter`), and
+    40-odd files carry findings of their own, so without it a clean PR would
+    fail for something it did not cause. A finding is keyed by file, check
+    name and the text of its source line, so inserting code above existing
+    findings does not make them "new".
+  - A check that is genuinely wrong on a line is silenced there, with
+    `// NOLINT(check-a,check-b)` **at the end of that line** (a comment on the
+    line above does not silence it) plus a reason, not by loosening the target.
+  - It exits non-zero when it *cannot run* (clang-tidy missing, merge base
+    unreachable, a compile error) rather than reporting success.
+- **`make clang-tidy` (whole tree) is informational only** and CI keeps it
+  `continue-on-error`. It reports the standing ~317 findings across 119
+  translation units; it can never pass, because every file prints
+  "N warnings generated" whether or not it has one. Use it to see the
+  baseline, not as a gate.
+- **clang-format** is pinned (22.1.8) and blocking: `make clang-format`
+  checks, `make fix-clang-format` fixes. Only reformat lines you changed.
+
 ## Code Review Themes
 
 Recurring patterns from code reviews. Follow these to avoid common pitfalls:

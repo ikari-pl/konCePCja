@@ -787,7 +787,7 @@ TEST(Z80h, DdcbBitSetAndRes) {
 
 TEST(Z80i, MaskableIm1) {
   // IM 1 ; EI ; JR -2 (loop) ; handler@0x38: LD A,0x42 ; HALT
-  std::vector<uint8_t> prog(0x3A, 0x00);
+  std::vector<uint8_t> prog(0x3B, 0x00);
   prog[0] = 0xED;
   prog[1] = 0x56;  // IM 1
   prog[2] = 0xFB;  // EI
