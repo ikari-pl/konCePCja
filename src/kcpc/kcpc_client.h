@@ -311,7 +311,7 @@ class Client {
   std::thread reader_;
   // The reader's id, so a callback is told apart on any thread without
   // touching reader_ (which close() joins and connect() replaces).
-  std::atomic<std::thread::id> reader_id_{};
+  std::atomic<std::thread::id> reader_id_;
   // close() and connect()'s setup take turns: one join of the reader, by
   // one of however many threads close at once.
   std::mutex close_mutex_;
