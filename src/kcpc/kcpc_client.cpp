@@ -54,45 +54,57 @@ std::vector<std::uint8_t> slot_payload(std::uint8_t slot) {
 
 Client::~Client() { close(); }
 
+bool Client::on_reader_thread() const {
+  std::thread::id const reader = reader_id_.load(std::memory_order_acquire);
+  return reader != std::thread::id{} && reader == std::this_thread::get_id();
+}
+
 bool Client::connect(int port, const ClientOptions& options, Result& result) {
-  if (reader_.joinable() && std::this_thread::get_id() == reader_.get_id()) {
+  if (on_reader_thread()) {
     // The reader cannot join itself, and the HELLO's reply is one only it
     // could deliver. kInternal: a misuse, not something the server said.
     result = closed_reply("connect() cannot be called from a callback");
     return false;
   }
-  close();
-  options_ = options;
-  hello_ = HelloReply{};
-  if (!net_started_) net_started_ = net::startup();
-  if (!net_started_) {
-    result = closed_reply("socket setup failed");
-    set_close_reason(result.message);
-    return false;
-  }
-  socket_ = net::connect_loopback(port, options_.connect_timeout_ms);
-  if (socket_ == net::kInvalidSocket) {
-    result =
-        closed_reply("cannot connect to 127.0.0.1:" + std::to_string(port));
-    set_close_reason(result.message);
-    return false;
-  }
   {
-    std::scoped_lock const lock(mutex_);
-    pending_.clear();
-    events_.clear();
-    closed_ = false;
-    close_status_ = Status::kOk;
-    close_reason_.clear();
+    std::scoped_lock const lock(close_mutex_);
+    stop_ = true;
+    close_locked();
+    options_ = options;
+    hello_ = HelloReply{};
+    if (!net_started_) net_started_ = net::startup();
+    if (!net_started_) {
+      result = closed_reply("socket setup failed");
+      set_close_reason(result.message);
+      return false;
+    }
+    socket_ = net::connect_loopback(port, options_.connect_timeout_ms);
+    if (socket_ == net::kInvalidSocket) {
+      result =
+          closed_reply("cannot connect to 127.0.0.1:" + std::to_string(port));
+      set_close_reason(result.message);
+      return false;
+    }
+    {
+      std::scoped_lock const inner(mutex_);
+      pending_.clear();
+      events_.clear();
+      closed_ = false;
+      close_status_ = Status::kOk;
+      close_reason_.clear();
+    }
+    stop_ = false;
+    hello_done_ = false;
+    controller_ = 0;
+    ids_ = 0;
+    dropped_events_ = 0;
+    keepalive_id_ = 0;
+    keepalive_sent_ns_ = 0;
+    last_send_ns_ = now_ns();
+    open_ = true;
+    reader_ = std::thread([this] { reader_loop(); });
+    reader_id_.store(reader_.get_id(), std::memory_order_release);
   }
-  stop_ = false;
-  hello_done_ = false;
-  controller_ = 0;
-  ids_ = 0;
-  dropped_events_ = 0;
-  last_send_ns_ = now_ns();
-  open_ = true;
-  reader_ = std::thread([this] { reader_loop(); });
 
   HelloRequest hello;
   hello.client_minor = kVersionMinor;
@@ -117,12 +129,17 @@ bool Client::connect(int port, const ClientOptions& options, Result& result) {
 
 void Client::close() {
   stop_ = true;
-  if (reader_.joinable()) {
-    // From a callback the reader cannot join itself: it stops once the
-    // callback returns, and whoever closes next joins it.
-    if (std::this_thread::get_id() == reader_.get_id()) return;
-    reader_.join();
-  }
+  // From a callback the reader cannot join itself: it stops once the
+  // callback returns, and whoever closes next joins it. (Not under the
+  // mutex: that thread may be holding it, in the join.)
+  if (on_reader_thread()) return;
+  std::scoped_lock const lock(close_mutex_);
+  close_locked();
+}
+
+void Client::close_locked() {
+  if (reader_.joinable()) reader_.join();
+  reader_id_.store(std::thread::id{}, std::memory_order_release);
   fail_all("closed by the client");
   {
     std::scoped_lock const lock(send_mutex_);
@@ -310,16 +327,45 @@ bool Client::next_event(ClientEvent& out, int timeout_ms) {
 
 void Client::keepalive() {
   if (options_.keepalive_ms <= 0 || !hello_done_.load()) return;
+  std::int64_t const now = now_ns();
+  if (keepalive_id_.load(std::memory_order_acquire) != 0) {
+    // One is unanswered: no second one beside it. After the bound, the
+    // server is up but not answering, and that is the end.
+    if (options_.keepalive_timeout_ms <= 0 ||
+        now - keepalive_sent_ns_ <
+            std::int64_t{options_.keepalive_timeout_ms} * 1000000) {
+      return;
+    }
+    {
+      std::scoped_lock const lock(mutex_);
+      if (close_reason_.empty()) {
+        close_reason_ =
+            "the server stopped answering (a keepalive PING "
+            "went unanswered for " +
+            std::to_string(options_.keepalive_timeout_ms) + " ms)";
+      }
+    }
+    stop_ = true;
+    return;
+  }
   std::int64_t const quiet =
-      now_ns() - last_send_ns_.load(std::memory_order_relaxed);
+      now - last_send_ns_.load(std::memory_order_relaxed);
   if (quiet < std::int64_t{options_.keepalive_ms} * 1000000) return;
   // Only while nobody else is sending and the socket takes it at once: the
   // reader must never wait behind a stalled sender. A PING the socket did
   // not take is simply tried again next time round.
   std::shared_ptr<Pending> pending;
   std::uint32_t id = 0;
-  start(Opcode::kPing, {}, nullptr, true, kSliceMs, deadline_in(kSliceMs), true,
-        pending, id);
+  Started const started = start(
+      Opcode::kPing, {},
+      [this](const Reply&) {
+        keepalive_id_.store(0, std::memory_order_release);
+      },
+      true, kSliceMs, deadline_in(kSliceMs), true, pending, id);
+  if (started == Started::kSent) {
+    keepalive_sent_ns_ = now_ns();
+    keepalive_id_.store(id, std::memory_order_release);
+  }
 }
 
 void Client::reader_loop() {
@@ -451,6 +497,13 @@ void Client::dispatch(const FrameHeader& header,
     if (read_control_reply(fields, control)) {
       controller_.store(control.controller, std::memory_order_release);
     }
+  } else if (reply.ok() && pending->opcode == Opcode::kRunState) {
+    // The one reply that names the controller to a client that is not it.
+    Reader fields(reply.fields);
+    RunState state;
+    if (read_run_state(fields, state)) {
+      controller_.store(state.controller, std::memory_order_release);
+    }
   }
   if (pending->async) {
     if (pending->fn) pending->fn(reply);
@@ -497,6 +550,9 @@ void Client::fail_all(const std::string& why) {
     }
   }
   open_ = false;
+  // A role is a connection's: nobody holds control over a dead one.
+  controller_.store(0, std::memory_order_release);
+  keepalive_id_.store(0, std::memory_order_release);
   cv_.notify_all();
   for (auto& [id, pending] : ended) {
     if (pending->async && pending->fn) pending->fn(pending->reply);

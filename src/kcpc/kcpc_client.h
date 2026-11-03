@@ -13,13 +13,15 @@
 // second one here.
 //
 // Threads: any number of threads may send at once (frames are written whole,
-// one at a time, each within its request's timeout). Callbacks run on the
-// reader thread, in the order the frames arrived, so an event caused by a
-// request is seen after that request's response, as the server sends them. A
-// callback must not wait for a reply: the reader thread is the one that would
-// deliver it. It may close() the client, but not connect() it again (refused
-// with kClosed: the reader cannot join itself) and not destroy it (the reader
-// is running it); reconnect from a thread of the owner's.
+// one at a time, each within its request's timeout), and any number may
+// close() at once (one of them joins the reader, the others wait for it).
+// Callbacks run on the reader thread, in the order the frames arrived, so an
+// event caused by a request is seen after that request's response, as the
+// server sends them. A callback must not wait for a reply: the reader thread
+// is the one that would deliver it. It may close() the client, but not
+// connect() it again (refused with kClosed: the reader cannot join itself)
+// and not destroy it (the reader is running it); reconnect from a thread of
+// the owner's.
 //
 // Emulator-free, like the server: test_runner runs it against kcpc::Server.
 
@@ -96,8 +98,14 @@ struct ClientOptions {
   // controller after 30 s. 0: never. It is sent by the reader thread, and
   // only while no other frame is being sent and the socket can take it at
   // once: a stalled send never parks the reader behind it (a frame in flight
-  // is itself the sign of life).
+  // is itself the sign of life). One at a time: no PING goes out while the
+  // last is unanswered.
   int keepalive_ms = 10000;
+  // A keepalive PING unanswered for this long ends the connection (kClosed,
+  // "the server stopped answering"): a core that is up but stopped (SIGSTOP,
+  // a debugger) shows as one end, not as a request a time timing out. 0:
+  // never; the unanswered PING then just holds the next one back.
+  int keepalive_timeout_ms = 30000;
   // With a callback, every event goes to it. Without one events are queued
   // for next_event(), at most `max_queued_events`; beyond that the oldest is
   // dropped and counted (dropped_events()).
@@ -119,21 +127,25 @@ class Client {
   // copied from it). Refused with kClosed from a callback (see Threads).
   bool connect(int port, const ClientOptions& options, Result& result);
   // Closes the connection and joins the reader thread. Every request still
-  // waiting ends with kClosed. Safe to call twice; from a callback it only
-  // asks the reader to stop (the destructor joins it): the reader then
-  // half-closes the socket, so the server sees the client go at once.
+  // waiting ends with kClosed. Safe to call twice, and from several threads
+  // at once; from a callback it only asks the reader to stop (the destructor
+  // joins it): the reader then half-closes the socket, so the server sees
+  // the client go at once.
   void close();
 
   bool connected() const { return open_.load(std::memory_order_acquire); }
   const HelloReply& hello() const { return hello_; }
   std::uint32_t client_id() const { return hello_.client_id; }
   // Whether this client holds control, as the server last said: HELLO, a
-  // CONTROL reply, or EVT_CONTROL_CHANGED.
+  // CONTROL or RUN_STATE reply, or EVT_CONTROL_CHANGED. False once the
+  // connection has ended, however it ended: a role is a connection's.
   bool is_controller() const {
     return controller_.load(std::memory_order_acquire) == hello_.client_id &&
            hello_.client_id != 0;
   }
-  // The controller's client_id as last heard; 0 = nobody.
+  // The controller's client_id as last heard; 0 = nobody, or nothing heard
+  // yet (HELLO does not say who else holds control: RUN_STATE does, and
+  // run_state() folds its answer in here), or the connection has ended.
   std::uint32_t controller() const {
     return controller_.load(std::memory_order_acquire);
   }
@@ -240,8 +252,13 @@ class Client {
   void dispatch(const FrameHeader& header,
                 const std::vector<std::uint8_t>& payload);
   void deliver(const ClientEvent& event);
-  // Ends every pending request with kClosed and marks the connection shut.
+  // Ends every pending request with kClosed, marks the connection shut and
+  // forgets the role: a role is a connection's.
   void fail_all(const std::string& why);
+  // Whether this is the reader thread (a callback).
+  bool on_reader_thread() const;
+  // The whole of close(), with close_mutex_ held and not on the reader.
+  void close_locked();
   // Writes one frame whole, by `deadline`. With `only_if_idle` it does not
   // wait for its turn at the socket, nor for the socket to take anything.
   SendOutcome write_frame(const std::vector<std::uint8_t>& frame,
@@ -286,7 +303,18 @@ class Client {
   std::atomic<std::uint32_t> ids_{0};
   // steady_clock nanoseconds of the last frame sent, for the keepalive.
   std::atomic<std::int64_t> last_send_ns_{0};
+  // The keepalive PING that is unanswered: its id (0: none) and when it was
+  // sent. Written on the reader thread; the id is cleared by the PING's
+  // reply there, or by fail_all() wherever that runs.
+  std::atomic<std::uint32_t> keepalive_id_{0};
+  std::int64_t keepalive_sent_ns_ = 0;
   std::thread reader_;
+  // The reader's id, so a callback is told apart on any thread without
+  // touching reader_ (which close() joins and connect() replaces).
+  std::atomic<std::thread::id> reader_id_{};
+  // close() and connect()'s setup take turns: one join of the reader, by
+  // one of however many threads close at once.
+  std::mutex close_mutex_;
 
   // One frame on the socket at a time; a sender waits for its turn no longer
   // than its deadline, and the keepalive not at all.

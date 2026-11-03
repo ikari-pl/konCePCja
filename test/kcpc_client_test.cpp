@@ -27,6 +27,7 @@
 #include "kcpc/kcpc_proto.h"
 #include "kcpc/kcpc_server.h"
 #include "kcpc_fake_machine.h"
+#include "kcpc_test_wire.h"
 #include "net_socket.h"
 #include "shm_region.h"
 #include "startup_manifest.h"
@@ -49,6 +50,15 @@ using kcpc_fake::FakeWrites;
 // port its own server bound.
 constexpr int kTestBasePort = 47645;
 constexpr int kTestProbeCount = 40;
+
+// A controller with a long call timeout: a test that holds a request on
+// purpose times the holding itself.
+kcpc::ClientOptions controller_options() {
+  kcpc::ClientOptions options;
+  options.role = kcpc::Role::kController;
+  options.call_timeout_ms = 20000;
+  return options;
+}
 
 class KcpcClientTest : public ::testing::Test {
  protected:
@@ -190,6 +200,11 @@ TEST_F(KcpcClientTest, MemReadOf64KiBIsOneReply) {
   EXPECT_EQ(data, reads_.memory);
 }
 
+// The server keeps an event a request caused behind that request's reply.
+// To test the keeping and not a race, the fake machine's PAUSE posts its stop
+// and then waits until a second client has seen a marker posted after it:
+// the fan-out thread hands events to every connection in order, so by then
+// the stop is at the controller's connection, with no reply to follow yet.
 TEST_F(KcpcClientTest, AStopIsDeliveredInOrderAfterTheReplyThatCausedIt) {
   std::mutex mutex;
   std::condition_variable cv;
@@ -206,9 +221,22 @@ TEST_F(KcpcClientTest, AStopIsDeliveredInOrderAfterTheReplyThatCausedIt) {
   ASSERT_TRUE(
       client->subscribe(kcpc::Subscription{kcpc::kEventClassRun, 0}, accepted)
           .ok());
-  // The fake machine posts the stop before it answers, and holds the reply
-  // long enough for the fan-out thread to have the event first.
+  auto witness = join(kcpc::Role::kObserver);
+  ASSERT_TRUE(
+      witness->subscribe(kcpc::Subscription{kcpc::kEventClassRun, 0}, accepted)
+          .ok());
   run_.post_from_request = true;
+  run_.after_post = [&] {
+    kcpc::Event marker;
+    marker.opcode = Opcode::kEvtResumed;
+    marker.frame = 999;
+    server_.post(marker);
+    kcpc::ClientEvent e;
+    while (witness->next_event(e, 5000)) {
+      if (e.event.opcode == Opcode::kEvtResumed && e.event.frame == 999) return;
+    }
+    ADD_FAILURE() << "the witness never saw the marker";
+  };
   std::uint32_t const id =
       client->send(Opcode::kPause, {}, [&](const kcpc::Reply& reply) {
         std::scoped_lock const lock(mutex);
@@ -222,6 +250,48 @@ TEST_F(KcpcClientTest, AStopIsDeliveredInOrderAfterTheReplyThatCausedIt) {
                           [&] { return seen.size() == 2; }));
   EXPECT_EQ(seen, (std::vector<std::string>{"PAUSE reply", "EVT_STOPPED"}));
   EXPECT_EQ(stop_cause, id);
+  lock.unlock();
+  run_.after_post = nullptr;
+}
+
+// The same order on the queue path: a blocking PAUSE returns, and the stop
+// it caused is the next event, after it.
+TEST_F(KcpcClientTest, ABlockingPauseIsFollowedByItsStopOnTheQueue) {
+  auto client = join(kcpc::Role::kController);
+  kcpc::Subscription accepted;
+  ASSERT_TRUE(
+      client->subscribe(kcpc::Subscription{kcpc::kEventClassRun, 0}, accepted)
+          .ok());
+  auto witness = join(kcpc::Role::kObserver);
+  ASSERT_TRUE(
+      witness->subscribe(kcpc::Subscription{kcpc::kEventClassRun, 0}, accepted)
+          .ok());
+  run_.post_from_request = true;
+  run_.after_post = [&] {
+    kcpc::Event marker;
+    marker.opcode = Opcode::kEvtResumed;
+    marker.frame = 999;
+    server_.post(marker);
+    kcpc::ClientEvent e;
+    while (witness->next_event(e, 5000)) {
+      if (e.event.opcode == Opcode::kEvtResumed && e.event.frame == 999) return;
+    }
+    ADD_FAILURE() << "the witness never saw the marker";
+  };
+  kcpc::Stamp stamp;
+  ASSERT_TRUE(client->pause(stamp).ok());
+  EXPECT_EQ(stamp.frame, 56U);
+  // The stop is on the queue after the reply (behind the control change of
+  // the client's own HELLO, which came before either).
+  kcpc::ClientEvent stopped;
+  bool seen = false;
+  while (!seen && client->next_event(stopped, 5000)) {
+    seen = stopped.event.opcode == Opcode::kEvtStopped;
+  }
+  ASSERT_TRUE(seen);
+  EXPECT_EQ(stopped.event.cause_client, client->client_id());
+  EXPECT_EQ(stopped.event.frame, 56U);
+  run_.after_post = nullptr;
 }
 
 TEST_F(KcpcClientTest, QueuedEventsKeepTheirConnectionSequence) {
@@ -490,6 +560,9 @@ TEST_F(KcpcClientTest, AQuietControllerIsKeptAliveByPing) {
   }
   EXPECT_FALSE(quiet.connected());
   EXPECT_EQ(quiet.close_status(), Status::kIdleTimeout);
+  // The role went with the connection.
+  EXPECT_FALSE(quiet.is_controller());
+  EXPECT_EQ(quiet.controller(), 0U);
 }
 
 // A refusal the server sends as ERROR (id 0) ends the HELLO with kClosed; the
@@ -598,6 +671,163 @@ TEST_F(KcpcClientTest, TheOldestQueuedEventsAreDroppedAndCounted) {
   EXPECT_EQ(client->dropped_events(), 3U);
 }
 
+// close() from any number of threads at once is one close: one join of the
+// reader, the rest wait for it. (A second join of a joined std::thread
+// throws std::system_error, which ends the process.)
+TEST_F(KcpcClientTest, CloseFromSeveralThreadsAtOnceIsOneClose) {
+  constexpr int kClosers = 6;
+  for (int round = 0; round < 25; ++round) {
+    auto client = join(kcpc::Role::kController);
+    ASSERT_TRUE(client->connected());
+    std::atomic<int> ready{0};
+    std::vector<std::thread> closers;
+    for (int i = 0; i < kClosers; ++i) {
+      closers.emplace_back([&] {
+        ready.fetch_add(1);
+        while (ready.load() < kClosers) {
+        }
+        client->close();
+      });
+    }
+    for (std::thread& t : closers) t.join();
+    EXPECT_FALSE(client->connected());
+    kcpc::Stamp stamp;
+    EXPECT_EQ(client->pause(stamp).outcome, Outcome::kClosed);
+    // And the client is still whole: it connects again.
+    kcpc::Result result;
+    ASSERT_TRUE(client->connect(server_.port(), controller_options(), result))
+        << result.message;
+  }
+}
+
+// An observer that joins while somebody holds control hears who from
+// RUN_STATE (HELLO does not say), before any EVT_CONTROL_CHANGED.
+TEST_F(KcpcClientTest, RunStateTellsAnObserverWhoHoldsControl) {
+  auto first = join(kcpc::Role::kController);
+  auto second = join(kcpc::Role::kObserver);
+  EXPECT_EQ(second->controller(), 0U) << "nothing said yet";
+  kcpc::RunState state;
+  ASSERT_TRUE(second->run_state(state).ok());
+  EXPECT_EQ(state.controller, first->client_id());
+  EXPECT_EQ(second->controller(), first->client_id());
+  EXPECT_FALSE(second->is_controller());
+  // What the server says next (the release, announced) wins.
+  kcpc::ControlReply released;
+  ASSERT_TRUE(first->release_control(released).ok());
+  kcpc::ClientEvent event;
+  ASSERT_TRUE(wait_control(*second, kcpc::kControlReleased, event));
+  EXPECT_EQ(second->controller(), 0U);
+}
+
+// One Client, connected twice in a row: the second connection starts with
+// nothing of the first (no pending requests, no queued events, no close
+// status, ids from the start, the role asked for).
+TEST_F(KcpcClientTest, ReconnectOnOneClientStartsAfresh) {
+  auto client = join(kcpc::Role::kController);
+  kcpc::Subscription accepted;
+  ASSERT_TRUE(
+      client->subscribe(kcpc::Subscription{kcpc::kEventClassAll, 0}, accepted)
+          .ok());
+  kcpc::StepRequest step;
+  step.mode = static_cast<std::uint8_t>(kcpc::StepMode::kIn);
+  std::uint32_t first_step_id = 0;
+  ASSERT_TRUE(client->step(step, first_step_id).ok());
+  // Events left unread, a HELLO and two requests sent.
+  kcpc::Event e;
+  e.opcode = Opcode::kEvtResumed;
+  e.frame = 1;
+  server_.post(e);
+  ASSERT_TRUE(
+      soon([&] { return server_.controller() == client->client_id(); }));
+  std::uint32_t const old_id = client->client_id();
+  client->close();
+  EXPECT_FALSE(client->connected());
+  EXPECT_FALSE(client->is_controller());
+  ASSERT_TRUE(soon([&] { return server_.controller() == 0; }));
+
+  kcpc::Result result;
+  ASSERT_TRUE(client->connect(server_.port(), controller_options(), result))
+      << result.message;
+  EXPECT_TRUE(client->connected());
+  EXPECT_EQ(client->close_status(), Status::kOk);
+  EXPECT_TRUE(client->is_controller());
+  EXPECT_NE(client->client_id(), old_id);
+  // What is queued is this connection's (its own HELLO's control change,
+  // numbered from 1 again), never the old one's EVT_RESUMED.
+  kcpc::ClientEvent queued;
+  for (std::uint32_t n = 1; client->next_event(queued, 50); ++n) {
+    EXPECT_EQ(queued.seq, n);
+    EXPECT_NE(queued.event.opcode, Opcode::kEvtResumed)
+        << "an event of the old connection";
+  }
+  EXPECT_EQ(client->dropped_events(), 0U);
+  ASSERT_TRUE(
+      client->subscribe(kcpc::Subscription{kcpc::kEventClassAll, 0}, accepted)
+          .ok());
+  std::uint32_t second_step_id = 0;
+  ASSERT_TRUE(client->step(step, second_step_id).ok());
+  EXPECT_EQ(second_step_id, first_step_id) << "ids start over";
+  EXPECT_EQ(run_.steps.load(), 2);
+}
+
+// After the server ended the connection (IDLE_TIMEOUT), the same Client
+// connects again and reports nothing of the old end.
+TEST_F(KcpcClientTest, ConnectAfterAServerInitiatedCloseWorks) {
+  start_with([](kcpc::ServerConfig& c) { c.controller_idle_timeout_ms = 200; });
+  kcpc::ClientOptions options = controller_options();
+  options.keepalive_ms = 0;
+  kcpc::Client client;
+  kcpc::Result result;
+  ASSERT_TRUE(client.connect(server_.port(), options, result));
+  ASSERT_TRUE(soon([&] { return !client.connected(); }));
+  EXPECT_EQ(client.close_status(), Status::kIdleTimeout);
+  EXPECT_FALSE(client.is_controller());
+
+  options.keepalive_ms = 50;
+  ASSERT_TRUE(client.connect(server_.port(), options, result))
+      << result.message;
+  EXPECT_TRUE(client.connected());
+  EXPECT_EQ(client.close_status(), Status::kOk);
+  EXPECT_TRUE(client.is_controller());
+  kcpc::Stamp stamp;
+  kcpc::Result const r = client.pause(stamp);
+  EXPECT_TRUE(r.ok()) << r.message;
+}
+
+// Requests from several threads at once, each answered to the thread that
+// asked: a reply is matched by its id, never by its place in the stream.
+TEST_F(KcpcClientTest, ConcurrentCallsFromSeveralThreadsAreMatchedById) {
+  auto client = join(kcpc::Role::kController);
+  constexpr int kThreads = 6;
+  constexpr int kRounds = 40;
+  std::atomic<int> failures{0};
+  std::vector<std::thread> threads;
+  for (int t = 0; t < kThreads; ++t) {
+    threads.emplace_back([&, t] {
+      for (int i = 0; i < kRounds; ++i) {
+        kcpc::MemReadRequest request;
+        request.space = static_cast<std::uint8_t>(kcpc::MemSpace::kCpu);
+        request.addr = static_cast<std::uint32_t>(t * 1000 + i);
+        request.len = static_cast<std::uint32_t>(16 + (t * 7) + i);
+        kcpc::Stamp stamp;
+        std::vector<std::uint8_t> data;
+        kcpc::Result const r = client->mem_read(request, stamp, data);
+        bool ok = r.ok() && data.size() == request.len &&
+                  std::equal(data.begin(), data.end(),
+                             reads_.memory.begin() + request.addr);
+        kcpc::Regs regs;
+        ok = ok && client->regs_get(stamp, regs).ok() && stamp.frame == 77 &&
+             regs.pc == FakeReads::regs().pc;
+        ok = ok && client->ping().ok();
+        if (!ok) failures.fetch_add(1);
+      }
+    });
+  }
+  for (std::thread& t : threads) t.join();
+  EXPECT_EQ(failures.load(), 0);
+  EXPECT_EQ(reads_.mem_reads.load(), kThreads * kRounds);
+}
+
 // -- a peer that never answers ------------------------------------------------
 
 namespace {
@@ -626,9 +856,10 @@ class SilentPeer {
 
   int port() const { return listener_ != net::kInvalidSocket ? port_ : 0; }
 
-  // Accepts the client and answers its HELLO, granting control. With
-  // `whole` false the answer is the status alone, without the HELLO fields.
-  bool greet(bool whole = true) {
+  // Accepts the client and answers its HELLO, granting control (or, with
+  // `role` kObserver, not). With `whole` false the answer is the status
+  // alone, without the HELLO fields.
+  bool greet(bool whole = true, kcpc::Role role = kcpc::Role::kController) {
     auto const deadline =
         std::chrono::steady_clock::now() + std::chrono::seconds(5);
     while (peer_ == net::kInvalidSocket &&
@@ -644,13 +875,16 @@ class SilentPeer {
       return false;
     }
     kcpc::HelloReply hello;
-    hello.role = kcpc::Role::kController;
-    hello.client_id = 5;
+    hello.role = role;
+    hello.client_id = kClientId;
     kcpc::Writer w;
     kcpc::write_status(w, Status::kOk);
     if (whole) kcpc::write_hello_reply(w, hello);
     return answer(header, header.opcode, w.data());
   }
+
+  // The client_id greet() hands out.
+  static constexpr std::uint32_t kClientId = 5;
 
   // Answers one request, as whatever opcode and payload the test says.
   bool answer(const kcpc::FrameHeader& request, std::uint16_t opcode,
@@ -659,62 +893,72 @@ class SilentPeer {
         kcpc::encode_frame(kcpc::Kind::kResponse, opcode, request.id, payload));
   }
 
+  // Pushes one event frame, as `opcode` (an Opcode's value, or any number
+  // the test likes) with `payload`.
+  bool event(std::uint16_t opcode, const std::vector<std::uint8_t>& payload,
+             std::uint32_t seq = 1) const {
+    return write(kcpc::encode_frame(kcpc::Kind::kEvent, opcode, seq, payload));
+  }
+
   // Reads and discards until the client half-closes (end of stream): false
   // when it has not within `timeout_ms`.
   bool read_end(int timeout_ms) const {
+    return kcpc_test::read_end(peer_, timeout_ms, /*discard_data=*/true) ==
+           kcpc_test::StreamEnd::kClosed;
+  }
+
+  // Reads one frame and answers nothing. A PING is counted (pings()).
+  bool read_frame(kcpc::FrameHeader& header, std::vector<std::uint8_t>& payload,
+                  int timeout_ms = 5000) {
+    if (!kcpc_test::read_frame(peer_, header, payload, kcpc::kMaxRequestPayload,
+                               timeout_ms)) {
+      return false;
+    }
+    if (header.kind == static_cast<std::uint8_t>(kcpc::Kind::kRequest) &&
+        header.opcode == static_cast<std::uint16_t>(Opcode::kPing)) {
+      pings_.fetch_add(1);
+    }
+    return true;
+  }
+
+  // Reads frames, answering none, until the client half-closes: false when
+  // it has not within `timeout_ms` (or sent something unreadable).
+  bool read_frames_to_end(int timeout_ms) {
     auto const deadline = std::chrono::steady_clock::now() +
                           std::chrono::milliseconds(timeout_ms);
     while (std::chrono::steady_clock::now() < deadline) {
       if (!net::wait_readable(peer_, 100)) continue;
-      std::uint8_t sink[4096];
-      net::IoResult const r = net::recv_some(peer_, sink, sizeof sink);
-      if (r.status == net::IoStatus::kClosed) return true;
-      if (r.status == net::IoStatus::kError) return false;
+      // The first bytes of the next frame, or the end of the stream.
+      std::uint8_t raw[kcpc::kHeaderSize];
+      net::IoResult const first = net::recv_some(peer_, raw, sizeof raw);
+      if (first.status == net::IoStatus::kClosed) return true;
+      if (first.status == net::IoStatus::kWouldBlock) continue;
+      if (first.status != net::IoStatus::kOk ||
+          !kcpc_test::read_exact(peer_, raw + first.bytes,
+                                 sizeof raw - first.bytes, 5000)) {
+        return false;
+      }
+      kcpc::FrameHeader header;
+      if (kcpc::parse_header(raw, kcpc::kMaxRequestPayload, header) !=
+          kcpc::HeaderError::kOk) {
+        return false;
+      }
+      std::vector<std::uint8_t> payload(header.length);
+      if (!kcpc_test::read_exact(peer_, payload.data(), payload.size(), 5000)) {
+        return false;
+      }
+      if (header.opcode == static_cast<std::uint16_t>(Opcode::kPing)) {
+        pings_.fetch_add(1);
+      }
     }
     return false;
   }
 
-  // Reads one frame and answers nothing.
-  bool read_frame(kcpc::FrameHeader& header,
-                  std::vector<std::uint8_t>& payload) {
-    auto const deadline =
-        std::chrono::steady_clock::now() + std::chrono::seconds(5);
-    while (std::chrono::steady_clock::now() < deadline) {
-      if (buffer_.size() >= kcpc::kHeaderSize &&
-          kcpc::parse_header(buffer_.data(), kcpc::kMaxRequestPayload,
-                             header) == kcpc::HeaderError::kOk &&
-          buffer_.size() >= kcpc::kHeaderSize + header.length) {
-        auto const begin = buffer_.begin() + kcpc::kHeaderSize;
-        payload.assign(begin, begin + header.length);
-        buffer_.erase(buffer_.begin(), begin + header.length);
-        return true;
-      }
-      if (!net::wait_readable(peer_, 100)) continue;
-      std::uint8_t chunk[4096];
-      net::IoResult const r = net::recv_some(peer_, chunk, sizeof chunk);
-      if (r.status == net::IoStatus::kOk) {
-        buffer_.insert(buffer_.end(), chunk, chunk + r.bytes);
-      } else if (r.status != net::IoStatus::kWouldBlock) {
-        return false;
-      }
-    }
-    return false;
-  }
+  // The PINGs read so far.
+  int pings() const { return pings_.load(); }
 
   bool write(const std::vector<std::uint8_t>& frame) const {
-    std::size_t sent = 0;
-    while (sent < frame.size()) {
-      net::IoResult const r =
-          net::send_some(peer_, frame.data() + sent, frame.size() - sent);
-      if (r.status == net::IoStatus::kOk) {
-        sent += r.bytes;
-      } else if (r.status == net::IoStatus::kWouldBlock) {
-        net::wait_writable(peer_, 100);
-      } else {
-        return false;
-      }
-    }
-    return true;
+    return kcpc_test::send_all(peer_, frame, 5000);
   }
 
   // What a core that quits sends: EVT_SHUTDOWN, then ERROR, then the end.
@@ -737,25 +981,19 @@ class SilentPeer {
   net::Socket listener_ = net::kInvalidSocket;
   net::Socket peer_ = net::kInvalidSocket;
   int port_ = 0;
-  std::vector<std::uint8_t> buffer_;
+  std::atomic<int> pings_{0};
 };
 
 // Connects `client` to `peer`, which greets it on a thread of its own.
 bool greeted(SilentPeer& peer, kcpc::Client& client,
              const kcpc::ClientOptions& options, kcpc::Result& result,
-             bool whole_hello = true) {
+             bool whole_hello = true,
+             kcpc::Role role = kcpc::Role::kController) {
   if (peer.port() == 0) return false;
-  std::thread greeter([&] { EXPECT_TRUE(peer.greet(whole_hello)); });
+  std::thread greeter([&] { EXPECT_TRUE(peer.greet(whole_hello, role)); });
   bool const ok = client.connect(peer.port(), options, result);
   greeter.join();
   return ok;
-}
-
-kcpc::ClientOptions controller_options() {
-  kcpc::ClientOptions options;
-  options.role = kcpc::Role::kController;
-  options.call_timeout_ms = 20000;
-  return options;
 }
 
 // Two blocking calls and two asynchronous requests the peer has read and
@@ -802,6 +1040,9 @@ void expect_pending_calls_end(SilentPeer& peer,
   EXPECT_EQ(ended.load(), 4);
   EXPECT_FALSE(client.connected());
   EXPECT_EQ(client.close_status(), close_status);
+  // The role went with the connection.
+  EXPECT_FALSE(client.is_controller());
+  EXPECT_EQ(client.controller(), 0U);
   EXPECT_EQ(shutdowns.load(), close_status == Status::kOk ? 0 : 1);
   // Nothing more is sent, and asking again fails at once.
   kcpc::Stamp stamp;
@@ -1110,6 +1351,156 @@ TEST(KcpcClientBadReply, AFrameTheClientCannotReadEndsTheConnection) {
   EXPECT_FALSE(client.connected());
 }
 
+// -- the keepalive against a peer that is up but silent -----------------------
+
+// A keepalive PING is sent only while none is unanswered, and one unanswered
+// for keepalive_timeout_ms ends the connection: a core that is stopped
+// (SIGSTOP, a debugger) shows as kClosed, not as a request a time.
+TEST(KcpcClientKeepalive, AServerThatStopsAnsweringPingsEndsTheConnection) {
+  SilentPeer peer;
+  kcpc::ClientOptions options = controller_options();
+  options.keepalive_ms = 100;
+  options.keepalive_timeout_ms = 400;
+  kcpc::Client client;
+  kcpc::Result result;
+  ASSERT_TRUE(greeted(peer, client, options, result)) << result.message;
+  // The peer reads what comes and answers nothing; the client gives up.
+  EXPECT_TRUE(peer.read_frames_to_end(5000)) << "the client never gave up";
+  EXPECT_EQ(peer.pings(), 1) << "a PING went out beside an unanswered one";
+  // The reader half-closes (what the peer just saw) and then ends the
+  // requests and marks the connection shut: a moment later.
+  auto const deadline =
+      std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (client.connected() && std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+  EXPECT_FALSE(client.connected());
+  EXPECT_EQ(client.close_status(), Status::kOk);
+  kcpc::Stamp stamp;
+  kcpc::Result const later = client.pause(stamp);
+  EXPECT_EQ(later.outcome, Outcome::kClosed);
+  EXPECT_NE(later.message.find("stopped answering"), std::string::npos)
+      << later.message;
+}
+
+TEST(KcpcClientKeepalive, OnePingIsOutstandingAtATime) {
+  SilentPeer peer;
+  kcpc::ClientOptions options = controller_options();
+  options.keepalive_ms = 50;
+  options.keepalive_timeout_ms = 5000;
+  kcpc::Client client;
+  kcpc::Result result;
+  ASSERT_TRUE(greeted(peer, client, options, result)) << result.message;
+  for (int i = 0; i < 3; ++i) {
+    kcpc::FrameHeader ping;
+    std::vector<std::uint8_t> payload;
+    ASSERT_TRUE(peer.read_frame(ping, payload));
+    ASSERT_EQ(ping.opcode, static_cast<std::uint16_t>(Opcode::kPing));
+    // Unanswered for three keepalive periods: no second one.
+    kcpc::FrameHeader other;
+    EXPECT_FALSE(peer.read_frame(other, payload, 150))
+        << "a second PING while the first is unanswered";
+    ASSERT_TRUE(peer.answer(ping, ping.opcode, status_only(Status::kOk)));
+  }
+  EXPECT_TRUE(client.connected());
+  EXPECT_EQ(peer.pings(), 3);
+}
+
+// -- frames the client cannot use, continued ---------------------------------
+
+// An event of an opcode this client does not know (a later minor's) is
+// skipped; the connection goes on and the next reply is matched as usual.
+TEST(KcpcClientBadReply, AnEventOfAnUnknownOpcodeIsSkipped) {
+  SilentPeer peer;
+  std::atomic<int> events{0};
+  kcpc::ClientOptions options = controller_options();
+  options.on_event = [&](const kcpc::ClientEvent&) { events.fetch_add(1); };
+  kcpc::Client client;
+  kcpc::Result result;
+  ASSERT_TRUE(greeted(peer, client, options, result));
+  Asked asked([&] {
+    kcpc::Stamp stamp;
+    return client.pause(stamp);
+  });
+  kcpc::FrameHeader header;
+  std::vector<std::uint8_t> payload;
+  ASSERT_TRUE(peer.read_frame(header, payload));
+  ASSERT_TRUE(peer.event(0x80FF, {1, 2, 3, 4}));
+  kcpc::Stamp stamp;
+  stamp.frame = 56;
+  kcpc::Writer w;
+  kcpc::write_status(w, Status::kOk);
+  kcpc::write_stamp(w, stamp);
+  ASSERT_TRUE(peer.answer(header, header.opcode, w.data()));
+  EXPECT_TRUE(asked.result().ok()) << asked.result().message;
+  EXPECT_TRUE(client.connected());
+  // A known event after it still arrives.
+  kcpc::Event resumed;
+  resumed.opcode = Opcode::kEvtResumed;
+  resumed.frame = 2;
+  ASSERT_TRUE(peer.event(static_cast<std::uint16_t>(Opcode::kEvtResumed),
+                         kcpc::encode_event(resumed), 2));
+  auto const deadline =
+      std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  while (events.load() == 0 && std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  EXPECT_EQ(events.load(), 1) << "the unknown event was delivered, or the "
+                                 "known one was not";
+}
+
+// A reply that arrives after its call() timed out is dropped, and a late
+// CONTROL reply does not change what the client believes about its role:
+// only an answer somebody is waiting for, or an event, does.
+TEST(KcpcClientBadReply, ALateReplyIsDroppedAndALateControlLeavesTheRole) {
+  SilentPeer peer;
+  kcpc::Client client;
+  kcpc::Result result;
+  ASSERT_TRUE(greeted(peer, client, controller_options(), result));
+  ASSERT_TRUE(client.is_controller());
+  kcpc::Writer w;
+  kcpc::write_control_request(w,
+                              kcpc::ControlRequest{kcpc::kControlRelease, 0});
+  kcpc::Reply const timed_out = client.call(Opcode::kControl, w.data(), 100);
+  EXPECT_EQ(timed_out.outcome, Outcome::kTimeout);
+  kcpc::FrameHeader header;
+  std::vector<std::uint8_t> payload;
+  ASSERT_TRUE(peer.read_frame(header, payload));
+  // Late, and saying the client is an observer now.
+  kcpc::ControlReply control;
+  control.role = kcpc::Role::kObserver;
+  control.controller = 0;
+  kcpc::Writer late;
+  kcpc::write_status(late, Status::kOk);
+  kcpc::write_control_reply(late, control);
+  ASSERT_TRUE(peer.answer(header, header.opcode, late.data()));
+  // The next request is answered to its own caller.
+  Asked ping([&] { return client.ping(); });
+  ASSERT_TRUE(peer.read_frame(header, payload));
+  ASSERT_EQ(header.opcode, static_cast<std::uint16_t>(Opcode::kPing));
+  ASSERT_TRUE(peer.answer(header, header.opcode, status_only(Status::kOk)));
+  EXPECT_TRUE(ping.result().ok()) << ping.result().message;
+  EXPECT_TRUE(client.is_controller());
+  EXPECT_EQ(client.controller(), SilentPeer::kClientId);
+}
+
+// send() on a client that is not connected calls `done` with kClosed, once,
+// before it returns 0.
+TEST(KcpcClientSend, SendOnAClosedClientCallsDoneWithClosed) {
+  kcpc::Client client;
+  int calls = 0;
+  kcpc::Reply seen;
+  EXPECT_EQ(client.send(Opcode::kPing, {},
+                        [&](const kcpc::Reply& r) {
+                          ++calls;
+                          seen = r;
+                        }),
+            0U);
+  EXPECT_EQ(calls, 1);
+  EXPECT_EQ(seen.outcome, Outcome::kClosed);
+  EXPECT_EQ(seen.message, "not connected");
+}
+
 // -- the frame ring ----------------------------------------------------------
 
 namespace {
@@ -1216,9 +1607,14 @@ TEST_F(FbRingReaderTest, AReadBesideTheProducerIsAlwaysOneWholeFrame) {
   });
   std::vector<std::uint8_t> got;
   int whole = 0;
-  while (!done.load()) {
+  // One read at least after the producer is done: the ring is quiet then,
+  // so that read is whole whatever the two threads' timing was.
+  for (bool last = false; !last;) {
+    last = done.load();
     std::uint64_t seq = 0;
-    if (reader.read_latest(got, seq) != kcpc::FbReadStatus::kOk) continue;
+    kcpc::FbReadStatus const status = reader.read_latest(got, seq);
+    if (last) ASSERT_EQ(status, kcpc::FbReadStatus::kOk);
+    if (status != kcpc::FbReadStatus::kOk) continue;
     auto const want = static_cast<std::uint8_t>(seq);
     ASSERT_EQ(std::count(got.begin(), got.end(), want),
               static_cast<std::ptrdiff_t>(got.size()))
@@ -1247,4 +1643,109 @@ TEST(FbRingReader, NoRegionOrNoRingFailsToOpen) {
   std::vector<std::uint8_t> got;
   std::uint64_t seq = 0;
   EXPECT_EQ(reader.read_latest(got, seq), kcpc::FbReadStatus::kBadHeader);
+}
+
+// A header the producer rewrites after the reader opened it (or a hostile
+// one) must not turn into an allocation: the frame's size is the one the
+// header had when it was validated, and a header that no longer agrees is
+// kBadHeader.
+TEST_F(FbRingReaderTest, AHeaderRewrittenToAHugeSlotIsRefusedNotAllocated) {
+  kcpc::FbRingReader reader;
+  std::string error;
+  ASSERT_TRUE(reader.open(shm::os_name(base_), error)) << error;
+  std::vector<std::uint8_t> const sent = frame_pixels(1);
+  writer_.publish(sent.data());
+  std::uint64_t const slot_bytes = header().slot_bytes;
+  header().slot_bytes = std::uint64_t{1} << 62;
+  std::vector<std::uint8_t> got;
+  std::uint64_t seq = 0;
+  EXPECT_EQ(reader.read_latest(got, seq), kcpc::FbReadStatus::kBadHeader);
+  EXPECT_EQ(reader.frame_bytes(), slot_bytes);
+  header().slot_bytes = slot_bytes;
+  ASSERT_EQ(reader.read_latest(got, seq), kcpc::FbReadStatus::kOk);
+  EXPECT_EQ(crc32(got), crc32(sent));
+}
+
+TEST_F(FbRingReaderTest, ARingClaimingSlotsBeyondTheRegionDoesNotOpen) {
+  header().slot_bytes = std::uint64_t{1} << 62;
+  header().slot_stride = std::uint64_t{1} << 62;
+  header().height = 1U << 31;
+  header().stride = 1U << 31;
+  kcpc::FbRingReader reader;
+  std::string error;
+  EXPECT_FALSE(reader.open(shm::os_name(base_), error));
+  EXPECT_EQ(reader.failure(), kcpc::FbOpenFailure::kBadHeader);
+  EXPECT_FALSE(reader.is_open());
+}
+
+TEST_F(FbRingReaderTest, ARingOfAnotherVersionDoesNotOpen) {
+  header().version = kcpc::kFbRingVersion + 1;
+  kcpc::FbRingReader reader;
+  std::string error;
+  EXPECT_FALSE(reader.open(shm::os_name(base_), error));
+  EXPECT_EQ(reader.failure(), kcpc::FbOpenFailure::kVersion);
+  EXPECT_NE(error.find("version"), std::string::npos) << error;
+  EXPECT_FALSE(reader.is_open());
+  header().version = kcpc::kFbRingVersion;
+  EXPECT_TRUE(reader.open(shm::os_name(base_), error)) << error;
+  EXPECT_EQ(reader.failure(), kcpc::FbOpenFailure::kNone);
+}
+
+// FB_INFO carries the ring's OS name; the base name opens the same ring.
+TEST_F(FbRingReaderTest, OpensByTheOsNameAndByTheBaseName) {
+  kcpc::FbRingReader reader;
+  std::string error;
+  ASSERT_TRUE(reader.open(shm::os_name(base_), error)) << error;
+  EXPECT_EQ(reader.producer_pid(), 99U);
+  ASSERT_TRUE(reader.open(base_, error)) << error;
+  EXPECT_EQ(reader.producer_pid(), 99U);
+  EXPECT_EQ(shm::base_name(shm::os_name(base_)), base_);
+  EXPECT_EQ(shm::base_name(base_), base_);
+}
+
+// A region big enough for a ring whose header is not laid out yet is "try
+// again"; one too small for a header never will be.
+TEST(FbRingReader, ARegionNotLaidOutYetIsTryAgainAndATinyOneIsTooSmall) {
+  kcpc::FbRingReader reader;
+  std::string error;
+  EXPECT_FALSE(reader.open("", error));
+  EXPECT_EQ(reader.failure(), kcpc::FbOpenFailure::kNoName);
+  EXPECT_FALSE(
+      reader.open(shm::os_name("kcpc-fbr-none-" +
+                               std::to_string(startup_manifest_self_pid())),
+                  error));
+  EXPECT_EQ(reader.failure(), kcpc::FbOpenFailure::kNoRegion);
+
+  shm::Region blank;
+  std::string const base =
+      "kcpc-fby-" + std::to_string(startup_manifest_self_pid());
+  ASSERT_TRUE(
+      blank.create(base, kcpc::fb_ring_bytes(kRingStride, kRingHeight), error))
+      << error;
+  EXPECT_FALSE(reader.open(shm::os_name(base), error));
+  EXPECT_EQ(reader.failure(), kcpc::FbOpenFailure::kNotYet);
+  EXPECT_NE(error.find("again"), std::string::npos) << error;
+  // Laid out now: the same name opens.
+  kcpc::FbRingWriter writer;
+  ASSERT_TRUE(writer.init(blank.data(), blank.size(), kRingWidth, kRingHeight,
+                          kRingStride, 7));
+  EXPECT_TRUE(reader.open(shm::os_name(base), error)) << error;
+  reader.close();
+
+  // A region of 64 bytes: too small for a header where the OS maps what
+  // was asked for (Linux), not laid out yet where it maps whole pages
+  // (macOS rounds a shared memory object up to a page).
+  shm::Region tiny;
+  std::string const small =
+      "kcpc-fbt-" + std::to_string(startup_manifest_self_pid());
+  ASSERT_TRUE(tiny.create(small, 64, error)) << error;
+  shm::Region probe;
+  ASSERT_TRUE(probe.open_read(small, error)) << error;
+  EXPECT_FALSE(reader.open(shm::os_name(small), error));
+  if (probe.size() < sizeof(kcpc::FbRingHeader)) {
+    EXPECT_EQ(reader.failure(), kcpc::FbOpenFailure::kTooSmall);
+    EXPECT_NE(error.find("small"), std::string::npos) << error;
+  } else {
+    EXPECT_EQ(reader.failure(), kcpc::FbOpenFailure::kNotYet);
+  }
 }

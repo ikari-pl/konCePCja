@@ -619,23 +619,38 @@ binary_port_enabled=1      # 0 = do not open the port (manifest: `binary: null`)
   it took part of ends the connection (beads-3sp.11). It PINGs after
   `keepalive_ms` (10 s) of silence, from the reader thread, only while no
   other frame is being sent and the socket takes it at once (a stalled
-  sender never parks the reader), tracks the role from HELLO, `CONTROL` and
-  `EVT_CONTROL_CHANGED`, and an `ERROR` or the end of the stream ends every
-  pending request with kClosed carrying `close_status()` (so a HELLO refused
-  with TOO_MANY_CLIENTS says so in its `Result`) and half-closes the socket,
-  so the server's linger ends at once. Payloads go through `kcpc_proto.h`
-  and `decode_event()` (the mirror of `encode_event()` in `kcpc_events.h`):
-  **no second codec**; a new opcode gets its codec there and a typed request
-  here. A callback must never wait for a reply: the reader delivers replies.
-  It may `close()` the client; `connect()` from one is refused (kClosed) and
+  sender never parks the reader), one PING at a time: none while the last
+  is unanswered, and one unanswered for `keepalive_timeout_ms` (30 s) ends
+  the connection ("the server stopped answering": a SIGSTOPped core is one
+  kClosed, not a stream of kTimeout). It tracks the role from HELLO,
+  `CONTROL`, `RUN_STATE` (the one reply that names the controller to an
+  observer) and `EVT_CONTROL_CHANGED`, and forgets it when the connection
+  ends: `is_controller()` is never true of a dead connection. An `ERROR` or
+  the end of the stream ends every pending request with kClosed carrying
+  `close_status()` (so a HELLO refused with TOO_MANY_CLIENTS says so in its
+  `Result`) and half-closes the socket, so the server's linger ends at once.
+  Payloads go through `kcpc_proto.h` and `decode_event()` (the mirror of
+  `encode_event()` in `kcpc_events.h`): **no second codec**; a new opcode
+  gets its codec there and a typed request here. A callback must never wait
+  for a reply: the reader delivers replies. It may `close()` the client
+  (`close()` is safe from any number of threads at once: one joins the
+  reader, the rest wait); `connect()` from one is refused (kClosed) and
   destroying the client from one is not allowed (the reader is running it).
-  `src/kcpc/fb_ring_reader.{h,cpp}` maps the ring by FB_INFO's `shm_name`,
-  read-only, and copies the latest frame with `fb_ring_read_latest()`.
-  `test/kcpc_client_test.cpp` runs it against `kcpc::Server` with the fake
-  machine of `test/kcpc_fake_machine.h` (shared with
-  `kcpc_server_test.cpp`); a request that stays pending until the
-  connection ends needs a peer that never answers (`SilentPeer`), because
-  the real server answers what it has read before it shuts down.
+  `src/kcpc/fb_ring_reader.{h,cpp}` maps the ring by FB_INFO's `shm_name`
+  (the OS name; `shm::base_name()` is the inverse of `shm::os_name()`, and
+  the bare base name is accepted too), read-only, and copies the latest
+  frame with `fb_ring_read_latest()`; `failure()` says why an `open()`
+  failed (no region, not laid out yet so try again, another version, a
+  header it refuses), and a frame is only ever as big as the header said
+  when `open()` validated it (a header rewritten since is kBadHeader, never
+  an allocation). `test/kcpc_client_test.cpp` runs it against
+  `kcpc::Server` with the fake machine of `test/kcpc_fake_machine.h`
+  (shared with `kcpc_server_test.cpp`) and the wire loops of
+  `test/kcpc_test_wire.h` (shared too: one copy of send-whole,
+  read-exact, read-frame and read-to-end); a request that stays pending
+  until the connection ends needs a peer that never answers
+  (`SilentPeer`), because the real server answers what it has read before
+  it shuts down.
 - `test/integrated/kcpc/kcpc_client.py` is the reference client (standard
   library only); `test_kcpc.py` next to it starts its own cores
   (`-H` by default, `--ui-free`, `--gui`) and runs inside `make e2e_test`.
