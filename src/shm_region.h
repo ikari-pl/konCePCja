@@ -25,6 +25,9 @@ namespace shm {
 // "Local\<base>" on Windows. macOS refuses POSIX names longer than 31
 // characters (PSHMNAMLEN), slash included, so keep `base` under 30.
 std::string os_name(const std::string& base);
+// The inverse: the base of an OS name os_name() made. A name without the
+// platform's prefix is taken to be a base already.
+std::string base_name(const std::string& name);
 
 class Region {
  public:

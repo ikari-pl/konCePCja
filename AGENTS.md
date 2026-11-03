@@ -408,7 +408,14 @@ binary_port_enabled=1      # 0 = do not open the port (manifest: `binary: null`)
 - `src/kcpc/kcpc_host.{h,cpp}` — the single seam between socket threads and the emulator.
 - `src/kcpc/kcpc_events.h` — MPSC lock-free event ring and codec (`encode_event` / `decode_event`).
 - `src/kcpc/fb_ring.h`, `fb_publish.{h,cpp}`, `fb_ring_reader.{h,cpp}` — canonical RGB24 768×272 shared-memory frame ring (`kcpc-fb-<pid>`, `src/shm_region.{h,cpp}`). `tools/fb_dump.c` is a standalone C reader with no emulator headers.
-- `src/kcpc/kcpc_client.{h,cpp}` — C++ client library (`test/kcpc_client_test.cpp`); `test/integrated/kcpc/kcpc_client.py` is the Python reference client.
+- `src/kcpc/kcpc_client.{h,cpp}` — C++ client library (`test/kcpc_client_test.cpp`; `test/kcpc_test_wire.h` holds the wire loops it shares with the server test); `test/integrated/kcpc/kcpc_client.py` is the Python reference client.
+
+### Client invariants (`kcpc::Client`, `kcpc::FbRingReader`)
+- **One codec.** Payloads go through `kcpc_proto.h` and `decode_event()` (the mirror of `encode_event()`); a new opcode gets its codec there and a typed request in the client, never a second encoder.
+- **Callbacks run on the reader thread.** Never wait for a reply inside one. `close()` is safe from any thread, any number at once (one joins the reader, the rest wait); `connect()` from a callback is refused with kClosed; destroying the client from a callback is not allowed.
+- **A request's timeout bounds its send as well as the wait**; a frame the socket took only part of ends the connection. The keepalive sends one PING at a time, and one unanswered for `keepalive_timeout_ms` ends the connection ("the server stopped answering"), so a stopped core is one kClosed, not a stream of kTimeout.
+- **The role is the connection's.** `is_controller()`/`controller()` follow HELLO, `CONTROL`, `RUN_STATE` (the one reply that names the controller to an observer) and `EVT_CONTROL_CHANGED`, and are cleared when the connection ends, however it ends.
+- **`FbRingReader` trusts no header.** Open by the OS name `FB_INFO` gives (`shm::base_name()` is the inverse of `shm::os_name()`; a bare base name opens too); `failure()` says why an open failed (no region, not laid out yet so try again, another version, a header it refuses); a frame is only ever as big as the header said when `open()` validated it (a header rewritten since is kBadHeader, never an allocation).
 
 ### Threading & boundary invariants (apply across KCPC, text IPC, and DevTools)
 - **Socket and UI threads never touch the running machine directly.** Reads go through `kcpc::Gate` (serviced at `frame_epilogue()` when running, or under `cpc_read_while_stopped()` when stopped). Mutations take `CpcPauseLease` via `change_alone()` and finish with `restore_run_state()` (except batched `REGS_SET`/`MEM_WRITE` when KCPC clients read or the machine runs unpaced, which run at the frame boundary without a lease).
