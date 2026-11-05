@@ -74,8 +74,9 @@ void emit_rev(const uint8_t* a2r, const Cap& cap, std::vector<uint8_t>& out,
 
 }  // namespace
 
-// NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other
-// translation units/tests; internal linkage would break the link
+// external API consumed by other translation units/tests; internal linkage
+// would break the link.
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 int a2r_to_scp(const uint8_t* a2r, size_t len, std::vector<uint8_t>& out) {
   out.clear();
   if (a2r == nullptr || len < 8 || std::memcmp(a2r, "A2R3", 4) != 0)

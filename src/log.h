@@ -21,8 +21,9 @@ extern bool log_verbose;
 // Writes one finished line to `stream` and flushes it, under the log lock.
 void log_write_line(std::ostream& stream, const std::string& line);
 
-// NOLINTNEXTLINE(misc-macro-parentheses): `message` is deliberately
-// unparenthesised so call sites can chain `<<` inserters.
+// `message` is deliberately unparenthesised so call sites can chain `<<`
+// inserters.
+// NOLINTNEXTLINE(misc-macro-parentheses)
 #define LOG_TO(stream, level, message)                                         \
   {                                                                            \
     std::ostringstream koncpc_log_line_;                                       \

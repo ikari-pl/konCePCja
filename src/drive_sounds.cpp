@@ -62,8 +62,8 @@ void generate_motor_samples(std::vector<int16_t>& out,
     double v = (sin(2 * M_PI * p.motor_f0 * t) * p.motor_a0) +
                (sin(2 * M_PI * 2 * p.motor_f0 * t) * p.motor_a1) +
                (sin(2 * M_PI * 3 * p.motor_f0 * t) * p.motor_a2);
-    // NOLINTNEXTLINE(misc-predictable-rand): rand() is intentional for emulator
-    // weak-bit/fuzz jitter, not security
+    // rand() is intentional for emulator weak-bit/fuzz jitter, not security.
+    // NOLINTNEXTLINE(misc-predictable-rand)
     v += ((rand() / static_cast<double>(RAND_MAX)) - 0.5) * p.motor_rumble;
     out[i] = clamp_i16(v * p.motor_gain);
   }
@@ -81,8 +81,8 @@ void generate_seek_samples(std::vector<int16_t>& out,
     double const t = static_cast<double>(i) / GEN_RATE;
     double const env = exp(-t * p.seek_decay);
     double v = sin(2 * M_PI * p.seek_freq * t) * env;
-    // NOLINTNEXTLINE(misc-predictable-rand): rand() is intentional for emulator
-    // weak-bit/fuzz jitter, not security
+    // rand() is intentional for emulator weak-bit/fuzz jitter, not security.
+    // NOLINTNEXTLINE(misc-predictable-rand)
     v += ((rand() / static_cast<double>(RAND_MAX)) - 0.5) * p.seek_noise * env;
     out[i] = clamp_i16(v * p.seek_gain);
   }
@@ -99,8 +99,9 @@ void generate_tape_samples(std::vector<int16_t>& out,
   out.resize(len);
   for (int i = 0; i < len; i++) {
     double const v =
-        // NOLINTNEXTLINE(misc-predictable-rand): rand() is intentional for
-        // emulator weak-bit/fuzz jitter, not security
+        // rand() is intentional for emulator weak-bit/fuzz jitter, not
+        // security.
+        // NOLINTNEXTLINE(misc-predictable-rand)
         ((rand() / static_cast<double>(RAND_MAX)) - 0.5) * p.tape_noise;
     out[i] = clamp_i16(v * p.tape_gain);
   }

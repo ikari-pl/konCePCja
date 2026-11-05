@@ -90,8 +90,9 @@ void workspace_render_cpc_screen() {
   }
 
   ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
-  // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated
+  // clang-tidy FP — variable is mutated
   // (out-param/compound-assign/loop/reference)
+  // NOLINTNEXTLINE(misc-const-correctness)
   bool open = true;
   if (ImGui::Begin(
           "CPC Screen", &open,
@@ -328,8 +329,9 @@ namespace {
 bool s_layout_cache_dirty = true;
 }  // namespace
 
-// NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other
-// translation units/tests; internal linkage would break the link
+// external API consumed by other translation units/tests; internal linkage
+// would break the link.
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 std::vector<std::string> workspace_list_layouts() {
   if (!s_layout_cache_dirty) return s_layout_cache;
 
@@ -357,8 +359,10 @@ bool workspace_save_layout(const std::string& name) {
   std::filesystem::create_directories(dir);
 
   // Snapshot full ImGui ini state
-  // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated
+  //
+  // clang-tidy FP — variable is mutated
   // (out-param/compound-assign/loop/reference)
+  // NOLINTNEXTLINE(misc-const-correctness)
   size_t ini_size = 0;
   const char* ini_data = ImGui::SaveIniSettingsToMemory(&ini_size);
   if (!ini_data || ini_size == 0) return false;
@@ -422,8 +426,9 @@ bool workspace_load_layout(const std::string& name) {
   auto section_pos = data.find("\n[KonCePCja]");
   if (section_pos != std::string::npos) {
     std::istringstream ss(data.substr(section_pos));
-    // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
-    // mutated (out-param/compound-assign/loop/reference)
+    // clang-tidy FP — variable is mutated
+    // (out-param/compound-assign/loop/reference)
+    // NOLINTNEXTLINE(misc-const-correctness)
     std::string line;
     while (std::getline(ss, line)) {
       if (line.rfind("show_devtools=", 0) == 0) {

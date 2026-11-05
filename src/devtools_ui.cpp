@@ -357,8 +357,9 @@ void DevToolsUI::render() {
 void DevToolsUI::render_registers() {
   apply_default_window_layout(0, 340, 420);
 
-  // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated
+  // clang-tidy FP — variable is mutated
   // (out-param/compound-assign/loop/reference)
+  // NOLINTNEXTLINE(misc-const-correctness)
   bool open = true;
   if (!ImGui::Begin("Registers", &open)) {
     if (!open) show_registers_ = false;
@@ -478,8 +479,9 @@ void DevToolsUI::render_registers() {
   };
 
   auto RegField16 = [&](const char* label, reg_pair& rp) {
-    // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
-    // mutated (out-param/compound-assign/loop/reference)
+    // clang-tidy FP — variable is mutated
+    // (out-param/compound-assign/loop/reference)
+    // NOLINTNEXTLINE(misc-const-correctness)
     unsigned short val = rp.w.l;
     // The register NAME goes on the LEFT: ImGui renders an InputScalar's own
     // label to the right of the item, so a full-width (-FLT_MIN) field leaves
@@ -505,8 +507,9 @@ void DevToolsUI::render_registers() {
 
   auto RegField8 = [&](const char* label, byte& val) {
     ImGui::SetNextItemWidth(ui_dpi_px(40));
-    // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
-    // mutated (out-param/compound-assign/loop/reference)
+    // clang-tidy FP — variable is mutated
+    // (out-param/compound-assign/loop/reference)
+    // NOLINTNEXTLINE(misc-const-correctness)
     unsigned char v = val;
     if (ImGui::InputScalar(label, ImGuiDataType_U8, &v, nullptr, nullptr,
                            "%02X", hex_flags)) {
@@ -574,8 +577,8 @@ void DevToolsUI::render_registers() {
   byte const f = z80.AF.b.l;
   // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated
   bool s = f & Sflag;
-  // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — &var passed to
-  // ImGui as a mutable in/out pointer
+  // clang-tidy FP — &var passed to ImGui as a mutable in/out pointer.
+  // NOLINTNEXTLINE(misc-const-correctness)
   bool zf = f & Zflag, h = f & Hflag, pv = f & Pflag, n = f & Nflag,
        cf = f & Cflag;
   ImGui::BeginDisabled(locked);  // beads-pra: flags editable only when paused
@@ -624,8 +627,9 @@ void DevToolsUI::render_registers() {
 // -----------------------------------------------
 
 void DevToolsUI::disasm_cache_record_pc() {
-  // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated
+  // clang-tidy FP — variable is mutated
   // (out-param/compound-assign/loop/reference)
+  // NOLINTNEXTLINE(misc-const-correctness)
   word const pc = z80.PC.w.l;
 
   // Push into PC history ring buffer (always, even if instruction is cached)
@@ -643,8 +647,9 @@ void DevToolsUI::disasm_cache_record_pc() {
 
   // Cache the disassembled instruction at PC
   if (disasm_cache_.count(pc)) return;
-  // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated
+  // clang-tidy FP — variable is mutated
   // (out-param/compound-assign/loop/reference)
+  // NOLINTNEXTLINE(misc-const-correctness)
   DisassembledCode dc;
   std::vector<dword> eps;
   auto line = disassemble_one(pc, dc, eps);
@@ -688,8 +693,9 @@ void DevToolsUI::render_disasm_step_controls() {
 void DevToolsUI::render_disassembly() {
   apply_default_window_layout(1, 440, 500);
 
-  // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated
+  // clang-tidy FP — variable is mutated
   // (out-param/compound-assign/loop/reference)
+  // NOLINTNEXTLINE(misc-const-correctness)
   bool open = true;
   if (!ImGui::Begin("Disassembly", &open, ImGuiWindowFlags_MenuBar)) {
     if (!open) show_disassembly_ = false;
@@ -766,8 +772,9 @@ void DevToolsUI::render_disassembly() {
   word const start_addr = center_pc - 16;
 
   word addr = start_addr;
-  // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated
+  // clang-tidy FP — variable is mutated
   // (out-param/compound-assign/loop/reference)
+  // NOLINTNEXTLINE(misc-const-correctness)
   DisassembledCode dummy_dc;
   std::vector<dword> dummy_eps;
 
@@ -828,8 +835,8 @@ void DevToolsUI::render_disassembly() {
     if (pc_in_rom) {
       const char* rom_name =
           (pc_slot == 0) ? "Lower ROM"
-          // NOLINTNEXTLINE(readability-avoid-nested-conditional-operator):
-          // nested conditional kept intentionally; no clang-tidy auto-fix
+          // nested conditional kept intentionally; no clang-tidy auto-fix.
+          // NOLINTNEXTLINE(readability-avoid-nested-conditional-operator)
           : (pc_slot == 3) ? "Upper ROM"
                            : "ROM";  // expansion ROM in unusual slot
       snprintf(bank_hdr, sizeof(bank_hdr), "%04X-%04X: %s", pc_slot * 0x4000,
@@ -864,8 +871,9 @@ void DevToolsUI::render_disassembly() {
     for (int i = 0; i < static_cast<int>(lines.size()); i++) {
       const auto& entry = lines[i];
       bool const is_pc = (entry.addr == z80.PC.w.l);
-      // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
-      // mutated (out-param/compound-assign/loop/reference)
+      // clang-tidy FP — variable is mutated
+      // (out-param/compound-assign/loop/reference)
+      // NOLINTNEXTLINE(misc-const-correctness)
       bool is_bp = false;
       for (const auto& bp : breakpoints) {
         if (bp.address == entry.addr && bp.type != EPHEMERAL) {
@@ -1010,8 +1018,9 @@ void DevToolsUI::render_disassembly() {
             snprintf(da_end_, sizeof(da_end_), "%04X", ctx_da->end);
             da_type_ =
                 (ctx_da->type == DataType::BYTES) ? 0
-                // NOLINTNEXTLINE(readability-avoid-nested-conditional-operator):
-                // nested conditional kept intentionally; no clang-tidy auto-fix
+                // nested conditional kept intentionally; no clang-tidy
+                // auto-fix.
+                // NOLINTNEXTLINE(readability-avoid-nested-conditional-operator)
                 : (ctx_da->type == DataType::WORDS) ? 1
                                                     : 2;
             if (!ctx_da->label.empty())
@@ -1052,7 +1061,7 @@ void DevToolsUI::render_disassembly() {
       }
     }
 
-    // One-shot scroll to goto target
+    // one-shot scroll to goto target
     if (disasm_scroll_pending_ && scroll_to_idx >= 0) {
       float const item_height = ImGui::GetTextLineHeightWithSpacing();
       ImGui::SetScrollY((scroll_to_idx * item_height) -
@@ -1073,8 +1082,9 @@ void DevToolsUI::render_disassembly() {
 void DevToolsUI::render_memory_hex() {
   apply_default_window_layout(2, 520, 400);
 
-  // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated
+  // clang-tidy FP — variable is mutated
   // (out-param/compound-assign/loop/reference)
+  // NOLINTNEXTLINE(misc-const-correctness)
   bool open = true;
   if (!ImGui::Begin("Memory Hex", &open, ImGuiWindowFlags_MenuBar)) {
     if (!open) show_memory_hex_ = false;
@@ -1098,8 +1108,9 @@ void DevToolsUI::render_memory_hex() {
     ImGui::Text("W:");
     ImGui::SameLine();
     ImGui::SetNextItemWidth(ui_dpi_px(40));
-    // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
-    // mutated (out-param/compound-assign/loop/reference)
+    // clang-tidy FP — variable is mutated
+    // (out-param/compound-assign/loop/reference)
+    // NOLINTNEXTLINE(misc-const-correctness)
     int bpr = memhex_bytes_per_row_;
     if (ImGui::InputInt("##bpr", &bpr, 0, 0)) {
       if (bpr >= 4 && bpr <= 32) memhex_bytes_per_row_ = bpr;
@@ -1285,11 +1296,12 @@ void DevToolsUI::render_memory_hex() {
           ImGui::SameLine();
 
           // Check watchpoint highlighting
-          // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
-          // mutated
+          //
+          // clang-tidy FP — variable is mutated.
+          // NOLINTNEXTLINE(misc-const-correctness)
           bool wp_r = false;
-          // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
-          // mutated
+          // clang-tidy FP — variable is mutated.
+          // NOLINTNEXTLINE(misc-const-correctness)
           bool wp_w = false;
           for (const auto& wp : watchpoints) {
             if (wp.length > 0 && a >= wp.address &&
@@ -1501,8 +1513,9 @@ void DevToolsUI::render_memory_hex() {
 void DevToolsUI::render_stack() {
   apply_default_window_layout(3, 260, 400);
 
-  // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated
+  // clang-tidy FP — variable is mutated
   // (out-param/compound-assign/loop/reference)
+  // NOLINTNEXTLINE(misc-const-correctness)
   bool open = true;
   if (!ImGui::Begin("Stack", &open)) {
     if (!open) show_stack_ = false;
@@ -1584,8 +1597,9 @@ void DevToolsUI::render_stack() {
 void DevToolsUI::render_breakpoints() {
   apply_default_window_layout(4, 500, 300);
 
-  // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated
+  // clang-tidy FP — variable is mutated
   // (out-param/compound-assign/loop/reference)
+  // NOLINTNEXTLINE(misc-const-correctness)
   bool open = true;
   if (!ImGui::Begin("Breakpoints & Watchpoints & IO###BPWindow", &open)) {
     if (!open) show_breakpoints_ = false;
@@ -1607,8 +1621,9 @@ void DevToolsUI::render_breakpoints() {
     auto add_quick_bp = [&]() {
       if (quick_bp_addr[0] == '\0') return;
       unsigned long addr;
-      // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
-      // mutated (out-param/compound-assign/loop/reference)
+      // clang-tidy FP — variable is mutated
+      // (out-param/compound-assign/loop/reference)
+      // NOLINTNEXTLINE(misc-const-correctness)
       word sym_addr = 0;
       if (parse_hex(quick_bp_addr, &addr, 0xFFFF)) {
         z80_add_breakpoint(static_cast<word>(addr));
@@ -1636,8 +1651,10 @@ void DevToolsUI::render_breakpoints() {
   const auto& iobps = iobp_snapshot_cache_;
 
   // Count visible (non-ephemeral) breakpoints
-  // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated
+  //
+  // clang-tidy FP — variable is mutated
   // (out-param/compound-assign/loop/reference)
+  // NOLINTNEXTLINE(misc-const-correctness)
   int bp_visible = 0;
   for (const auto& bp : bps) {
     if (bp.type != EPHEMERAL) bp_visible++;
@@ -1704,8 +1721,8 @@ void DevToolsUI::render_breakpoints() {
       ImGui::TableSetColumnIndex(0);
       const char* wp_type =
           (wp.type == READ) ? "WP/R"
-          // NOLINTNEXTLINE(readability-avoid-nested-conditional-operator):
-          // nested conditional kept intentionally; no clang-tidy auto-fix
+          // nested conditional kept intentionally; no clang-tidy auto-fix.
+          // NOLINTNEXTLINE(readability-avoid-nested-conditional-operator)
           : (wp.type == WRITE) ? "WP/W"
                                : "WP/RW";
       ImGui::Text("%s", wp_type);
@@ -1748,8 +1765,8 @@ void DevToolsUI::render_breakpoints() {
       ImGui::TableSetColumnIndex(0);
       const char* dir_str =
           (iobp.dir == IO_IN) ? "IO/IN"
-          // NOLINTNEXTLINE(readability-avoid-nested-conditional-operator):
-          // nested conditional kept intentionally; no clang-tidy auto-fix
+          // nested conditional kept intentionally; no clang-tidy auto-fix.
+          // NOLINTNEXTLINE(readability-avoid-nested-conditional-operator)
           : (iobp.dir == IO_OUT) ? "IO/OUT"
                                  : "IO/RW";
       ImGui::Text("%s", dir_str);
@@ -1794,8 +1811,9 @@ void DevToolsUI::render_breakpoints() {
     if (ImGui::Button("Add BP")) {
       unsigned long addr;
       if (parse_hex(bp_addr_, &addr, 0xFFFF)) {
-        // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
-        // mutated (out-param/compound-assign/loop/reference)
+        // clang-tidy FP — variable is mutated
+        // (out-param/compound-assign/loop/reference)
+        // NOLINTNEXTLINE(misc-const-correctness)
         std::string const cond_str(bp_cond_);
         int pass = (bp_pass_[0] != '\0') ? std::atoi(bp_pass_) : 0;
         pass = std::max(pass, 0);
@@ -1804,8 +1822,9 @@ void DevToolsUI::render_breakpoints() {
         } else {
           std::unique_ptr<ExprNode> cond;
           if (!cond_str.empty()) {
-            // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable
-            // is mutated (out-param/compound-assign/loop/reference)
+            // clang-tidy FP — variable is mutated
+            // (out-param/compound-assign/loop/reference)
+            // NOLINTNEXTLINE(misc-const-correctness)
             std::string err;
             cond = expr_parse(cond_str, err);
             if (!cond) {
@@ -1844,8 +1863,8 @@ void DevToolsUI::render_breakpoints() {
             (len_val > 0 && len_val <= 0xFFFF) ? static_cast<int>(len_val) : 1;
         WatchpointType const wt =
             (wp_type_ == 0) ? READ
-            // NOLINTNEXTLINE(readability-avoid-nested-conditional-operator):
-            // nested conditional kept intentionally; no clang-tidy auto-fix
+            // nested conditional kept intentionally; no clang-tidy auto-fix.
+            // NOLINTNEXTLINE(readability-avoid-nested-conditional-operator)
             : (wp_type_ == 1) ? WRITE
                               : READWRITE;
         z80_add_watchpoint(static_cast<word>(addr), static_cast<word>(len), wt);
@@ -1874,8 +1893,8 @@ void DevToolsUI::render_breakpoints() {
           parse_hex(iobp_mask_, &mask, 0xFFFF)) {
         IOBreakpointDir const dir =
             (iobp_dir_ == 0) ? IO_IN
-            // NOLINTNEXTLINE(readability-avoid-nested-conditional-operator):
-            // nested conditional kept intentionally; no clang-tidy auto-fix
+            // nested conditional kept intentionally; no clang-tidy auto-fix.
+            // NOLINTNEXTLINE(readability-avoid-nested-conditional-operator)
             : (iobp_dir_ == 1) ? IO_OUT
                                : IO_BOTH;
         z80_add_io_breakpoint(static_cast<word>(port), static_cast<word>(mask),
@@ -1910,8 +1929,9 @@ void DevToolsUI::render_symbols() {
 
   apply_default_window_layout(5, 340, 400);
 
-  // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated
+  // clang-tidy FP — variable is mutated
   // (out-param/compound-assign/loop/reference)
+  // NOLINTNEXTLINE(misc-const-correctness)
   bool open = true;
   if (!ImGui::Begin(title, &open)) {
     if (!open) show_symbols_ = false;
@@ -2014,8 +2034,9 @@ void DevToolsUI::render_symbols() {
 void DevToolsUI::render_silicon_disc() {
   apply_default_window_layout(6, 380, 280);
 
-  // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated
+  // clang-tidy FP — variable is mutated
   // (out-param/compound-assign/loop/reference)
+  // NOLINTNEXTLINE(misc-const-correctness)
   bool open = true;
   if (!ImGui::Begin("Silicon Disc", &open)) {
     if (!open) show_silicon_disc_ = false;
@@ -2109,8 +2130,9 @@ void DevToolsUI::render_silicon_disc() {
 void DevToolsUI::render_asic() {
   apply_default_window_layout(7, 520, 500);
 
-  // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated
+  // clang-tidy FP — variable is mutated
   // (out-param/compound-assign/loop/reference)
+  // NOLINTNEXTLINE(misc-const-correctness)
   bool open = true;
   if (!ImGui::Begin("ASIC Registers", &open)) {
     if (!open) show_asic_ = false;
@@ -2157,8 +2179,8 @@ void DevToolsUI::render_asic() {
 
   // DMA Channels
   if (ImGui::CollapsingHeader("DMA Channels", ImGuiTreeNodeFlags_DefaultOpen)) {
-    // NOLINTNEXTLINE(modernize-loop-convert): loop index is used in the body;
-    // range-for would drop it (clang-tidy FP)
+    // loop index is used in the body; range-for would drop it (clang-tidy FP)
+    // NOLINTNEXTLINE(modernize-loop-convert)
     for (int ch = 0; ch < NB_DMA_CHANNELS; ch++) {
       const auto& dma_ch = asic.dma.ch[ch];
       ImGui::PushID(ch);
@@ -2180,8 +2202,8 @@ void DevToolsUI::render_asic() {
   // Palette
   if (ImGui::CollapsingHeader("Palette")) {
     float const sz = 20.0f;
-    // NOLINTNEXTLINE(modernize-loop-convert): loop index is used in the body;
-    // range-for would drop it (clang-tidy FP)
+    // loop index is used in the body; range-for would drop it (clang-tidy FP)
+    // NOLINTNEXTLINE(modernize-loop-convert)
     for (int i = 0; i < 17; i++) {
       int const hw_color = GateArray.ink_values[i];
       float const r = static_cast<float>(colours_rgb[hw_color][0]);
@@ -2223,8 +2245,9 @@ void DevToolsUI::render_asic() {
 void DevToolsUI::render_disc_tools() {
   apply_default_window_layout(8, 520, 500);
 
-  // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated
+  // clang-tidy FP — variable is mutated
   // (out-param/compound-assign/loop/reference)
+  // NOLINTNEXTLINE(misc-const-correctness)
   bool open = true;
   if (!ImGui::Begin("Disc Tools", &open)) {
     if (!open) show_disc_tools_ = false;
@@ -2352,15 +2375,17 @@ void DevToolsUI::render_disc_tools() {
               imgui_toast_error("Cannot open: " + host_path);
               return;
             }
-            // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable
-            // is mutated (out-param/compound-assign/loop/reference)
+            // clang-tidy FP — variable is mutated
+            // (out-param/compound-assign/loop/reference)
+            // NOLINTNEXTLINE(misc-const-correctness)
             std::vector<uint8_t> const data((std::istreambuf_iterator<char>(f)),
                                             std::istreambuf_iterator<char>());
 
             // Convert filename to CPC 8.3
             auto fname = std::filesystem::path(host_path).filename().string();
-            // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable
-            // is mutated (out-param/compound-assign/loop/reference)
+            // clang-tidy FP — variable is mutated
+            // (out-param/compound-assign/loop/reference)
+            // NOLINTNEXTLINE(misc-const-correctness)
             std::string const cpc_name = disk_to_cpc_filename(fname);
             if (cpc_name.empty()) {
               imgui_toast_error("Cannot convert filename: " + fname);
@@ -2377,8 +2402,9 @@ void DevToolsUI::render_disc_tools() {
             if (subcycle_bridge_active() && d->tracks > 0) {
               (void)dsk_to_bytes(d, snapshot);
             }
-            // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable
-            // is mutated (out-param/compound-assign/loop/reference)
+            // clang-tidy FP — variable is mutated
+            // (out-param/compound-assign/loop/reference)
+            // NOLINTNEXTLINE(misc-const-correctness)
             std::string err = disk_write_file(d, cpc_name, data, false);
             if (err.empty() && subcycle_bridge_active() &&
                 !subcycle_bridge_push_drive_view(unit)) {
@@ -2442,13 +2468,13 @@ void DevToolsUI::render_disc_tools() {
                 if (subcycle_bridge_active()) {
                   subcycle_bridge_pull_drive_view(unit);
                 }
-                // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP —
-                // variable is mutated
+                // clang-tidy FP — variable is mutated
                 // (out-param/compound-assign/loop/reference)
+                // NOLINTNEXTLINE(misc-const-correctness)
                 t_drive* d = (self->dt_dialog_drive_ == 0) ? &driveA : &driveB;
-                // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP —
-                // variable is mutated
+                // clang-tidy FP — variable is mutated
                 // (out-param/compound-assign/loop/reference)
+                // NOLINTNEXTLINE(misc-const-correctness)
                 std::string err;
                 auto data = disk_read_file(d, self->dt_export_filename_, err);
                 lease.restore_run_state();
@@ -2594,8 +2620,9 @@ void DevToolsUI::render_disc_tools() {
 void DevToolsUI::render_data_areas() {
   apply_default_window_layout(9, 560, 350);
 
-  // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated
+  // clang-tidy FP — variable is mutated
   // (out-param/compound-assign/loop/reference)
+  // NOLINTNEXTLINE(misc-const-correctness)
   bool open = true;
   if (!ImGui::Begin("Data Areas", &open)) {
     if (!open) show_data_areas_ = false;
@@ -2616,11 +2643,11 @@ void DevToolsUI::render_data_areas() {
     bool const has_areas = !areas_tmp.empty();
     if (!has_areas) ImGui::BeginDisabled();
     if (ImGui::SmallButton("Export Marked Range")) {
-      // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
-      // mutated
+      // clang-tidy FP — variable is mutated.
+      // NOLINTNEXTLINE(misc-const-correctness)
       uint16_t lo = 0xFFFF;
-      // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
-      // mutated
+      // clang-tidy FP — variable is mutated.
+      // NOLINTNEXTLINE(misc-const-correctness)
       uint16_t hi = 0x0000;
       for (const auto& a : areas_tmp) {
         lo = std::min(a.start, lo);
@@ -2661,8 +2688,8 @@ void DevToolsUI::render_data_areas() {
         s <= e) {
       DataType const dt =
           (da_type_ == 0) ? DataType::BYTES
-          // NOLINTNEXTLINE(readability-avoid-nested-conditional-operator):
-          // nested conditional kept intentionally; no clang-tidy auto-fix
+          // nested conditional kept intentionally; no clang-tidy auto-fix.
+          // NOLINTNEXTLINE(readability-avoid-nested-conditional-operator)
           : (da_type_ == 1) ? DataType::WORDS
                             : DataType::TEXT;
       g_data_areas.mark(static_cast<uint16_t>(s), static_cast<uint16_t>(e), dt,
@@ -2745,8 +2772,8 @@ void DevToolsUI::render_disasm_export() {
     word const start =
         disasm_follow_pc_
             ? z80.PC.w.l
-            // NOLINTNEXTLINE(readability-avoid-nested-conditional-operator):
-            // nested conditional kept intentionally; no clang-tidy auto-fix
+            // nested conditional kept intentionally; no clang-tidy auto-fix.
+            // NOLINTNEXTLINE(readability-avoid-nested-conditional-operator)
             : (disasm_goto_value_ >= 0 ? static_cast<word>(disasm_goto_value_)
                                        : z80.PC.w.l);
     word const end = start + 0xFF;
@@ -2757,8 +2784,9 @@ void DevToolsUI::render_disasm_export() {
 
   apply_default_window_layout(10, 420, 450);
 
-  // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated
+  // clang-tidy FP — variable is mutated
   // (out-param/compound-assign/loop/reference)
+  // NOLINTNEXTLINE(misc-const-correctness)
   bool open = true;
   if (!ImGui::Begin("Disassembly Export", &open)) {
     if (!open) show_disasm_export_ = false;
@@ -2782,14 +2810,14 @@ void DevToolsUI::render_disasm_export() {
     if (parse_hex(dex_start_, &s_addr, 0xFFFF) &&
         parse_hex(dex_end_, &e_addr, 0xFFFF) && s_addr <= e_addr) {
       auto all_areas = g_data_areas.list();
-      // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
-      // mutated
+      // clang-tidy FP — variable is mutated.
+      // NOLINTNEXTLINE(misc-const-correctness)
       int byte_count = 0;
-      // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
-      // mutated
+      // clang-tidy FP — variable is mutated.
+      // NOLINTNEXTLINE(misc-const-correctness)
       int word_count = 0;
-      // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
-      // mutated
+      // clang-tidy FP — variable is mutated.
+      // NOLINTNEXTLINE(misc-const-correctness)
       int text_count = 0;
       for (const auto& a : all_areas) {
         if (a.end >= s_addr && a.start <= e_addr) {
@@ -2847,8 +2875,9 @@ void DevToolsUI::render_disasm_export() {
       oss << "; Disassembly export from konCePCja\n";
       oss << "org " << hexbuf << "\n\n";
 
-      // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
-      // mutated (out-param/compound-assign/loop/reference)
+      // clang-tidy FP — variable is mutated
+      // (out-param/compound-assign/loop/reference)
+      // NOLINTNEXTLINE(misc-const-correctness)
       DisassembledCode code;
       std::vector<dword> entry_points;
       word pos = static_cast<word>(start_addr);
@@ -2875,8 +2904,9 @@ void DevToolsUI::render_disasm_export() {
               g_data_areas.format_at(pos, membuf, buf_len, &line_bytes);
           oss << "  " << formatted << "\n";
           if (line_bytes == 0) line_bytes = 1;
-          // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
-          // mutated (out-param/compound-assign/loop/reference)
+          // clang-tidy FP — variable is mutated
+          // (out-param/compound-assign/loop/reference)
+          // NOLINTNEXTLINE(misc-const-correctness)
           unsigned int const next = static_cast<unsigned int>(pos) + line_bytes;
           if (next > 0xFFFF || next > end_addr + 1u) break;
           pos = static_cast<word>(next);
@@ -2949,8 +2979,8 @@ void DevToolsUI::render_disasm_export() {
           parse_hex(dex_mark_end_, &me, 0xFFFF) && ms <= me) {
         DataType const dt =
             (dex_mark_type_ == 0) ? DataType::BYTES
-            // NOLINTNEXTLINE(readability-avoid-nested-conditional-operator):
-            // nested conditional kept intentionally; no clang-tidy auto-fix
+            // nested conditional kept intentionally; no clang-tidy auto-fix.
+            // NOLINTNEXTLINE(readability-avoid-nested-conditional-operator)
             : (dex_mark_type_ == 1) ? DataType::WORDS
                                     : DataType::TEXT;
         g_data_areas.mark(static_cast<uint16_t>(ms), static_cast<uint16_t>(me),
@@ -2970,8 +3000,9 @@ void DevToolsUI::render_disasm_export() {
       ImGui::Separator();
       ImGui::Text("Preview:");
       ImGui::BeginChild("##dex_preview", ImVec2(0, 0), ImGuiChildFlags_Borders);
-      // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
-      // mutated (out-param/compound-assign/loop/reference)
+      // clang-tidy FP — variable is mutated
+      // (out-param/compound-assign/loop/reference)
+      // NOLINTNEXTLINE(misc-const-correctness)
       DisassembledCode preview_code;
       std::vector<dword> preview_eps;
       word pos = static_cast<word>(s_addr);
@@ -2997,8 +3028,9 @@ void DevToolsUI::render_disasm_export() {
           ImGui::Text("%04X  %s", pos, formatted.c_str());
           ImGui::PopStyleColor();
           if (line_bytes == 0) line_bytes = 1;
-          // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
-          // mutated (out-param/compound-assign/loop/reference)
+          // clang-tidy FP — variable is mutated
+          // (out-param/compound-assign/loop/reference)
+          // NOLINTNEXTLINE(misc-const-correctness)
           unsigned int const next = static_cast<unsigned int>(pos) + line_bytes;
           if (next > 0xFFFF || next > e_addr + 1u) break;
           pos = static_cast<word>(next);
@@ -3031,8 +3063,9 @@ void DevToolsUI::render_disasm_export() {
 void DevToolsUI::render_session_recording() {
   apply_default_window_layout(11, 400, 200);
 
-  // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated
+  // clang-tidy FP — variable is mutated
   // (out-param/compound-assign/loop/reference)
+  // NOLINTNEXTLINE(misc-const-correctness)
   bool open = true;
   if (!ImGui::Begin("Session Recording", &open)) {
     if (!open) show_session_recording_ = false;
@@ -3076,7 +3109,6 @@ void DevToolsUI::render_session_recording() {
     if (ImGui::Button("Record")) {
       if (sr_path_[0] != '\0') {
         std::string const snap_path = std::string(sr_path_) + ".sna";
-        extern int snapshot_save(const std::string&);
         if (snapshot_save(snap_path) == 0) {
           if (g_session.start_recording(sr_path_, snap_path))
             sr_status_ = "Recording started";
@@ -3092,11 +3124,11 @@ void DevToolsUI::render_session_recording() {
     ImGui::SameLine();
     if (ImGui::Button("Play")) {
       if (sr_path_[0] != '\0') {
-        // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
-        // mutated (out-param/compound-assign/loop/reference)
+        // clang-tidy FP — variable is mutated
+        // (out-param/compound-assign/loop/reference)
+        // NOLINTNEXTLINE(misc-const-correctness)
         std::string snap_path;
         if (g_session.start_playback(sr_path_, snap_path)) {
-          extern int snapshot_load(const std::string&);
           snapshot_load(snap_path);
           sr_status_ = "Playback started";
         } else {
@@ -3137,8 +3169,9 @@ void DevToolsUI::render_session_recording() {
 void DevToolsUI::render_gfx_finder() {
   apply_default_window_layout(12, 500, 500);
 
-  // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated
+  // clang-tidy FP — variable is mutated
   // (out-param/compound-assign/loop/reference)
+  // NOLINTNEXTLINE(misc-const-correctness)
   bool open = true;
   if (!ImGui::Begin("Graphics Finder", &open)) {
     if (!open) show_gfx_finder_ = false;
@@ -3243,8 +3276,8 @@ void DevToolsUI::render_gfx_finder() {
       int const mx = static_cast<int>((mouse.x - canvas_pos.x) / zoom);
       int const my = static_cast<int>((mouse.y - canvas_pos.y) / zoom);
       if (mx >= 0 && mx < pixel_w && my >= 0 && my < pixel_h) {
-        // NOLINTNEXTLINE(readability-avoid-nested-conditional-operator): nested
-        // conditional kept intentionally; no clang-tidy auto-fix
+        // nested conditional kept intentionally; no clang-tidy auto-fix.
+        // NOLINTNEXTLINE(readability-avoid-nested-conditional-operator)
         int const ppb = (gfx_mode_ == 0) ? 2 : (gfx_mode_ == 1) ? 4 : 8;
         int const byte_col = mx / ppb;
         size_t const byte_offset =
@@ -3311,8 +3344,9 @@ void DevToolsUI::render_gfx_finder() {
 void DevToolsUI::render_video_state() {
   apply_default_window_layout(13, 340, 420);
 
-  // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated
+  // clang-tidy FP — variable is mutated
   // (out-param/compound-assign/loop/reference)
+  // NOLINTNEXTLINE(misc-const-correctness)
   bool open = true;
   if (!ImGui::Begin("Video State", &open)) {
     if (!open) show_video_state_ = false;
@@ -3332,11 +3366,12 @@ void DevToolsUI::render_video_state() {
       "R12: Start Addr H", "R13: Start Addr L", "R14: Cursor H",
       "R15: Cursor L",     "R16: LPEN H",       "R17: LPEN L"};
 
-  // NOLINTNEXTLINE(modernize-loop-convert): loop index is used in the body;
-  // range-for would drop it (clang-tidy FP)
+  // loop index is used in the body; range-for would drop it (clang-tidy FP)
+  // NOLINTNEXTLINE(modernize-loop-convert)
   for (int i = 0; i < 18; i++) {
-    // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
-    // mutated (out-param/compound-assign/loop/reference)
+    // clang-tidy FP — variable is mutated
+    // (out-param/compound-assign/loop/reference)
+    // NOLINTNEXTLINE(misc-const-correctness)
     unsigned char val = CRTC.registers[i];
     ImGui::SetNextItemWidth(ui_dpi_px(50));
     ImGui::InputScalar(crtc_names[i], ImGuiDataType_U8, &val, nullptr, nullptr,
@@ -3442,8 +3477,9 @@ void draw_scope_strip(const char* label, ImU32 color,
 void DevToolsUI::render_audio_state() {
   apply_default_window_layout(14, 420, 600);
 
-  // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated
+  // clang-tidy FP — variable is mutated
   // (out-param/compound-assign/loop/reference)
+  // NOLINTNEXTLINE(misc-const-correctness)
   bool open = true;
   if (!ImGui::Begin("Audio State", &open)) {
     if (!open) show_audio_state_ = false;
@@ -3555,8 +3591,9 @@ void DevToolsUI::render_audio_state() {
 void DevToolsUI::render_drive_sound_lab() {
   apply_default_window_layout(17, 440, 640);
 
-  // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated
+  // clang-tidy FP — variable is mutated
   // (out-param/compound-assign/loop/reference)
+  // NOLINTNEXTLINE(misc-const-correctness)
   bool open = true;
   if (!ImGui::Begin("Drive Sound Lab", &open)) {
     if (!open) show_drive_sound_lab_ = false;
@@ -3637,11 +3674,13 @@ void DevToolsUI::render_drive_sound_lab() {
       g_drive_sounds.seek_playing = true;
     }
     ImGui::SameLine();
-    // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
-    // mutated (out-param/compound-assign/loop/reference)
+    // clang-tidy FP — variable is mutated
+    // (out-param/compound-assign/loop/reference)
+    // NOLINTNEXTLINE(misc-const-correctness)
     static bool auto_seek = false;
-    // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
-    // mutated (out-param/compound-assign/loop/reference)
+    // clang-tidy FP — variable is mutated
+    // (out-param/compound-assign/loop/reference)
+    // NOLINTNEXTLINE(misc-const-correctness)
     static int auto_every = 6;
     static int auto_ctr = 0;
     ImGui::Checkbox("Auto-repeat", &auto_seek);
@@ -3734,8 +3773,9 @@ std::string format_size(uint64_t bytes) {
 void DevToolsUI::render_recording_controls() {
   apply_default_window_layout(15, 420, 400);
 
-  // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated
+  // clang-tidy FP — variable is mutated
   // (out-param/compound-assign/loop/reference)
+  // NOLINTNEXTLINE(misc-const-correctness)
   bool open = true;
   if (!ImGui::Begin("Recording Controls", &open)) {
     if (!open) show_recording_controls_ = false;
@@ -4090,9 +4130,10 @@ std::string asm_build_source_with_org(const char* source,
     if (nsp == std::string::npos) continue;  // empty line
     if (line[nsp] == ';') continue;          // pure comment
     // Check if this line starts with org (possibly after a label)
-    // NOLINTNEXTLINE(misc-const-correctness,performance-unnecessary-copy-initialization):
+    //
     // clang-tidy FP — variable is mutated
     // (out-param/compound-assign/loop/reference)
+    // NOLINTNEXTLINE(misc-const-correctness,performance-unnecessary-copy-initialization)
     std::string upper_line = line;
     for (auto& c : upper_line)
       c = static_cast<char>(toupper(static_cast<unsigned char>(c)));
@@ -4110,8 +4151,9 @@ std::string asm_build_source_with_org(const char* source,
 
 void DevToolsUI::render_assembler() {
   apply_default_window_layout(16, 700, 550);
-  // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated
+  // clang-tidy FP — variable is mutated
   // (out-param/compound-assign/loop/reference)
+  // NOLINTNEXTLINE(misc-const-correctness)
   bool open = true;
   if (!ImGui::Begin("Assembler##devtools", &open)) {
     ImGui::End();

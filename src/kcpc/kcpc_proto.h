@@ -101,7 +101,9 @@ enum class Opcode : std::uint16_t {
   kEvtShutdown = 0x800B,
 };
 
-// Section 5.
+// Section 5. The wire field is a u16 (encode_error() writes it so), and
+// codes are reserved up to there; the 16-bit base type is the protocol.
+// NOLINTNEXTLINE(performance-enum-size)
 enum class Status : std::uint16_t {
   kOk = 0,
   kBadFrame = 1,

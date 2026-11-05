@@ -438,8 +438,10 @@ bool M4HttpServer::parse_request(const std::string& raw, HttpRequest& req) {
   while (std::getline(hstream, hline)) {
     if (!hline.empty() && hline.back() == '\r') hline.pop_back();
     // Case-insensitive header matching
-    // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
-    // mutated (out-param/compound-assign/loop/reference)
+    //
+    // clang-tidy FP — variable is mutated
+    // (out-param/compound-assign/loop/reference)
+    // NOLINTNEXTLINE(misc-const-correctness)
     std::string lower_line = hline;
     for (auto& c : lower_line)
       c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
@@ -1744,9 +1746,9 @@ void M4HttpServer::run() {
         size_t const hdr_end = raw.find("\r\n\r\n");
         if (hdr_end != std::string::npos) {
           headers_complete = true;
-          // NOLINTNEXTLINE(misc-const-correctness,performance-unnecessary-copy-initialization):
           // clang-tidy FP — variable is mutated
           // (out-param/compound-assign/loop/reference)
+          // NOLINTNEXTLINE(misc-const-correctness,performance-unnecessary-copy-initialization)
           std::string lower = raw;
           for (auto& c : lower)
             c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
@@ -1801,8 +1803,8 @@ void M4HttpServer::run() {
           // Ping frames (0x9) are ignored — browser rarely sends them
           // but a compliant client might.
           char peek_buf[2];
-// NOLINTNEXTLINE(readability-redundant-preprocessor): guard retained for
-// cross-platform clarity
+// guard retained for cross-platform clarity.
+// NOLINTNEXTLINE(readability-redundant-preprocessor)
 #ifdef _WIN32
           u_long avail = 0;
           ioctlsocket(client, FIONREAD, &avail);

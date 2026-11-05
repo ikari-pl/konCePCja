@@ -1,6 +1,6 @@
 #include "host_clock.h"
 
-#if defined(__APPLE__)
+#ifdef __APPLE__
 #include <mach/mach.h>
 #include <mach/mach_time.h>
 #include <mach/thread_policy.h>
@@ -59,7 +59,7 @@ void host_delay_ms(uint32_t ms) {
 
 #endif
 
-#if defined(__APPLE__)
+#ifdef __APPLE__
 
 void host_pacing_thread(bool on, uint32_t period_us, uint32_t busy_us) {
   thread_port_t const self = mach_thread_self();

@@ -493,8 +493,9 @@ class Parser {
 
 // ─── Public API: parse ──────────────────────────────────────────────
 
-// NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other
-// translation units/tests; internal linkage would break the link
+// external API consumed by other translation units/tests; internal linkage
+// would break the link.
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 namespace {
 // Forward declarations of the evaluator's name authorities, used at parse
 // time so an unknown name is an error the user sees when arming, not a
@@ -527,8 +528,9 @@ bool validate_names(const ExprNode* node, std::string& error) {
 
 std::unique_ptr<ExprNode> expr_parse(const std::string& input,
                                      std::string& error) {
-  // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated
+  // clang-tidy FP — variable is mutated
   // (out-param/compound-assign/loop/reference)
+  // NOLINTNEXTLINE(misc-const-correctness)
   Parser p(input);
   auto ast = p.parse(error);
   if (ast && !validate_names(ast.get(), error)) return nullptr;
@@ -550,8 +552,9 @@ int32_t resolve_variable_impl(const std::string& name, const ExprContext& ctx,
   const t_z80regs& z = *ctx.z80;
 
   // Normalize to lowercase for uniform matching
-  // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — std::transform
-  // writes in place
+  //
+  // clang-tidy FP — std::transform writes in place.
+  // NOLINTNEXTLINE(misc-const-correctness)
   std::string n = name;
   std::transform(n.begin(), n.end(), n.begin(),
                  [](unsigned char c) { return std::tolower(c); });
