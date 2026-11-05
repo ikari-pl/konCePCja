@@ -832,10 +832,10 @@ clang-tidy:
 	./tools/check_includes.sh
 
 # clang-tidy over the files a change touches only, failing on a finding that is
-# not already at BASE (beads-myd6).  The whole-tree target above can only ever
-# be informational: the tree carries a few hundred findings, and every file
-# prints "N warnings generated" whether or not it has one, so it never passes.
-# This is the gate CI runs on a pull request.
+# not already at BASE (beads-myd6).  The whole-tree target above fails on any
+# finding anywhere, and the files other branches have open still carry some
+# (beads-44jk), so CI keeps it informational.  This is the gate CI runs on a
+# pull request.
 BASE ?= origin/master
 clang-tidy-changed:
 	CLANG_TIDY="$(CLANG_TIDY)" ./tools/clang_tidy_changed.sh --base $(BASE) \

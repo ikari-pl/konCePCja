@@ -1,17 +1,17 @@
 #!/bin/bash
 # clang-tidy gate for the files a change touches (beads-myd6).
 #
-# `make clang-tidy` runs every translation unit and can only be informational:
-# the tree carries a few hundred findings, so it never passes and CI keeps it
-# `continue-on-error`. That means a NEW finding never fails anything.
+# `make clang-tidy` runs every translation unit and fails on any finding, and
+# the tree still carries some, so CI keeps it `continue-on-error`. On its own
+# that means a NEW finding never fails anything.
 #
 # This script runs clang-tidy on just the changed files and fails on a finding
 # that is not already in the baseline. Two things make that honest:
 #
-#  * It parses real diagnostics (`file:line:col: warning: ... [check]`) and
-#    never `grep .` the output: every file prints "N warnings generated" and
-#    "Suppressed N warnings (N in non-user code)" even when it is clean, so the
-#    old target's `grep "."` marks every file dirty by construction.
+#  * It parses real diagnostics (`file:line:col: warning: ... [check]`) from
+#    clang-tidy's merged output. clang-tidy also prints "N warnings generated"
+#    and "Suppressed N warnings" (to stderr) for clean files, so counting
+#    lines of output would call every file dirty.
 #
 #  * It subtracts the baseline. A changed file inherits the findings of the
 #    first-party headers it includes (via -header-filter), and 40-odd files
