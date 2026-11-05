@@ -31,7 +31,7 @@ permissions:
 jobs:
   compile-dxbc:
     name: Compile HLSL → DXBC and regenerate C++ headers
-    runs-on: windows-latest
+    runs-on: windows-2022
     # Skip auto-commits triggered by this workflow itself, otherwise we'd
     # loop.  The marker is the bot's commit message prefix below.
     if: ${{ github.event.head_commit.message == null || !startsWith(github.event.head_commit.message, 'chore(shaders):') }}
@@ -125,7 +125,7 @@ jobs:
 
   compile-spirv:
     name: Compile GLSL → SPIRV and regenerate C++ headers
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     # Same anti-loop guard as compile-dxbc — skip when this workflow's own
     # auto-commit triggers another run.
     if: ${{ github.event.head_commit.message == null || !startsWith(github.event.head_commit.message, 'chore(shaders):') }}
