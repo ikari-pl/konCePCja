@@ -14,6 +14,7 @@
 #include <cstring>
 #include <fstream>
 #include <sstream>
+#include <string>
 #include <vector>
 
 #include "diff_harness.h"

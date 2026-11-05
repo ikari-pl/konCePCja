@@ -3,6 +3,7 @@
 #include "log.h"
 
 #include <mutex>
+#include <string>
 
 // Set once at startup by the -v/--verbose CLI flag; read by the LOG_VERBOSE
 // and LOG_DEBUG macros.

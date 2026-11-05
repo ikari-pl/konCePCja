@@ -6,6 +6,7 @@
 #include <filesystem>
 #include <map>
 #include <set>
+#include <string>
 
 #include "hw_views.h"
 

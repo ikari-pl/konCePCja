@@ -14,6 +14,7 @@
 #include "expr_parser.h"
 
 #include <gtest/gtest.h>
+#include <string>
 
 #include "z80_view.h"
 

@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <string>
 
 namespace stringutils {
 namespace {

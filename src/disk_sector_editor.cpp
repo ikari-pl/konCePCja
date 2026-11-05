@@ -2,6 +2,7 @@
 
 #include <cstring>
 #include <sstream>
+#include <string>
 
 #include "hw_views.h"
 

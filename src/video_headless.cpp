@@ -14,6 +14,8 @@
 #include "koncepcja.h"
 #include "video_plugin.h"
 
+#include <string>
+
 std::atomic<bool> g_repaint_pending{false};
 std::atomic<bool> g_repaint_done{false};
 std::mutex g_repaint_mutex;

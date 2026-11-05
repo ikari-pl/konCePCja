@@ -8,6 +8,7 @@
 
 #include <cstring>
 #include <fstream>
+#include <string>
 
 #include "gif_recorder.h"
 

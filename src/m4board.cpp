@@ -6,6 +6,7 @@
 #include <cstring>
 #include <ctime>
 #include <filesystem>
+#include <string>
 
 #include "disk_file_editor.h"
 #include "hw_views.h"

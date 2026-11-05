@@ -14,6 +14,8 @@
 
 #include "iui_host.h"
 
+#include <string>
+
 class ImGuiUiHost final : public IUiHost {
  public:
   void process_event(const SDL_Event& ev) override;

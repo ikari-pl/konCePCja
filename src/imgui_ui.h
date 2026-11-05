@@ -14,6 +14,8 @@
 #include "imgui.h"
 #include "imgui_state.h"
 
+#include <string>
+
 // Scale a hand-tuned pixel constant by the display's DPI scale.
 //
 // Hard-coded sizes (window sizes, item widths, paddings) are in ImGui

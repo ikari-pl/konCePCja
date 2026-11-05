@@ -26,6 +26,7 @@
 #include <cstring>
 #include <filesystem>
 #include <sstream>
+#include <string>
 
 #include "autotype.h"
 #include "kcpc/kcpc_host.h"

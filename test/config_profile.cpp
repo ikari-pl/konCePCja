@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <filesystem>
 #include <fstream>
+#include <string>
 
 #include "koncepcja.h"  // JoystickEmulation / KeyboardSupportMode
 

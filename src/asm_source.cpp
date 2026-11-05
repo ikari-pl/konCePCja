@@ -2,6 +2,7 @@
 
 #include "asm_source.h"
 
+#include <string>
 #include <utility>
 
 AsmSourceStore g_asm_source;

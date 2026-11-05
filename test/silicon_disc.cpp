@@ -4,6 +4,7 @@
 
 #include <cstring>
 #include <filesystem>
+#include <string>
 
 namespace {
 

@@ -11,6 +11,8 @@
 
 #include "gtest/gtest.h"
 
+#include <string>
+
 namespace {
 
 // Source rate the generators bake at (drive_sounds.cpp GEN_RATE).

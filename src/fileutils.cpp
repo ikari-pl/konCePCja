@@ -11,6 +11,7 @@
 #include <array>
 #include <ctime>
 #include <filesystem>
+#include <string>
 
 #include "log.h"
 

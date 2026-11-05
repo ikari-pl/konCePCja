@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cctype>
 #include <map>
+#include <string>
 #include <utility>
 
 #include "flux_save.h"  // flux_write_file

@@ -1,6 +1,8 @@
 #include "z80_assembler.h"
 
 #include <gtest/gtest.h>
+#include <map>
+#include <string>
 
 #include "koncepcja.h"
 #include "z80_opcode_table.h"
