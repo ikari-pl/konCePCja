@@ -1231,8 +1231,8 @@ extern "C" {
 size_t fdc_state_size(void) { return sizeof(fdc_state); }
 
 Device fdc_init(void* storage) {
-  // NOLINTNEXTLINE(misc-const-correctness): pointer is stored in Device::self
-  // (void*), cannot be const
+  // The pointer is stored in Device::self (void*), so it cannot be const.
+  // NOLINTNEXTLINE(misc-const-correctness)
   fdc_state* f = new (storage) fdc_state();
   return Device{f,        "fdc",   fdc_tick, fdc_dev_reset, fdc_dev_state_size,
                 fdc_save, fdc_load};

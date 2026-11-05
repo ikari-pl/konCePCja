@@ -147,6 +147,8 @@ extern "C" {
 size_t cpct_tap_state_size(void) { return sizeof(tap_state); }
 
 Device cpct_tap_init(void* storage) {
+  // The pointer is stored in Device::self (void*), so it cannot be const.
+  // NOLINTNEXTLINE(misc-const-correctness)
   tap_state* t = new (storage) tap_state();
   Device dev = {};
   dev.self = t;

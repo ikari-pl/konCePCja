@@ -32,8 +32,11 @@ inline void koncpc_enable_app_nap() {}
 inline void koncpc_activate_app() {}
 inline void koncpc_restore_keyboard_focus() {}
 inline void koncpc_order_viewports_above_main() {}
-inline void koncpc_set_window_click_through(SDL_Window*) {}
-inline void koncpc_set_dock_icon(const char*) {}
-inline void koncpc_update_dock_icon_preview(const void*, int, int, int, int,
-                                            int, int, int) {}
+inline void koncpc_set_window_click_through(SDL_Window* /*window*/) {}
+inline void koncpc_set_dock_icon(const char* /*png_path*/) {}
+inline void koncpc_update_dock_icon_preview(const void* /*pixels*/,
+                                            int /*surface_w*/,
+                                            int /*surface_h*/, int /*pitch*/,
+                                            int /*vis_x*/, int /*vis_y*/,
+                                            int /*vis_w*/, int /*vis_h*/) {}
 #endif

@@ -454,8 +454,8 @@ uint32_t tape_cdt_block_len(const uint8_t* cdt, uint32_t len, uint32_t pos) {
 }
 
 Device tape_init(void* storage) {
-  // NOLINTNEXTLINE(misc-const-correctness): pointer is stored in Device::self
-  // (void*), cannot be const
+  // The pointer is stored in Device::self (void*), so it cannot be const.
+  // NOLINTNEXTLINE(misc-const-correctness)
   tape_state* t = new (storage) tape_state();
   Device dev = {};
   dev.self = t;

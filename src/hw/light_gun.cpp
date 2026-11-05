@@ -87,8 +87,8 @@ extern "C" {
 size_t light_gun_state_size(void) { return sizeof(light_gun_state); }
 
 Device light_gun_init(void* storage) {
-  // NOLINTNEXTLINE(misc-const-correctness): pointer is stored in Device::self
-  // (void*), cannot be const
+  // The pointer is stored in Device::self (void*), so it cannot be const.
+  // NOLINTNEXTLINE(misc-const-correctness)
   light_gun_state* g = new (storage) light_gun_state();
   return Device{g,
                 "light-gun",

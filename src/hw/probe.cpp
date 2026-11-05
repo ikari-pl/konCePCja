@@ -176,8 +176,8 @@ extern "C" {
 size_t probe_state_size(void) { return sizeof(probe_state); }
 
 Device probe_init(void* storage) {
-  // NOLINTNEXTLINE(misc-const-correctness): pointer is stored in Device::self
-  // (void*), cannot be const
+  // The pointer is stored in Device::self (void*), so it cannot be const.
+  // NOLINTNEXTLINE(misc-const-correctness)
   probe_state* p = new (storage) probe_state();
   Device dev = {};
   dev.self = p;

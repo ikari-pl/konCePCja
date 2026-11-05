@@ -171,8 +171,8 @@ extern "C" {
 size_t ppi_state_size(void) { return sizeof(ppi_state); }
 
 Device ppi_init(void* storage) {
-  // NOLINTNEXTLINE(misc-const-correctness): pointer is stored in Device::self
-  // (void*), cannot be const
+  // The pointer is stored in Device::self (void*), so it cannot be const.
+  // NOLINTNEXTLINE(misc-const-correctness)
   ppi_state* p = new (storage) ppi_state();
   return Device{p,        "ppi",   ppi_tick, ppi_reset, ppi_dev_state_size,
                 ppi_save, ppi_load};
