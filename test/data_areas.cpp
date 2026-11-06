@@ -1,6 +1,7 @@
 #include "data_areas.h"
 
 #include <gtest/gtest.h>
+
 #include <string>
 
 namespace {

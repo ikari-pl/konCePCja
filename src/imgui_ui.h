@@ -11,10 +11,10 @@
 // headless-safe.  This header re-exports `imgui_state.h` so existing
 // modern-UI callers keep compiling unchanged.
 
+#include <string>
+
 #include "imgui.h"
 #include "imgui_state.h"
-
-#include <string>
 
 // Scale a hand-tuned pixel constant by the display's DPI scale.
 //

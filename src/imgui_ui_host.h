@@ -12,9 +12,9 @@
 
 #pragma once
 
-#include "iui_host.h"
-
 #include <string>
+
+#include "iui_host.h"
 
 class ImGuiUiHost final : public IUiHost {
  public:

@@ -9,9 +9,9 @@
 
 #include "drive_sounds.h"
 
-#include "gtest/gtest.h"
-
 #include <string>
+
+#include "gtest/gtest.h"
 
 namespace {
 
