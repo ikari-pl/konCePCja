@@ -84,3 +84,18 @@ TEST(VJoyMap, NonOneTargetIsJoy0) {
   EXPECT_TRUE(has_key(vjoy_active_keys(2, VJOY_UP), CPC_J0_UP));
   EXPECT_TRUE(has_key(vjoy_active_keys(-1, VJOY_UP), CPC_J0_UP));
 }
+
+// JoystickToKeys: a controller presses the bound CPC keys, in VJOY_* bit
+// order, for either slot; a null binding table keeps the joystick bits.
+TEST(VJoystickMap, ControllerKeysUseTheBindingTableWhenGiven) {
+  int const bound[6] = {CPC_Q, CPC_A, CPC_O, CPC_P, CPC_SPACE, CPC_RETURN};
+  VJoyKeys const one = vjoy_controller_keys(1, VJOY_LEFT, bound);
+  ASSERT_EQ(1, one.count);
+  EXPECT_EQ(CPC_O, one.keys[0]);
+  VJoyKeys const all = vjoy_controller_keys(0, VJOY_ALL, bound);
+  ASSERT_EQ(6, all.count);
+  for (int i = 0; i < 6; ++i) EXPECT_EQ(bound[i], all.keys[i]);
+  VJoyKeys const joy = vjoy_controller_keys(1, VJOY_FIRE1, nullptr);
+  ASSERT_EQ(1, joy.count);
+  EXPECT_EQ(CPC_J1_FIRE1, joy.keys[0]);
+}

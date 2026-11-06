@@ -201,12 +201,23 @@ enum class KeyboardSupportMode : std::uint8_t {
 JoystickEmulation nextJoystickEmulation(JoystickEmulation current);
 std::string JoystickEmulationToString(JoystickEmulation value);
 
+// Press/release one control (one vjoy::VJOY_* bit) of controller `slot`
+// (0 or 1). Every SDL gamepad/joystick event ends here; the joystick
+// emulation mode decides what the control presses (kon_cpc_ja.cpp).
+void controller_apply_bit(int slot, unsigned bit, bool pressed);
+
 // Config keys for the six CPC keys a stick presses in
 // JoystickEmulation::JoystickToKeys, in the order up, down, left, right,
 // fire1, fire2. One list, so the loader and the writer cannot drift.
 inline constexpr const char* kJoyToKeySlots[6] = {
     "joy_to_keys_up",    "joy_to_keys_down",  "joy_to_keys_left",
-    "joy_to_keys_right", "joy_to_keys_fire1", "joy_to_keys_fire2"};
+    "joy_to_keys_right", "joy_to_keys_fire1", "joy_to_keys_fire2",
+};
+// Their defaults: cursor keys, Space and Return.
+inline constexpr const char* kJoyToKeyDefaults[6] = {
+    "CPC_CUR_UP",    "CPC_CUR_DOWN", "CPC_CUR_LEFT",
+    "CPC_CUR_RIGHT", "CPC_SPACE",    "CPC_RETURN",
+};
 
 // Expansion-device settings from the config file. loadConfiguration() fills
 // this and saveConfiguration() writes it back; neither touches the device

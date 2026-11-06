@@ -1,5 +1,7 @@
 #include <gtest/gtest.h>
 
+#include <filesystem>
+#include <fstream>
 #include <string>
 
 #include "host_chords.h"
@@ -146,4 +148,70 @@ TEST_F(InputMapperTest, NativeMenuHostChordsAreTextNotKeyEquivalents) {
             koncpc_menu_title_with_shortcut(
                 "About konCePCja", host_chord_label(HostChord::None, true)));
   EXPECT_EQ("", koncpc_menu_title_with_shortcut(nullptr, ""));
+}
+
+// Every shipped host layout must load: load_layout() rejects a file that maps
+// one CPC key twice or one host key (with its modifiers) to two CPC keys, and
+// init() ignores that verdict, so a broken file would silently lose keys at
+// runtime. Nothing loaded the shipped files before (beads-avox).
+TEST(InputMapperLayouts, EveryShippedLayoutLoadsWithoutDuplicates) {
+  int checked = 0;
+  for (const auto& entry : std::filesystem::directory_iterator("resources")) {
+    if (entry.path().extension() != ".map") continue;
+    SCOPED_TRACE(entry.path().string());
+    InputMapper mapper(&CPC);
+    EXPECT_TRUE(mapper.load_layout(entry.path().string()));
+    ++checked;
+  }
+  EXPECT_GE(checked, 10);
+}
+
+// The check above has teeth: the same host key + modifier on two CPC keys
+// (what the review of #152 suspected in the positional map) is rejected,
+// while the same host key with and without Shift is two distinct bindings.
+TEST(InputMapperLayouts, DuplicateHostKeyIsRejected) {
+  std::filesystem::path const dir = std::filesystem::temp_directory_path();
+  std::filesystem::path const dup = dir / "koncpc_dup_host_key.map";
+  std::filesystem::path const split = dir / "koncpc_split_host_key.map";
+  {
+    std::ofstream f(dup);
+    f << "CPC_PIPE\tSDLK_BACKSLASH\nCPC_BACKSLASH\tSDLK_BACKSLASH\n";
+  }
+  {
+    std::ofstream f(split);
+    f << "CPC_PIPE\tSDLK_BACKSLASH\n"
+         "CPC_BACKSLASH\tSDLK_BACKSLASH\tMOD_PC_SHIFT\n";
+  }
+  InputMapper a(&CPC);
+  EXPECT_FALSE(a.load_layout(dup.string()));
+  InputMapper b(&CPC);
+  EXPECT_TRUE(b.load_layout(split.string()));
+  std::filesystem::remove(dup);
+  std::filesystem::remove(split);
+}
+
+// The positional layout keeps '|', '{' and '[' reachable: each sits on its own
+// host key + modifier pair, not on a key another CPC key already took.
+TEST_F(InputMapperTest, PositionalLayoutReachesPipeAndBrackets) {
+  CPC.kbd_layout = "keymap_positional.map";
+  CPC.InputMapper->init();
+  InputMapper& m = *CPC.InputMapper;
+  EXPECT_EQ(CPC_PIPE, m.CPCkeyFromKeysym(SDLK_BACKSLASH, SDL_KMOD_NONE));
+  EXPECT_EQ(CPC_BACKSLASH, m.CPCkeyFromKeysym(SDLK_BACKSLASH, SDL_KMOD_LSHIFT));
+  EXPECT_EQ(CPC_LCBRACE, m.CPCkeyFromKeysym(SDLK_LEFTBRACKET, SDL_KMOD_NONE));
+  EXPECT_EQ(CPC_LBRACKET,
+            m.CPCkeyFromKeysym(SDLK_LEFTBRACKET, SDL_KMOD_LSHIFT));
+  EXPECT_EQ(CPC_COLON, m.CPCkeyFromKeysym(SDLK_SEMICOLON, SDL_KMOD_NONE));
+  CPC.kbd_layout = "keymap_us.map";
+  CPC.InputMapper->init();
+}
+
+// Finding #6: the stick-to-keys defaults are key names the config loader
+// resolves; a renamed CPC key would otherwise warn and fall back on every
+// start.
+TEST(InputMapperNames, JoyToKeysDefaultsResolve) {
+  for (const char* name : kJoyToKeyDefaults) {
+    EXPECT_GE(InputMapper::CPCkeyFromName(name), 0) << name;
+  }
+  EXPECT_EQ(-1, InputMapper::CPCkeyFromName("CPC_NO_SUCH_KEY"));
 }

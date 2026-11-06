@@ -406,9 +406,6 @@ class InputMapper {
   // CPC key by its layout-file name (e.g. "CPC_COLON"): -1 when the name is
   // not in the table. The config loader uses it for stick-to-key bindings.
   static int CPCkeyFromName(const std::string& name);
-  CPCScancode CPCscancodeFromJoystickButton(SDL_JoyButtonEvent jbutton);
-  void CPCscancodeFromJoystickAxis(SDL_JoyAxisEvent jaxis, CPCScancode* cpc_key,
-                                   bool& release);
   void set_joystick_emulation();
   // Human-readable host shortcut(s) currently bound to an emulator command,
   // derived from the live binding map so menu/UI hints can never drift from the
