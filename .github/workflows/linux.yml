@@ -109,10 +109,9 @@ jobs:
       # beads-z6jj surfaced; now it is ours (beads-p2qa). `debug` runs
       # unit_test, so the whole suite runs under it.
       - run: make -j 3 debug HARDEN=1 CFLAGS="-Wno-literal-suffix -Wno-old-style-cast"
-      # clang-tidy: the whole tree is informational only. The tree carries a
-      # few hundred findings, and every file prints "N warnings generated"
-      # whether or not it has one, so this can never pass -- it reports and
-      # moves on. The gate is the step below (beads-myd6).
+      # clang-tidy: the whole tree is informational only. It fails on any
+      # finding anywhere, and some remain in files other branches have open
+      # (beads-44jk). The gate is the step below (beads-myd6).
       - name: clang-tidy (whole tree, informational)
         continue-on-error: true
         run: |

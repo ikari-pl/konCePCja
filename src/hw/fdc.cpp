@@ -1300,7 +1300,7 @@ void fdc_media_mark_dirty_unit(const Device* dev, uint8_t unit) {
   // Flux hybrid: promote every track so subsequent reads serve the overlay
   // the host just wrote (otherwise clean tracks keep the pristine flux cache).
   if (m->backing == FDC_BACKING_FLUX) {
-    for (int t = 0; t < kMaxTracks; ++t) m->track_dirty[t] = true;
+    for (bool& dirty : m->track_dirty) dirty = true;
   }
 }
 

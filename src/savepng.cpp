@@ -65,8 +65,8 @@ void on_png_flush(png_structp /*unused*/) {}
 // RAII owner of the png_struct / png_info pair.
 class PngWriter {
  public:
-  // NOLINTNEXTLINE(modernize-use-equals-default): constructor has a member
-  // initializer; = default is not equivalent
+  // constructor has a member initializer; = default is not equivalent.
+  // NOLINTNEXTLINE(modernize-use-equals-default)
   explicit PngWriter(PngSink* sink)
       : png_(png_create_write_struct(PNG_LIBPNG_VER_STRING, sink, on_png_error,
                                      nullptr)) {
@@ -93,8 +93,8 @@ class PngWriter {
 // would be undefined behaviour). Returns false with the error in the sink.
 bool encode(png_structp png, png_infop info, PngSink* sink, int width,
             int height, png_bytep* rows) {
-  // NOLINTNEXTLINE(modernize-avoid-setjmp-longjmp): libpng's error handling
-  // mandates setjmp/longjmp
+  // libpng's error handling mandates setjmp/longjmp.
+  // NOLINTNEXTLINE(modernize-avoid-setjmp-longjmp)
   if (setjmp(png_jmpbuf(png)) != 0) return false;  // arrived via on_png_error
   png_set_write_fn(png, sink, on_png_write, on_png_flush);
   png_set_IHDR(png, info, width, height, 8, PNG_COLOR_TYPE_RGB_ALPHA,
@@ -108,8 +108,9 @@ bool encode(png_structp png, png_infop info, PngSink* sink, int width,
 
 }  // namespace
 
-// NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other
-// translation units; internal linkage would break the link
+// external API consumed by other translation units; internal linkage would
+// break the link.
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 int save_png_rgba32(const uint8_t* pixels, int width, int height, int pitch,
                     const std::string& file, std::string& error) {
   if (pixels == nullptr || width <= 0 || height <= 0 || pitch < width * 4) {
@@ -123,16 +124,18 @@ int save_png_rgba32(const uint8_t* pixels, int width, int height, int pitch,
     return -1;
   }
 
-  // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated
+  // clang-tidy FP — variable is mutated
   // (out-param/compound-assign/loop/reference)
+  // NOLINTNEXTLINE(misc-const-correctness)
   bool encoded = false;
   {
     PngWriter const writer(&sink);
     if (writer.ok()) {
       // One row pointer per scanline (pitch-aware). libpng only reads them.
       std::vector<png_bytep> rows(static_cast<size_t>(height));
-      // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast): png_write_image
-      // takes non-const row pointers but never writes through them
+      // png_write_image takes non-const row pointers but never writes through
+      // them.
+      // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
       png_bytep base = const_cast<png_bytep>(pixels);
       for (int y = 0; y < height; y++)
         rows[static_cast<size_t>(y)] =
@@ -166,10 +169,10 @@ struct SurfaceDeleter {
 using SurfacePtr = std::unique_ptr<SDL_Surface, SurfaceDeleter>;
 }  // namespace
 
-// NOLINTNEXTLINE(misc-use-internal-linkage,readability-non-const-parameter):
 // external API consumed by other translation units/tests; internal linkage
 // would break the link; pointer written through a cast or passed to a non-const
-// callee
+// callee.
+// NOLINTNEXTLINE(misc-use-internal-linkage,readability-non-const-parameter)
 int SDL_SavePNG(SDL_Surface* src, const std::string& file) {
   if (src == nullptr) {
     SDL_SetError("SDL_SavePNG: surface must not be null");

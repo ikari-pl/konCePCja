@@ -86,7 +86,7 @@ class KoncepcjaIpcServer {
   void wait_frame_step_done(uint64_t ticket);
 
   // How wait_frame_step_until() ended.
-  enum class FrameStepWait {
+  enum class FrameStepWait : std::uint8_t {
     Done,        // the counted frames ran; the main loop paused the machine
     Breakpoint,  // a breakpoint/watchpoint stopped the machine first
     Timeout,     // the deadline passed first

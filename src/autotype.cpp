@@ -12,9 +12,9 @@ AutoTypeQueue g_autotype_queue;
 // Returns -1 if not found.
 namespace {
 int resolve_key_name(const std::string& name) {
-  // NOLINTNEXTLINE(misc-const-correctness,performance-unnecessary-copy-initialization):
   // clang-tidy FP — variable is mutated
   // (out-param/compound-assign/loop/reference)
+  // NOLINTNEXTLINE(misc-const-correctness,performance-unnecessary-copy-initialization)
   std::string upper = name;
   for (auto& c : upper)
     c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
@@ -214,11 +214,13 @@ bool AutoTypeQueue::has_pending_command(uint16_t koncpc_cmd) const {
 
 void AutoTypeQueue::enqueue_legacy(const std::string& text) {
   std::scoped_lock const lock(mutex_);
-  // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated
+  // clang-tidy FP — variable is mutated
   // (out-param/compound-assign/loop/reference)
+  // NOLINTNEXTLINE(misc-const-correctness)
   bool escaped = false;  // '\a' — next char is a CPC special key code
-  // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated
+  // clang-tidy FP — variable is mutated
   // (out-param/compound-assign/loop/reference)
+  // NOLINTNEXTLINE(misc-const-correctness)
   bool command = false;  // '\f' — next char is a KONCPC_* command code
   for (char const c : text) {
     if (c == '\a') {

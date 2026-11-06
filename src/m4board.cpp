@@ -325,9 +325,10 @@ void cmd_cd() {
       respond_ok();
     } else {
       // Check if it's a DSK file — enter as container
-      // NOLINTNEXTLINE(misc-const-correctness,performance-unnecessary-copy-initialization):
+      //
       // clang-tidy FP — variable is mutated
       // (out-param/compound-assign/loop/reference)
+      // NOLINTNEXTLINE(misc-const-correctness,performance-unnecessary-copy-initialization)
       std::string lower = path;
       for (auto& c : lower)
         c = static_cast<char>(tolower(static_cast<unsigned char>(c)));
@@ -357,8 +358,9 @@ void dir_populate() {
 
   // Inside a DSK container — list CP/M directory entries
   if (in_container() && g_m4board.container_drive) {
-    // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
-    // mutated (out-param/compound-assign/loop/reference)
+    // clang-tidy FP — variable is mutated
+    // (out-param/compound-assign/loop/reference)
+    // NOLINTNEXTLINE(misc-const-correctness)
     std::string err;
     auto files = disk_list_files(g_m4board.container_drive, err);
     if (!err.empty()) {
@@ -538,9 +540,9 @@ FILE* try_open_cpc(const std::string& dir_path, const std::string& filename) {
         for (auto& c : cand_upper)
           c = static_cast<char>(toupper(static_cast<unsigned char>(c)));
         if (entry_upper == cand_upper) {
-          // NOLINTNEXTLINE(performance-inefficient-string-concatenation):
           // one-shot path construction; operator+= would not improve this
-          // initializer
+          // initializer.
+          // NOLINTNEXTLINE(performance-inefficient-string-concatenation)
           std::string const full = dir_path + "/" + entry_name;
           FILE* fp = fopen(full.c_str(), "r+b");
           if (!fp) fp = fopen(full.c_str(), "rb");
@@ -916,14 +918,16 @@ void cmd_fsize() {
 
   // Inside a container — look up file size from CP/M directory
   if (in_container() && g_m4board.container_drive) {
-    // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
-    // mutated (out-param/compound-assign/loop/reference)
+    // clang-tidy FP — variable is mutated
+    // (out-param/compound-assign/loop/reference)
+    // NOLINTNEXTLINE(misc-const-correctness)
     std::string err;
     auto files = disk_list_files(g_m4board.container_drive, err);
     // Case-insensitive search
-    // NOLINTNEXTLINE(misc-const-correctness,performance-unnecessary-copy-initialization):
+    //
     // clang-tidy FP — variable is mutated
     // (out-param/compound-assign/loop/reference)
+    // NOLINTNEXTLINE(misc-const-correctness,performance-unnecessary-copy-initialization)
     std::string upper = path;
     for (auto& c : upper)
       c = static_cast<char>(toupper(static_cast<unsigned char>(c)));

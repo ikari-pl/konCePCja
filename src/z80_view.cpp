@@ -33,8 +33,9 @@ extern t_PSG PSG;
 extern t_z80regs z80;
 t_z80regs z80;
 std::atomic<bool> z80_stop_requested{false};
-// NOLINTNEXTLINE(misc-use-internal-linkage): breakpoints is referenced cross-TU
-// (kon_cpc_ja.cpp loadBreakpoints); per-file check can't see the other TU
+// breakpoints is referenced cross-TU (kon_cpc_ja.cpp loadBreakpoints); per-file
+// check can't see the other TU.
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 std::vector<Breakpoint> breakpoints;
 namespace {
 std::vector<Watchpoint> watchpoints;
@@ -144,8 +145,9 @@ void z80_add_breakpoint(word addr) {
   }
 }
 
-// NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other
-// translation units/tests; internal linkage would break the link
+// external API consumed by other translation units/tests; internal linkage
+// would break the link.
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 void z80_add_breakpoint_cond(word addr, std::unique_ptr<ExprNode> condition,
                              const std::string& cond_str, int pass_count) {
   CpcStopCoordinationGuard const coordination;
@@ -859,8 +861,9 @@ bool z80_probe_exec_should_break(uint16_t pc, bool& user_breakpoint_fired) {
   const word saved_pc = z80.PC.w.l;
   z80.PC.w.l = pc;
   if (breakpoints.empty()) return true;
-  // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated
+  // clang-tidy FP — variable is mutated
   // (out-param/compound-assign/loop/reference)
+  // NOLINTNEXTLINE(misc-const-correctness)
   bool any = false;
   for (BreakpointType const type : {NORMAL, EPHEMERAL}) {
     for (auto& b : breakpoints) {
@@ -923,8 +926,9 @@ void z80_remove_ephemeral_breakpoints_while_coordinated() {
       breakpoints.end());
 }
 
-// NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other
-// translation units/tests; internal linkage would break the link
+// external API consumed by other translation units/tests; internal linkage
+// would break the link.
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 const std::vector<Breakpoint>& z80_list_breakpoints_ref() {
   return breakpoints;
 }
@@ -975,8 +979,9 @@ void z80_add_io_breakpoint(word port, word mask, IOBreakpointDir dir) {
   bump_bp_generation();
 }
 
-// NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other
-// translation units/tests; internal linkage would break the link
+// external API consumed by other translation units/tests; internal linkage
+// would break the link.
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 void z80_add_io_breakpoint_cond(word port, word mask, IOBreakpointDir dir,
                                 std::unique_ptr<ExprNode> condition,
                                 const std::string& cond_str) {
@@ -1010,8 +1015,9 @@ void z80_clear_io_breakpoints() {
   bump_bp_generation();
 }
 
-// NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other
-// translation units/tests; internal linkage would break the link
+// external API consumed by other translation units/tests; internal linkage
+// would break the link.
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 const std::vector<IOBreakpoint>& z80_list_io_breakpoints_ref() {
   return io_breakpoints;
 }
@@ -1037,8 +1043,9 @@ void z80_add_watchpoint(word addr, word len, WatchpointType type) {
   bump_bp_generation();
 }
 
-// NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other
-// translation units/tests; internal linkage would break the link
+// external API consumed by other translation units/tests; internal linkage
+// would break the link.
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 void z80_add_watchpoint_cond(word addr, word len, WatchpointType type,
                              std::unique_ptr<ExprNode> cond,
                              const std::string& cond_str, int pass_count) {
@@ -1066,8 +1073,9 @@ void z80_clear_watchpoints() {
   bump_bp_generation();
 }
 
-// NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other
-// translation units/tests; internal linkage would break the link
+// external API consumed by other translation units/tests; internal linkage
+// would break the link.
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 const std::vector<Watchpoint>& z80_list_watchpoints_ref() {
   return watchpoints;
 }

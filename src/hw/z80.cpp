@@ -140,8 +140,8 @@ struct z80_state {
   // The active index register (HL, or IX/IY under a DD/FD prefix) as a pair and
   // as high/low halves.
   uint16_t idx_hl() const {
-    // NOLINTNEXTLINE(readability-avoid-nested-conditional-operator): nested
-    // conditional kept intentionally; no clang-tidy auto-fix
+    // nested conditional kept intentionally; no clang-tidy auto-fix.
+    // NOLINTNEXTLINE(readability-avoid-nested-conditional-operator)
     return index == IndexReg::IX ? ix.v : index == IndexReg::IY ? iy.v : hl.v;
   }
   void set_idx_hl(uint16_t v) {
@@ -154,15 +154,15 @@ struct z80_state {
   }
   uint8_t idx_h() const {
     return index == IndexReg::IX ? ix.hi()
-           // NOLINTNEXTLINE(readability-avoid-nested-conditional-operator):
-           // nested conditional kept intentionally; no clang-tidy auto-fix
+           // nested conditional kept intentionally; no clang-tidy auto-fix.
+           // NOLINTNEXTLINE(readability-avoid-nested-conditional-operator)
            : index == IndexReg::IY ? iy.hi()
                                    : hl.hi();
   }
   uint8_t idx_l() const {
     return index == IndexReg::IX ? ix.lo()
-           // NOLINTNEXTLINE(readability-avoid-nested-conditional-operator):
-           // nested conditional kept intentionally; no clang-tidy auto-fix
+           // nested conditional kept intentionally; no clang-tidy auto-fix.
+           // NOLINTNEXTLINE(readability-avoid-nested-conditional-operator)
            : index == IndexReg::IY ? iy.lo()
                                    : hl.lo();
   }

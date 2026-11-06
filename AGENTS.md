@@ -665,16 +665,20 @@ host_chords=1     # 1=Cmd/Ctrl+K/O/S drive host UI; 0=pass Ctrl+K/O/S to CPC on 
     fail for something it did not cause. A finding is keyed by file, check
     name and the text of its source line, so inserting code above existing
     findings does not make them "new".
-  - A check that is genuinely wrong on a line is silenced there, with
-    `// NOLINT(check-a,check-b)` **at the end of that line** (a comment on the
-    line above does not silence it) plus a reason, not by loosening the target.
+  - A check that is genuinely wrong on a line is silenced there, not by
+    loosening the target: `// NOLINT(check)` at the end of the line, or
+    `// NOLINTNEXTLINE(check)` alone on the line directly above it. Put the
+    reason on its own comment line *above* the NOLINTNEXTLINE. A reason that
+    follows it and wraps onto a second line makes the "next line" that
+    comment, and nothing is suppressed (159 such comments were dead,
+    beads-44jk).
   - It exits non-zero when it *cannot run* (clang-tidy missing, merge base
     unreachable, a compile error) rather than reporting success.
-- **`make clang-tidy` (whole tree) is informational only** and CI keeps it
-  `continue-on-error`. It reports the standing ~317 findings across 119
-  translation units; it can never pass, because every file prints
-  "N warnings generated" whether or not it has one. Use it to see the
-  baseline, not as a gate.
+- **`make clang-tidy` (whole tree) is informational for now** and CI keeps
+  it `continue-on-error`. It runs clang-tidy, then
+  `tools/check_includes.sh`, and fails on any finding. What is left sits in
+  files other branches had open when it was cleaned (beads-44jk); once those
+  are done it can become blocking.
 - **clang-format** is pinned (22.1.8) and blocking: `make clang-format`
   checks, `make fix-clang-format` fixes. Only reformat lines you changed.
 

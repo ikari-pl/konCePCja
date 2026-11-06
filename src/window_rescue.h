@@ -66,11 +66,11 @@ inline bool compute_onscreen_position(const Rect& win, const Rect* displays,
   // Clamp the current position into the nearest usable area (no resize).
   const int max_x = imax(nearest.x, nearest.x + nearest.w - win.w);
   const int max_y = imax(nearest.y, nearest.y + nearest.h - win.h);
-  // NOLINTNEXTLINE(readability-avoid-nested-conditional-operator): nested
-  // conditional kept intentionally; no clang-tidy auto-fix
+  // nested conditional kept intentionally; no clang-tidy auto-fix.
+  // NOLINTNEXTLINE(readability-avoid-nested-conditional-operator)
   out_x = win.x < nearest.x ? nearest.x : (win.x > max_x ? max_x : win.x);
-  // NOLINTNEXTLINE(readability-avoid-nested-conditional-operator): nested
-  // conditional kept intentionally; no clang-tidy auto-fix
+  // nested conditional kept intentionally; no clang-tidy auto-fix.
+  // NOLINTNEXTLINE(readability-avoid-nested-conditional-operator)
   out_y = win.y < nearest.y ? nearest.y : (win.y > max_y ? max_y : win.y);
   return true;
 }

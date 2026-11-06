@@ -417,6 +417,9 @@ bool TcpSocketBackend::open() {
     return false;
   }
 
+  // socket() returns a SOCKET (unsigned, pointer-sized) on Windows; the cast
+  // is only redundant on POSIX, where it returns int.
+  // NOLINTNEXTLINE(readability-redundant-casting)
   sockfd_ = static_cast<int>(
       socket(result->ai_family, result->ai_socktype, result->ai_protocol));
   if (sockfd_ < 0) {

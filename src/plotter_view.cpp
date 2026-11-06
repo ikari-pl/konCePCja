@@ -70,8 +70,9 @@ const std::vector<PlotSegment>& device_segments(const Device* dev) {
 
 }  // namespace
 
-// NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other
-// translation units/tests; internal linkage would break the link
+// external API consumed by other translation units/tests; internal linkage
+// would break the link.
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 const std::vector<PlotSegment>& plotter_view_segments() {
   if (const Device* dev = live_device()) return device_segments(dev);
   return g_plotter.segments();

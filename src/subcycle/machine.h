@@ -500,8 +500,8 @@ class Machine {
   // buffers; the RTC clock and mouse packets are host-fed.
   const Device* symbiface() const { return &sfdev_; }
   void set_symbiface(bool plugged) { sf2_set_plugged(&sfdev_, plugged); }
-  // NOLINTNEXTLINE(readability-non-const-parameter): pointer written through a
-  // cast or passed to a non-const callee
+  // pointer written through a cast or passed to a non-const callee.
+  // NOLINTNEXTLINE(readability-non-const-parameter)
   void symbiface_attach_ide(int drive, uint8_t* img, size_t len) {
     sf2_ide_attach(&sfdev_, drive, img, len);
   }
