@@ -9,6 +9,7 @@
 #include <cstdio>
 #include <cstring>
 #include <sstream>
+#include <string>
 
 #include "log.h"
 

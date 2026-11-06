@@ -1,5 +1,7 @@
 #include <gtest/gtest.h>
 
+#include <string>
+
 #include "host_state.h"
 #include "host_surface.h"
 #include "imgui.h"

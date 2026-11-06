@@ -4,7 +4,9 @@
 #include <cctype>
 #include <cstdint>
 #include <cstring>
+#include <map>
 #include <sstream>
+#include <string>
 
 #include "log.h"
 #include "z80_opcode_table.h"

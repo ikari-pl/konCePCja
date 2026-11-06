@@ -54,8 +54,8 @@ extern "C" {
 size_t amdrum_state_size(void) { return sizeof(amdrum_state); }
 
 Device amdrum_init(void* storage) {
-  // NOLINTNEXTLINE(misc-const-correctness): pointer is stored in Device::self
-  // (void*), cannot be const
+  // The pointer is stored in Device::self (void*), so it cannot be const.
+  // NOLINTNEXTLINE(misc-const-correctness)
   amdrum_state* a = new (storage) amdrum_state();
   return Device{a,
                 "amdrum",

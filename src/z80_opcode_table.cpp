@@ -4,6 +4,7 @@
 #include <cstring>
 #include <iomanip>
 #include <sstream>
+#include <string>
 
 // Master Z80 opcode table — 1268 entries
 // Generated from z80_opcodes.txt + cc_* cycle count arrays in z80.cpp.

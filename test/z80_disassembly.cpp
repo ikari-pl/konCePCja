@@ -2,6 +2,8 @@
 
 #include <gtest/gtest.h>
 
+#include <string>
+
 #include "koncepcja.h"
 
 extern byte* membank_read[4];

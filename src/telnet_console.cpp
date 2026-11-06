@@ -28,6 +28,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <string>
 
 #include "autotype.h"
 #include "log.h"

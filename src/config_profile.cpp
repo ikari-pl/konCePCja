@@ -6,6 +6,7 @@
 #include <fstream>
 #include <sstream>
 #include <stdexcept>
+#include <string>
 
 #include "imgui_ui_testable.h"  // RAM_SIZES / SAMPLE_RATE_COUNT: the one list
 #include "koncepcja.h"

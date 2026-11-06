@@ -3,6 +3,7 @@
 #include "log.h"
 
 #include <mutex>
+#include <string>
 
 // Set once at startup by the -v/--verbose CLI flag; read by the LOG_VERBOSE
 // and LOG_DEBUG macros.
@@ -15,7 +16,7 @@ std::mutex g_log_mutex;
 }  // namespace
 
 void log_write_line(std::ostream& stream, const std::string& line) {
-  std::lock_guard<std::mutex> lock(g_log_mutex);
+  std::scoped_lock const lock(g_log_mutex);
   stream.write(line.data(), static_cast<std::streamsize>(line.size()));
   stream.flush();
 }

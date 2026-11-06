@@ -3,6 +3,7 @@
 #include "plotter_view.h"
 
 #include <cstring>
+#include <string>
 
 #include "hw/plotter_hp7470a.h"
 #include "subcycle/machine.h"

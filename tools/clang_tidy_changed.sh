@@ -180,6 +180,16 @@ git worktree add --detach --force "$BASE_WT" "$MERGE_BASE" >/dev/null 2>&1 || {
   echo "clang-tidy-changed: cannot create a worktree at $MERGE_BASE" >&2
   exit 2
 }
+# A new worktree has its submodules empty, and vendor/SDL is one: every unit
+# that includes SDL then fails to parse at BASE, and the gate stopped on the
+# first PR that touched such a file (#164). Third-party headers are not what
+# this compares, so the baseline borrows the checkout's own.
+for sub in $(git submodule --quiet foreach --recursive 'echo $sm_path' 2>/dev/null); do
+  if [ -d "$sub" ] && [ -z "$(ls -A "$BASE_WT/$sub" 2>/dev/null)" ]; then
+    rmdir "$BASE_WT/$sub" 2>/dev/null || rm -rf "${BASE_WT:?}/$sub"
+    ln -s "$PWD/$sub" "$BASE_WT/$sub"
+  fi
+done
 
 PRESENT=()
 for f in "${CHANGED_CPP[@]}"; do

@@ -2,6 +2,8 @@
 
 #include <gtest/gtest.h>
 
+#include <string>
+
 #include "hw_views.h"
 #include "koncepcja.h"
 

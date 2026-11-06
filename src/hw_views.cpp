@@ -3,6 +3,7 @@
 
 #include "hw_views.h"
 
+#include <string>
 #include <vector>
 
 #include "host_state.h"

@@ -1,6 +1,7 @@
 #include "host_surface.h"
 
 #include <cstring>
+#include <string>
 
 #include "savepng.h"
 

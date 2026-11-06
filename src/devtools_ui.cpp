@@ -9,6 +9,7 @@
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <map>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -625,7 +626,7 @@ void DevToolsUI::render_registers() {
 void DevToolsUI::disasm_cache_record_pc() {
   // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated
   // (out-param/compound-assign/loop/reference)
-  word pc = z80.PC.w.l;
+  word const pc = z80.PC.w.l;
 
   // Push into PC history ring buffer (always, even if instruction is cached)
   // Skip if same as last entry (avoid filling the buffer with repeated PCs when
@@ -1795,7 +1796,7 @@ void DevToolsUI::render_breakpoints() {
       if (parse_hex(bp_addr_, &addr, 0xFFFF)) {
         // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
         // mutated (out-param/compound-assign/loop/reference)
-        std::string cond_str(bp_cond_);
+        std::string const cond_str(bp_cond_);
         int pass = (bp_pass_[0] != '\0') ? std::atoi(bp_pass_) : 0;
         pass = std::max(pass, 0);
         if (cond_str.empty() && pass == 0) {
@@ -2353,14 +2354,14 @@ void DevToolsUI::render_disc_tools() {
             }
             // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable
             // is mutated (out-param/compound-assign/loop/reference)
-            std::vector<uint8_t> data((std::istreambuf_iterator<char>(f)),
-                                      std::istreambuf_iterator<char>());
+            std::vector<uint8_t> const data((std::istreambuf_iterator<char>(f)),
+                                            std::istreambuf_iterator<char>());
 
             // Convert filename to CPC 8.3
             auto fname = std::filesystem::path(host_path).filename().string();
             // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable
             // is mutated (out-param/compound-assign/loop/reference)
-            std::string cpc_name = disk_to_cpc_filename(fname);
+            std::string const cpc_name = disk_to_cpc_filename(fname);
             if (cpc_name.empty()) {
               imgui_toast_error("Cannot convert filename: " + fname);
               return;
@@ -2876,7 +2877,7 @@ void DevToolsUI::render_disasm_export() {
           if (line_bytes == 0) line_bytes = 1;
           // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
           // mutated (out-param/compound-assign/loop/reference)
-          unsigned int next = static_cast<unsigned int>(pos) + line_bytes;
+          unsigned int const next = static_cast<unsigned int>(pos) + line_bytes;
           if (next > 0xFFFF || next > end_addr + 1u) break;
           pos = static_cast<word>(next);
         } else {
@@ -2998,7 +2999,7 @@ void DevToolsUI::render_disasm_export() {
           if (line_bytes == 0) line_bytes = 1;
           // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
           // mutated (out-param/compound-assign/loop/reference)
-          unsigned int next = static_cast<unsigned int>(pos) + line_bytes;
+          unsigned int const next = static_cast<unsigned int>(pos) + line_bytes;
           if (next > 0xFFFF || next > e_addr + 1u) break;
           pos = static_cast<word>(next);
         } else {

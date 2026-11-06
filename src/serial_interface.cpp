@@ -23,6 +23,7 @@ typedef int ssize_t;
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
+#include <string>
 #include <utility>
 
 #include "bounded_deadline.h"
@@ -214,7 +215,7 @@ std::vector<std::string> HostSerialBackend::list_ports() {
   if (dir) {
     struct dirent* entry;
     while ((entry = readdir(dir)) != nullptr) {
-      std::string name = entry->d_name;
+      std::string const name = entry->d_name;
       if (name.find("ttyUSB") == 0 || name.find("ttyACM") == 0 ||
           name.find("ttyS") == 0) {
         ports.push_back("/dev/" + name);
@@ -608,13 +609,13 @@ void SIRomManager::unload(byte** rom_map) {
 
 // SerialInterface implementation
 std::shared_ptr<SerialBackend> SerialInterface::backend() const {
-  std::lock_guard<std::mutex> lock(mu_);
+  std::scoped_lock const lock(mu_);
   return backend_;
 }
 
 void SerialInterface::set_backend(std::shared_ptr<SerialBackend> next) {
   {
-    std::lock_guard<std::mutex> lock(mu_);
+    std::scoped_lock const lock(mu_);
     backend_.swap(next);
   }
   // `next` now holds the old backend. Dropping it here closes it (every
@@ -626,7 +627,7 @@ void SerialInterface::set_backend(std::shared_ptr<SerialBackend> next) {
 
 void SerialInterface::host_tx(uint8_t byte) {
   {
-    std::lock_guard<std::mutex> lock(queue_mu_);
+    std::scoped_lock const lock(queue_mu_);
     if (monitor_.size() == kMonitorCap) monitor_.pop_front();
     monitor_.push_back(byte);
   }
@@ -641,7 +642,7 @@ bool SerialInterface::host_wired() const {
 }
 
 size_t SerialInterface::queue_rx(const uint8_t* data, size_t n) {
-  std::lock_guard<std::mutex> lock(queue_mu_);
+  std::scoped_lock const lock(queue_mu_);
   size_t const room = kRxQueueCap - rx_queue_.size();
   size_t const taken = n < room ? n : room;
   rx_queue_.insert(rx_queue_.end(), data, data + taken);
@@ -649,7 +650,7 @@ size_t SerialInterface::queue_rx(const uint8_t* data, size_t n) {
 }
 
 size_t SerialInterface::rx_pending() const {
-  std::lock_guard<std::mutex> lock(queue_mu_);
+  std::scoped_lock const lock(queue_mu_);
   return rx_queue_.size();
 }
 
@@ -657,7 +658,7 @@ size_t SerialInterface::pump_rx(size_t room, void (*sink)(uint8_t, void*),
                                 void* ctx) {
   size_t moved = 0;
   {
-    std::lock_guard<std::mutex> lock(queue_mu_);
+    std::scoped_lock const lock(queue_mu_);
     while (moved < room && !rx_queue_.empty()) {
       sink(rx_queue_.front(), ctx);
       rx_queue_.pop_front();
@@ -678,23 +679,23 @@ size_t SerialInterface::pump_rx(size_t room, void (*sink)(uint8_t, void*),
 }
 
 void SerialInterface::drain_monitor(std::vector<uint8_t>& out) {
-  std::lock_guard<std::mutex> lock(queue_mu_);
+  std::scoped_lock const lock(queue_mu_);
   out.insert(out.end(), monitor_.begin(), monitor_.end());
   monitor_.clear();
 }
 
 void SerialInterface::set_config(const SerialConfig& config) {
-  std::lock_guard<std::mutex> lock(mu_);
+  std::scoped_lock const lock(mu_);
   config_ = config;
 }
 
 SerialConfig SerialInterface::get_config() const {
-  std::lock_guard<std::mutex> lock(mu_);
+  std::scoped_lock const lock(mu_);
   return config_;
 }
 
 bool SerialInterface::config_applied() const {
-  std::lock_guard<std::mutex> lock(mu_);
+  std::scoped_lock const lock(mu_);
   return applied_ && config_ == applied_config_;
 }
 
@@ -706,7 +707,7 @@ void SerialInterface::apply_config() {
   const SerialConfig cfg = get_config();
 
   {
-    std::lock_guard<std::mutex> lock(mu_);
+    std::scoped_lock const lock(mu_);
     applied_config_ = cfg;
     applied_ = true;
   }
@@ -715,7 +716,7 @@ void SerialInterface::apply_config() {
     // Bytes queued for a card that is now unplugged would otherwise arrive
     // the next time someone enables it.
     {
-      std::lock_guard<std::mutex> lock(queue_mu_);
+      std::scoped_lock const lock(queue_mu_);
       rx_queue_.clear();
     }
     z80_set_bdos_serial_out_hook(nullptr);

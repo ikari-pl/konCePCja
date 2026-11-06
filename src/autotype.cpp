@@ -2,6 +2,7 @@
 
 #include <cctype>
 #include <cstdlib>
+#include <string>
 
 #include "cpc_key_tables.h"
 

@@ -629,8 +629,8 @@ extern "C" {
 size_t asic_state_size(void) { return sizeof(asic_state); }
 
 Device asic_init(void* storage) {
-  // NOLINTNEXTLINE(misc-const-correctness): pointer is stored in Device::self
-  // (void*), cannot be const
+  // The pointer is stored in Device::self (void*), so it cannot be const.
+  // NOLINTNEXTLINE(misc-const-correctness)
   asic_state* a = new (storage) asic_state();
   return Device{
       a,         "asic",   asic_tick, asic_dev_reset, asic_dev_state_size,

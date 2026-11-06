@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <fstream>
 #include <sstream>
+#include <string>
 
 PokeManager g_poke_manager;
 

@@ -6,6 +6,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <string>
 
 // Build a command buffer and execute it.
 // Format: [size_prefix, cmd_lo, cmd_hi, data...]

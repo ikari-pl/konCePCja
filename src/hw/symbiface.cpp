@@ -406,8 +406,8 @@ extern "C" {
 size_t sf2_state_size(void) { return sizeof(sf2_state); }
 
 Device sf2_init(void* storage) {
-  // NOLINTNEXTLINE(misc-const-correctness): pointer is stored in Device::self
-  // (void*), cannot be const
+  // The pointer is stored in Device::self (void*), so it cannot be const.
+  // NOLINTNEXTLINE(misc-const-correctness)
   sf2_state* f = new (storage) sf2_state();
   return Device{
       f,        "symbiface", sf2_tick, sf2_dev_reset, sf2_dev_state_size,

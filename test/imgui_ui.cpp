@@ -1,5 +1,7 @@
 #include <gtest/gtest.h>
 
+#include <string>
+
 #include "imgui_ui_testable.h"
 
 // ─────────────────────────────────────────────────

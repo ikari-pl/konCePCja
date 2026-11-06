@@ -19,6 +19,7 @@
 
 #include <cerrno>
 #include <cstring>
+#include <string>
 
 #include "errors.h"
 #include "log.h"

@@ -89,13 +89,14 @@ void host_pacing_thread(bool on, uint32_t period_us, uint32_t busy_us) {
 
 #elif defined(__linux__)
 
-void host_pacing_thread(bool on, uint32_t, uint32_t) {
+void host_pacing_thread(bool on, uint32_t /*period_us*/, uint32_t /*busy_us*/) {
   // 1 ns is the least slack there is; 0 puts back the thread's default.
   prctl(PR_SET_TIMERSLACK, on ? 1UL : 0UL, 0UL, 0UL, 0UL);
 }
 
 #else
 
-void host_pacing_thread(bool, uint32_t, uint32_t) {}
+void host_pacing_thread(bool /*on*/, uint32_t /*period_us*/,
+                        uint32_t /*busy_us*/) {}
 
 #endif

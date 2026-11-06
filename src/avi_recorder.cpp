@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <string>
 
 #ifdef HAS_LIBJPEG
 extern "C" {
