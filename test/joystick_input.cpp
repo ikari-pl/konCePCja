@@ -99,9 +99,13 @@ class ControllerApplyBitTest : public JoystickInputTest {
     JoystickInputTest::SetUp();
     saved_mode_ = CPC.joystick_emulation;
     saved_paused_ = CPC.paused;
+    saved_support_ = CPC.keyboard_support_mode;
     std::copy(std::begin(CPC.joy_to_keys), std::end(CPC.joy_to_keys),
               saved_keys_);
     CPC.paused = false;  // applyKeypress() drops keys while paused
+    // Releases land at once only in Direct mode; another test may have left
+    // a buffered mode behind.
+    CPC.keyboard_support_mode = KeyboardSupportMode::Direct;
     for (auto& cell : keyboard_matrix)
       cell.store(0xFF, std::memory_order_relaxed);
   }
@@ -110,6 +114,7 @@ class ControllerApplyBitTest : public JoystickInputTest {
       cell.store(0xFF, std::memory_order_relaxed);
     CPC.joystick_emulation = saved_mode_;
     CPC.paused = saved_paused_;
+    CPC.keyboard_support_mode = saved_support_;
     std::copy(std::begin(saved_keys_), std::end(saved_keys_), CPC.joy_to_keys);
   }
 
@@ -123,6 +128,7 @@ class ControllerApplyBitTest : public JoystickInputTest {
 
   JoystickEmulation saved_mode_ = JoystickEmulation::None;
   bool saved_paused_ = false;
+  KeyboardSupportMode saved_support_ = KeyboardSupportMode::Direct;
   int saved_keys_[6] = {};
 };
 
