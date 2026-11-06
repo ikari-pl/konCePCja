@@ -17,6 +17,7 @@
 #include <chrono>
 #include <cstdint>
 #include <functional>
+#include <string>
 #include <thread>
 
 #include "serial_interface.h"

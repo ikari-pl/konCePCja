@@ -2,6 +2,7 @@
 
 #include <filesystem>
 #include <sstream>
+#include <string>
 
 #include "flux_save.h"
 #include "hw/fdc.h"

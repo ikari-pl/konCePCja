@@ -15,6 +15,8 @@
 
 #include <gtest/gtest.h>
 
+#include <string>
+
 #include "z80_view.h"
 
 namespace {

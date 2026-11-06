@@ -4,6 +4,7 @@
 
 #include <cstring>
 #include <set>
+#include <string>
 
 #include "disk_format.h"
 #include "koncepcja.h"

@@ -4,6 +4,7 @@
 
 #include <fstream>
 #include <set>
+#include <string>
 
 // Access the cc_* arrays from z80.cpp for cross-checking
 // These are defined static in z80.cpp, so we need to replicate them here

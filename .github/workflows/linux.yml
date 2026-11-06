@@ -14,7 +14,7 @@ on:
 jobs:
   linux-build:
     name: Linux build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     # Cold-cache builds (fresh repo / evicted cache) exceed 25; warm runs are
     # far quicker — the cap only guards against runaways.
     timeout-minutes: 45
@@ -103,7 +103,12 @@ jobs:
           python3 test/integrated/kcpc/test_fb_ring.py --ui-free
 
       - run: make -j 3 clean
-      - run: make -j 3 debug CFLAGS="-Wno-literal-suffix -Wno-old-style-cast"
+      # HARDEN=1: libstdc++ checks its own preconditions (index past the end,
+      # front() of an empty container) and aborts. It was on here before only
+      # because ubuntu-26.04's libstdc++ happened to enable it, which is how
+      # beads-z6jj surfaced; now it is ours (beads-p2qa). `debug` runs
+      # unit_test, so the whole suite runs under it.
+      - run: make -j 3 debug HARDEN=1 CFLAGS="-Wno-literal-suffix -Wno-old-style-cast"
       # clang-tidy: the whole tree is informational only. The tree carries a
       # few hundred findings, and every file prints "N warnings generated"
       # whether or not it has one, so this can never pass -- it reports and

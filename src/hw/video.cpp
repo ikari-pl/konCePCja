@@ -657,8 +657,8 @@ extern "C" {
 size_t video_state_size(void) { return sizeof(video_state); }
 
 Device video_init(void* storage) {
-  // NOLINTNEXTLINE(misc-const-correctness): pointer is stored in Device::self
-  // (void*), cannot be const
+  // The pointer is stored in Device::self (void*), so it cannot be const.
+  // NOLINTNEXTLINE(misc-const-correctness)
   video_state* v = new (storage) video_state();
   return Device{
       v,          "video",   video_tick, video_reset, video_dev_state_size,

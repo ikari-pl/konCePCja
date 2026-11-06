@@ -169,8 +169,8 @@ extern "C" {
 size_t m4_state_size(void) { return sizeof(m4_state); }
 
 Device m4_init(void* storage) {
-  // NOLINTNEXTLINE(misc-const-correctness): pointer is stored in Device::self
-  // (void*), cannot be const
+  // The pointer is stored in Device::self (void*), so it cannot be const.
+  // NOLINTNEXTLINE(misc-const-correctness)
   m4_state* m = new (storage) m4_state();
   return Device{m,       "m4",   m4_tick, m4_dev_reset, m4_dev_state_size,
                 m4_save, m4_load};

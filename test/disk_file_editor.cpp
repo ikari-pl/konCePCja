@@ -5,6 +5,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <string>
 
 #include "disk_format.h"
 #include "koncepcja.h"

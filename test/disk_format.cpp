@@ -5,6 +5,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <string>
 
 #include "koncepcja.h"
 #include "slotshandler.h"

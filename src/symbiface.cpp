@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstring>
 #include <ctime>
+#include <string>
 
 #include "log.h"
 

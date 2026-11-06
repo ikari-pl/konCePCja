@@ -379,8 +379,8 @@ extern "C" {
 size_t rs232_state_size(void) { return sizeof(rs232_state); }
 
 Device rs232_init(void* storage) {
-  // NOLINTNEXTLINE(misc-const-correctness): pointer is stored in Device::self
-  // (void*), cannot be const
+  // The pointer is stored in Device::self (void*), so it cannot be const.
+  // NOLINTNEXTLINE(misc-const-correctness)
   rs232_state* s = new (storage) rs232_state();
   return Device{
       s,          "rs232",   rs232_tick, rs232_dev_reset, rs232_dev_state_size,

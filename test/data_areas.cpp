@@ -2,6 +2,8 @@
 
 #include <gtest/gtest.h>
 
+#include <string>
+
 namespace {
 
 class DataAreaManagerTest : public ::testing::Test {

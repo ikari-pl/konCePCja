@@ -26,6 +26,7 @@
 #include <cstring>
 #include <filesystem>
 #include <sstream>
+#include <string>
 
 #include "autotype.h"
 #include "kcpc/kcpc_host.h"
@@ -201,7 +202,7 @@ int sock_send(sock_t s, const void* buf, int len) {
     int const n =
         static_cast<int>(::send(s, p, static_cast<size_t>(remaining), 0));
 #else
-    int n = static_cast<int>(
+    int const n = static_cast<int>(
         ::send(s, p, static_cast<size_t>(remaining), MSG_NOSIGNAL));
 #endif
     if (n <= 0) return n;

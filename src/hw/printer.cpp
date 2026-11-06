@@ -79,8 +79,8 @@ extern "C" {
 size_t printer_state_size(void) { return sizeof(printer_state); }
 
 Device printer_init(void* storage) {
-  // NOLINTNEXTLINE(misc-const-correctness): pointer is stored in Device::self
-  // (void*), cannot be const
+  // The pointer is stored in Device::self (void*), so it cannot be const.
+  // NOLINTNEXTLINE(misc-const-correctness)
   printer_state* p = new (storage) printer_state();
   return Device{p,
                 "printer",

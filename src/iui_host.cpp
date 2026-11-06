@@ -12,6 +12,7 @@
 
 #include <atomic>
 #include <cstdio>
+#include <string>
 
 namespace {
 

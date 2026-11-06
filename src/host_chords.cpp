@@ -1,5 +1,7 @@
 #include "host_chords.h"
 
+#include <string>
+
 namespace {
 int lower(int keycode) {
   return (keycode >= 'A' && keycode <= 'Z') ? keycode + ('a' - 'A') : keycode;

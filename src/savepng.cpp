@@ -20,6 +20,7 @@
 
 #include <csetjmp>
 #include <cstdio>
+#include <string>
 #include <vector>
 
 #ifdef KONCPC_SDL

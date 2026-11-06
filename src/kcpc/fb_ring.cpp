@@ -2,6 +2,7 @@
 
 #include <cstring>
 #include <new>
+#include <string>
 
 namespace kcpc {
 

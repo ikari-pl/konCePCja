@@ -4,6 +4,7 @@
 #include <cctype>
 #include <cstdint>
 #include <cstring>
+#include <string>
 
 #include "debug_timers.h"
 #include "koncepcja.h"

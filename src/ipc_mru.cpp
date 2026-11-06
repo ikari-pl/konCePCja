@@ -2,6 +2,7 @@
 
 #include <filesystem>
 #include <mutex>
+#include <string>
 #include <system_error>
 #include <utility>
 

@@ -2,6 +2,7 @@
 
 #include <cstring>
 #include <sstream>
+#include <string>
 
 #include "data_areas.h"
 #include "symfile.h"

@@ -1,6 +1,7 @@
 #include "wav_recorder.h"
 
 #include <cstring>
+#include <string>
 
 namespace {
 bool write_le_u16(uint16_t val, FILE* f) {

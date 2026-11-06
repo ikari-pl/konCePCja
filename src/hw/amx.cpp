@@ -80,8 +80,8 @@ extern "C" {
 size_t amx_state_size(void) { return sizeof(amx_state); }
 
 Device amx_init(void* storage) {
-  // NOLINTNEXTLINE(misc-const-correctness): pointer is stored in Device::self
-  // (void*), cannot be const
+  // The pointer is stored in Device::self (void*), so it cannot be const.
+  // NOLINTNEXTLINE(misc-const-correctness)
   amx_state* a = new (storage) amx_state();
   return Device{a,        "amx",   amx_tick, amx_dev_reset, amx_dev_state_size,
                 amx_save, amx_load};

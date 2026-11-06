@@ -2,6 +2,8 @@
 
 #include <gtest/gtest.h>
 
+#include <string>
+
 #include "flux_save.h"
 #include "hw_views.h"
 #include "koncepcja.h"

@@ -20,6 +20,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <iomanip>
+#include <map>
 #include <ostream>
 #include <string>
 #include <string_view>

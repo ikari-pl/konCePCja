@@ -6,6 +6,7 @@
 #include <cstring>
 #include <ctime>
 #include <filesystem>
+#include <string>
 
 #include "disk_file_editor.h"
 #include "hw_views.h"
@@ -1233,12 +1234,12 @@ void cmd_httpget() {
 
 #else  // !HAS_LIBCURL
 
-// NOLINTNEXTLINE(misc-use-anonymous-namespace): file-scope static is
-// intentional
-static void cmd_httpget() {
+namespace {
+void cmd_httpget() {
   respond_error("HTTP not available (no libcurl)");
   LOG_ERROR("M4 HTTPGET: libcurl not available at build time");
 }
+}  // namespace
 
 #endif  // HAS_LIBCURL
 
@@ -1342,11 +1343,9 @@ void cmd_httpgetmem() {
 
 #else  // !HAS_LIBCURL
 
-// NOLINTNEXTLINE(misc-use-anonymous-namespace): file-scope static is
-// intentional
-static void cmd_httpgetmem() {
-  respond_error("HTTP not available (no libcurl)");
-}
+namespace {
+void cmd_httpgetmem() { respond_error("HTTP not available (no libcurl)"); }
+}  // namespace
 
 #endif  // HAS_LIBCURL
 

@@ -11,6 +11,8 @@
 
 #ifndef KONCPC_SDL
 
+#include <string>
+
 #include "koncepcja.h"
 #include "video_plugin.h"
 
