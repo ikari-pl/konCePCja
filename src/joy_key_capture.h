@@ -9,6 +9,7 @@
 #include <SDL3/SDL_keycode.h>
 #include <SDL3/SDL_scancode.h>
 
+#include <bitset>
 #include <optional>
 
 // A finished capture: bind `scancode` (with `mods` held) to stick slot `slot`
@@ -28,6 +29,7 @@ class JoyKeyCapture {
   void arm(int slot) {
     disarm();
     slot_ = slot;
+    taken_.reset();
   }
 
   // Stop waiting and forget a binding nobody took.
@@ -44,6 +46,7 @@ class JoyKeyCapture {
   bool on_key_down(SDL_Scancode scancode, SDL_Keymod mods, bool repeat) {
     if (!armed()) return false;
     if (repeat) return true;
+    mark_taken(scancode);
     if (scancode == SDL_SCANCODE_ESCAPE) {
       finish();
     } else if (is_modifier(scancode)) {
@@ -56,9 +59,13 @@ class JoyKeyCapture {
   }
 
   // Key up from the event pump: releasing the last modifier pressed, with no
-  // other key in between, binds that modifier on its own.
+  // other key in between, binds that modifier on its own. Only the key-up of
+  // a press the capture took is consumed: a key held before arming (the
+  // Space or Return that activated the slot button) must reach the UI, or
+  // the UI thinks it stays down.
   bool on_key_up(SDL_Scancode scancode) {
-    if (!armed()) return false;
+    if (!armed() || !was_taken(scancode)) return false;
+    taken_.reset(static_cast<size_t>(scancode));
     if (pending_modifier_ != SDL_SCANCODE_UNKNOWN &&
         scancode == pending_modifier_) {
       binding_ = JoyKeyBinding{slot_, scancode, SDL_KMOD_NONE};
@@ -106,8 +113,19 @@ class JoyKeyCapture {
     pending_modifier_ = SDL_SCANCODE_UNKNOWN;
   }
 
+  void mark_taken(SDL_Scancode scancode) {
+    if (scancode >= 0 && scancode < SDL_SCANCODE_COUNT)
+      taken_.set(static_cast<size_t>(scancode));
+  }
+  bool was_taken(SDL_Scancode scancode) const {
+    return scancode >= 0 && scancode < SDL_SCANCODE_COUNT &&
+           taken_.test(static_cast<size_t>(scancode));
+  }
+
   int slot_ = -1;
   SDL_Scancode pending_modifier_ = SDL_SCANCODE_UNKNOWN;
+  // Keys whose key-down this arming consumed, so their key-up is ours too.
+  std::bitset<SDL_SCANCODE_COUNT> taken_;
   std::optional<JoyKeyBinding> binding_;
   bool shown_ = false;
 };

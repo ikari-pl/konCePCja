@@ -110,6 +110,7 @@ class ControllerApplyBitTest : public JoystickInputTest {
       cell.store(0xFF, std::memory_order_relaxed);
   }
   void TearDown() override {
+    controller_release_all();  // forget what the test left held
     for (auto& cell : keyboard_matrix)
       cell.store(0xFF, std::memory_order_relaxed);
     CPC.joystick_emulation = saved_mode_;
@@ -162,4 +163,65 @@ TEST_F(ControllerApplyBitTest, KeyboardModeStillDrivesTheJoystickRows) {
   EXPECT_FALSE(live_pressed(CPC_Q));
   controller_apply_bit(1, vjoy::VJOY_FIRE2, true);
   EXPECT_TRUE(live_pressed(CPC_J1_FIRE2));
+}
+
+// An emulator command (KONCPC_EXIT, ~0x1000) in the binding table must press
+// nothing: it is not a CPC key, and as an index it is far past the
+// 209-entry CPC key table (beads-z0zb).
+TEST_F(ControllerApplyBitTest, CommandKeyBindingPressesNothing) {
+  CPC.joystick_emulation = JoystickEmulation::JoystickToKeys;
+  CPC.joy_to_keys[0] = static_cast<int>(KONCPC_EXIT);
+  CPC.joy_to_keys[1] = CPC_KEY_NUM;
+  controller_apply_bit(0, vjoy::VJOY_UP, true);
+  controller_apply_bit(0, vjoy::VJOY_DOWN, true);
+  for (int row = 0; row < 16; ++row) {
+    EXPECT_EQ(0xFF, keyboard_matrix[row].load(std::memory_order_relaxed))
+        << "row " << row;
+  }
+}
+
+// Changing the mode while a control is held releases what the OLD mode
+// pressed; the release used to look the key up in the new mode and leave
+// the old key down for good (beads-z0zb).
+TEST_F(ControllerApplyBitTest, ModeChangeReleasesTheOldModesKeys) {
+  CPC.joystick_emulation = JoystickEmulation::JoystickToKeys;
+  CPC.joy_to_keys[0] = CPC_Q;
+  controller_apply_bit(0, vjoy::VJOY_UP, true);
+  ASSERT_TRUE(live_pressed(CPC_Q));
+  set_joystick_emulation_mode(JoystickEmulation::Keyboard);
+  EXPECT_FALSE(live_pressed(CPC_Q));
+  // The physical release that follows, in the new mode, presses nothing
+  // and releases nothing it did not press.
+  controller_apply_bit(0, vjoy::VJOY_UP, false);
+  EXPECT_FALSE(live_pressed(CPC_J0_UP));
+
+  controller_apply_bit(1, vjoy::VJOY_FIRE1, true);
+  ASSERT_TRUE(live_pressed(CPC_J1_FIRE1));
+  set_joystick_emulation_mode(JoystickEmulation::JoystickToKeys);
+  EXPECT_FALSE(live_pressed(CPC_J1_FIRE1));
+  EXPECT_EQ(JoystickEmulation::JoystickToKeys, CPC.joystick_emulation);
+}
+
+// In JoystickToKeys both pads press the same keys. A key goes up only when
+// neither pad still holds it: pad 2 resting in its dead zone (a stream of
+// releases) must not lift the key pad 1 holds (beads-z0zb).
+TEST_F(ControllerApplyBitTest, SharedKeyStaysDownWhileTheOtherSlotHoldsIt) {
+  CPC.joystick_emulation = JoystickEmulation::JoystickToKeys;
+  int const bound[6] = {CPC_Q, CPC_A, CPC_O, CPC_P, CPC_SPACE, CPC_SPACE};
+  std::copy(std::begin(bound), std::end(bound), CPC.joy_to_keys);
+  controller_apply_bit(0, vjoy::VJOY_LEFT, true);
+  controller_apply_bit(1, vjoy::VJOY_LEFT, false);  // pad 2 in its dead zone
+  EXPECT_TRUE(live_pressed(CPC_O));
+  controller_apply_bit(1, vjoy::VJOY_LEFT, true);
+  controller_apply_bit(0, vjoy::VJOY_LEFT, false);
+  EXPECT_TRUE(live_pressed(CPC_O));  // pad 2 still holds it
+  controller_apply_bit(1, vjoy::VJOY_LEFT, false);
+  EXPECT_FALSE(live_pressed(CPC_O));
+  // Two controls of one pad bound to the same key: the same rule.
+  controller_apply_bit(0, vjoy::VJOY_FIRE1, true);
+  controller_apply_bit(0, vjoy::VJOY_FIRE2, true);
+  controller_apply_bit(0, vjoy::VJOY_FIRE1, false);
+  EXPECT_TRUE(live_pressed(CPC_SPACE));
+  controller_apply_bit(0, vjoy::VJOY_FIRE2, false);
+  EXPECT_FALSE(live_pressed(CPC_SPACE));
 }

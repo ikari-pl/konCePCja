@@ -99,3 +99,19 @@ TEST(VJoystickMap, ControllerKeysUseTheBindingTableWhenGiven) {
   ASSERT_EQ(1, joy.count);
   EXPECT_EQ(CPC_J1_FIRE1, joy.keys[0]);
 }
+
+// A binding that is not a CPC key (an emulator command such as KONCPC_EXIT,
+// ~0x1000, or anything past the CPC key table) presses nothing: cast to
+// CPC_KEYS it would wrap to some unrelated key (beads-z0zb).
+TEST(VJoystickMap, ControllerKeysSkipBindingsThatAreNotCpcKeys) {
+  int const bound[6] = {
+      static_cast<int>(KONCPC_EXIT), -1, CPC_KEY_NUM, CPC_P, 0xff, CPC_RETURN};
+  EXPECT_EQ(0, vjoy_controller_keys(0, VJOY_UP, bound).count);
+  EXPECT_EQ(0, vjoy_controller_keys(0, VJOY_DOWN, bound).count);
+  EXPECT_EQ(0, vjoy_controller_keys(0, VJOY_LEFT, bound).count);
+  EXPECT_EQ(0, vjoy_controller_keys(1, VJOY_FIRE1, bound).count);
+  VJoyKeys const all = vjoy_controller_keys(0, VJOY_ALL, bound);
+  ASSERT_EQ(2, all.count);
+  EXPECT_EQ(CPC_P, all.keys[0]);
+  EXPECT_EQ(CPC_RETURN, all.keys[1]);
+}

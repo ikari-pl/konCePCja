@@ -2831,6 +2831,20 @@ vjoy::VJoyKeys controller_keys(int slot, unsigned mask) {
   return vjoy::vjoy_controller_keys(slot, mask,
                                     to_keys ? CPC.joy_to_keys : nullptr);
 }
+
+// The controls (vjoy::VJOY_* bits) each controller slot holds down. In
+// JoystickToKeys both slots press the same keys, so a key goes up only when
+// no slot holds a control bound to it any more.
+unsigned controller_held[MAX_NB_JOYSTICKS] = {};
+
+// Whether any slot still holds a control that presses `key`.
+bool controller_key_still_held(CPC_KEYS key) {
+  for (int s = 0; s < MAX_NB_JOYSTICKS; ++s) {
+    if (vjoy::vjoy_keys_contain(controller_keys(s, controller_held[s]), key))
+      return true;
+  }
+  return false;
+}
 }  // namespace
 
 // Press/release one direction/fire (single bit) for a slot, via the shared
@@ -2839,11 +2853,41 @@ vjoy::VJoyKeys controller_keys(int slot, unsigned mask) {
 // JoystickToKeys mode.  applyKeypress() respects the pause guard, matching the
 // historic raw-joystick handlers.
 void controller_apply_bit(int slot, unsigned bit, bool pressed) {
-  vjoy::VJoyKeys const k = controller_keys(slot, bit);
-  if (k.count == 1) {
-    applyKeypress(CPC.InputMapper->CPCscancodeFromCPCkey(k.keys[0]),
-                  keyboard_matrix, pressed);
+  if (slot < 0 || slot >= MAX_NB_JOYSTICKS) return;
+  if (pressed) {
+    controller_held[slot] |= bit;
+  } else {
+    controller_held[slot] &= ~bit;
   }
+  // controller_keys() drops a binding that is not a CPC key, so k.keys[0]
+  // always indexes the CPC key table.
+  vjoy::VJoyKeys const k = controller_keys(slot, bit);
+  if (k.count != 1) return;
+  if (!pressed && controller_key_still_held(k.keys[0])) return;
+  applyKeypress(CPC.InputMapper->CPCscancodeFromCPCkey(k.keys[0]),
+                keyboard_matrix, pressed);
+}
+
+void controller_release_all() {
+  for (int s = 0; s < MAX_NB_JOYSTICKS; ++s) {
+    vjoy::VJoyKeys const held = controller_keys(s, controller_held[s]);
+    controller_held[s] = 0;
+    // Direct: the Settings window that changes the mode pauses the CPC, and
+    // applyKeypress() drops keys while paused.
+    for (int i = 0; i < held.count; ++i) {
+      applyKeypressDirect(CPC.InputMapper->CPCscancodeFromCPCkey(held.keys[i]),
+                          keyboard_matrix, false);
+    }
+  }
+}
+
+void set_joystick_emulation_mode(JoystickEmulation mode) {
+  if (mode == CPC.joystick_emulation) return;
+  controller_release_all();  // as the old mode pressed them
+  CPC.joystick_emulation = mode;
+  // The host map is built from the mode (cursor keys and Z/X become joystick
+  // bits in one of them).
+  if (CPC.InputMapper != nullptr) CPC.InputMapper->set_joystick_emulation();
 }
 
 #ifdef KONCPC_SDL
@@ -2918,9 +2962,12 @@ void controller_close(SDL_JoystickID id) {
     joysticks[slot] = nullptr;
   }
   device_instance[slot] = 0;
-  // Release every direction/fire this slot could have been holding down.
+  // Release every direction/fire this slot could have been holding down,
+  // except a key the other slot still holds (JoystickToKeys shares them).
+  controller_held[slot] = 0;
   vjoy::VJoyKeys const all = controller_keys(slot, vjoy::VJOY_ALL);
   for (int i = 0; i < all.count; i++) {
+    if (controller_key_still_held(all.keys[i])) continue;
     applyKeypressDirect(CPC.InputMapper->CPCscancodeFromCPCkey(all.keys[i]),
                         keyboard_matrix, false);
   }
@@ -3191,13 +3238,15 @@ void loadConfiguration(t_CPC& CPC, const std::string& configFilename) {
       std::string const name = conf.getStringValue("system", kJoyToKeySlots[i],
                                                    kJoyToKeyDefaults[i]);
       int key = InputMapper::CPCkeyFromName(name);
-      if (key < 0) {
-        LOG_WARNING("Unknown key name '" << name << "' for system."
-                                         << kJoyToKeySlots[i] << "; using "
-                                         << kJoyToKeyDefaults[i]);
+      // The name table also holds the emulator commands (KONCPC_*); a stick
+      // can only press a CPC key.
+      if (!isCPCKey(key)) {
+        LOG_WARNING("'" << name << "' is not a CPC key name, for system."
+                        << kJoyToKeySlots[i] << "; using "
+                        << kJoyToKeyDefaults[i]);
         key = InputMapper::CPCkeyFromName(kJoyToKeyDefaults[i]);
       }
-      if (key >= 0) CPC.joy_to_keys[i] = key;
+      if (isCPCKey(key)) CPC.joy_to_keys[i] = key;
     }
   }
   CPC.joysticks = read_flag("system", "joysticks", 1);
@@ -3943,8 +3992,8 @@ void koncpc_menu_action(int action) {
       break;
 
     case KONCPC_JOY:
-      CPC.joystick_emulation = nextJoystickEmulation(CPC.joystick_emulation);
-      CPC.InputMapper->set_joystick_emulation();
+      set_joystick_emulation_mode(
+          nextJoystickEmulation(CPC.joystick_emulation));
 #ifdef KONCPC_SDL
       SDL_SetWindowRelativeMouseMode(
           mainSDLWindow, CPC.joystick_emulation == JoystickEmulation::Mouse);

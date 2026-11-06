@@ -206,6 +206,16 @@ std::string JoystickEmulationToString(JoystickEmulation value);
 // emulation mode decides what the control presses (kon_cpc_ja.cpp).
 void controller_apply_bit(int slot, unsigned bit, bool pressed);
 
+// Release every CPC key the controllers hold, as the current mode and
+// bindings pressed them, and forget them. Call it before anything changes
+// what a control presses (the mode, a binding).
+void controller_release_all();
+
+// The one way to change the joystick emulation mode (F7, the Settings combo,
+// Revert): releases what the old mode pressed, sets the mode and rebuilds the
+// host key map, which depends on it.
+void set_joystick_emulation_mode(JoystickEmulation mode);
+
 // Config keys for the six CPC keys a stick presses in
 // JoystickEmulation::JoystickToKeys, in the order up, down, left, right,
 // fire1, fire2. One list, so the loader and the writer cannot drift.

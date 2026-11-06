@@ -58,7 +58,7 @@ TEST(JoyKeyCapture, RepeatOfAKeyHeldBeforeArmingIsIgnored) {
   JoyKeyCapture c;
   c.arm(1);
   EXPECT_TRUE(c.on_key_down(SDL_SCANCODE_X, SDL_KMOD_NONE, /*repeat=*/true));
-  EXPECT_TRUE(c.on_key_up(SDL_SCANCODE_X));  // its release binds nothing
+  EXPECT_FALSE(c.on_key_up(SDL_SCANCODE_X));  // binds nothing, passes on
   EXPECT_TRUE(c.armed());
   EXPECT_FALSE(c.take_binding().has_value());
 }
@@ -80,6 +80,21 @@ TEST(JoyKeyCapture, ModifierHeldBeforeArmingDoesNotBindOnRelease) {
   c.on_key_up(SDL_SCANCODE_LSHIFT);
   EXPECT_TRUE(c.armed());
   EXPECT_FALSE(c.take_binding().has_value());
+}
+
+// The key that activated the slot button (Space or Return) is still down
+// when the capture arms. Its key-up must reach the UI, or ImGui thinks the
+// key stays held (beads-z0zb). A key-up whose press the capture took is
+// still swallowed.
+TEST(JoyKeyCapture, KeyUpOfAKeyHeldBeforeArmingPassesThrough) {
+  JoyKeyCapture c;
+  c.arm(0);
+  EXPECT_FALSE(c.on_key_up(SDL_SCANCODE_SPACE));
+  EXPECT_FALSE(c.on_key_up(SDL_SCANCODE_RETURN));
+  EXPECT_TRUE(c.armed());
+  EXPECT_TRUE(c.on_key_down(SDL_SCANCODE_LSHIFT, SDL_KMOD_LSHIFT, false));
+  EXPECT_TRUE(c.on_key_up(SDL_SCANCODE_LSHIFT));  // its press was ours
+  ASSERT_TRUE(c.take_binding().has_value());
 }
 
 TEST(JoyKeyCapture, EscapeCancels) {
