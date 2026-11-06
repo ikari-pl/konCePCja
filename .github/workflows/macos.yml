@@ -99,6 +99,12 @@ jobs:
           python3 test/integrated/kcpc/test_kcpc.py --ui-free
           python3 test/integrated/kcpc/test_fb_ring.py --ui-free
 
+      # The unit suite again with libc++'s debug hardening (beads-p2qa): an
+      # index past the end of a vector aborts instead of reading memory. The
+      # Linux job does the same for libstdc++. Own object tree
+      # (obj/macos-harden), so nothing above is rebuilt.
+      - run: make -j 3 ARCH=macos HARDEN=1 unit_test
+
       # ---- Release-only steps below ----
 
       - name: Import signing certificate
