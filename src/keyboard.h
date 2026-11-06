@@ -340,9 +340,7 @@ static_assert(CPC_KEY_NUM == 209, "CPC_KEYS_LIST changed size");
 // True for a key of the CPC keyboard (a CPC_KEYS value), false for an
 // emulator command (KONCPC_KEYS, above MOD_EMU_KEY) or anything else. Only a
 // CPC key can index the CPC key table (InputMapper::CPCscancodeFromCPCkey).
-constexpr bool isCPCKey(long long key) {
-  return key >= 0 && key < CPC_KEY_NUM;
-}
+constexpr bool isCPCKey(long long key) { return key >= 0 && key < CPC_KEY_NUM; }
 // Number of different keyboards supported (English, French, Spanish).
 inline constexpr int CPC_KEYBOARD_NUM = 3;
 
