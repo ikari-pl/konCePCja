@@ -23,6 +23,7 @@
 
 #include "kcpc/kcpc_proto.h"
 #include "kcpc_fake_machine.h"
+#include "kcpc_test_wire.h"
 #include "net_socket.h"
 
 namespace {
@@ -101,22 +102,7 @@ class TestClient {
   }
 
   bool send(const std::vector<std::uint8_t>& bytes) {
-    std::size_t sent = 0;
-    auto const deadline =
-        Clock::now() + std::chrono::milliseconds(kReplyTimeoutMs);
-    while (sent < bytes.size()) {
-      net::IoResult const r =
-          net::send_some(socket_, bytes.data() + sent, bytes.size() - sent);
-      if (r.status == net::IoStatus::kOk) {
-        sent += r.bytes;
-      } else if (r.status == net::IoStatus::kWouldBlock) {
-        if (Clock::now() >= deadline) return false;
-        net::wait_writable(socket_, 20);
-      } else {
-        return false;
-      }
-    }
-    return true;
+    return kcpc_test::send_all(socket_, bytes, kReplyTimeoutMs);
   }
 
   bool request(Opcode opcode, std::uint32_t id,
@@ -165,47 +151,25 @@ class TestClient {
   // One whole frame of any kind, or false on timeout, close or a malformed
   // header.
   bool receive_any(Frame& out, int timeout_ms = kReplyTimeoutMs) {
-    std::uint8_t raw[kcpc::kHeaderSize];
-    if (!read_exact(raw, sizeof(raw), timeout_ms)) return false;
-    if (kcpc::parse_header(raw, kcpc::kMaxServerFrame, out.header) !=
-        kcpc::HeaderError::kOk) {
-      return false;
-    }
-    out.payload.resize(out.header.length);
-    return read_exact(out.payload.data(), out.payload.size(), timeout_ms);
+    return kcpc_test::read_frame(socket_, out.header, out.payload,
+                                 kcpc::kMaxServerFrame, timeout_ms);
   }
 
-  // True when the server closed the connection and sent nothing more.
+  // True when the server closed the connection and sent nothing more (a
+  // socket failure counts as closed; stray data does not).
   bool closed_by_peer(int timeout_ms = kReplyTimeoutMs) {
-    auto const deadline = Clock::now() + std::chrono::milliseconds(timeout_ms);
-    std::uint8_t byte = 0;
-    while (Clock::now() < deadline) {
-      if (!net::wait_readable(socket_, 20)) continue;
-      net::IoResult const r = net::recv_some(socket_, &byte, 1);
-      if (r.status == net::IoStatus::kClosed) return true;
-      if (r.status == net::IoStatus::kOk) return false;  // stray data
-      if (r.status == net::IoStatus::kError) return true;
+    switch (kcpc_test::read_end(socket_, timeout_ms, /*discard_data=*/false)) {
+      case kcpc_test::StreamEnd::kClosed:
+      case kcpc_test::StreamEnd::kError:
+        return true;
+      case kcpc_test::StreamEnd::kData:
+      case kcpc_test::StreamEnd::kTimeout:
+        return false;
     }
     return false;
   }
 
  private:
-  bool read_exact(std::uint8_t* buf, std::size_t size, int timeout_ms) {
-    std::size_t got = 0;
-    auto const deadline = Clock::now() + std::chrono::milliseconds(timeout_ms);
-    while (got < size) {
-      if (Clock::now() >= deadline) return false;
-      if (!net::wait_readable(socket_, 20)) continue;
-      net::IoResult const r = net::recv_some(socket_, buf + got, size - got);
-      if (r.status == net::IoStatus::kOk) {
-        got += r.bytes;
-      } else if (r.status != net::IoStatus::kWouldBlock) {
-        return false;
-      }
-    }
-    return true;
-  }
-
   net::Socket socket_;
 };
 

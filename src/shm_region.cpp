@@ -30,6 +30,14 @@ std::string os_name(const std::string& base) {
 #endif
 }
 
+std::string base_name(const std::string& name) {
+  std::string const prefix = os_name("");
+  if (name.compare(0, prefix.size(), prefix) == 0) {
+    return name.substr(prefix.size());
+  }
+  return name;
+}
+
 Region::~Region() { close(); }
 
 Region::Region(Region&& other) noexcept { *this = std::move(other); }

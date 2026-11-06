@@ -7,12 +7,11 @@
 
 #include <algorithm>
 #include <atomic>
-#include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <mutex>
 #include <string>
-#include <thread>
 #include <vector>
 
 #include "kcpc/kcpc_events.h"
@@ -172,9 +171,10 @@ struct FakeRun {
         e.cause_client = cause.client;
         e.cause_request = cause.request;
         server.post(e);
-        // Long enough for the fan-out thread to have the event at the
-        // connection before the response exists.
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        // The test's handshake with the fan-out thread: the reply waits
+        // here until the test knows the event reached the connection, so
+        // the order the server keeps is what is tested, never a race.
+        if (after_post) after_post();
       }
       stamp = {56, true};
       return Status::kOk;
@@ -208,6 +208,10 @@ struct FakeRun {
   std::atomic<bool> paused{false};
   std::atomic<bool> walking{false};
   std::atomic<bool> post_from_request{false};
+  // Called by `pause` after it posted its stop (post_from_request), on the
+  // controller's reader thread, before the reply exists. Set before the
+  // request.
+  std::function<void()> after_post;
   std::atomic<int> pauses{0};
   std::atomic<int> runs{0};
   std::atomic<int> resets{0};

@@ -831,6 +831,16 @@ clang-tidy:
 	if $(CLANG_TIDY) $(FORMAT_SOURCES) -header-filter=src/* -- $(COMMON_CFLAGS) | grep "."; then false; fi
 	./tools/check_includes.sh
 
+# clang-tidy over the files a change touches only, failing on a finding that is
+# not already at BASE (beads-myd6).  The whole-tree target above can only ever
+# be informational: the tree carries a few hundred findings, and every file
+# prints "N warnings generated" whether or not it has one, so it never passes.
+# This is the gate CI runs on a pull request.
+BASE ?= origin/master
+clang-tidy-changed:
+	CLANG_TIDY="$(CLANG_TIDY)" ./tools/clang_tidy_changed.sh --base $(BASE) \
+		-- $(COMMON_CFLAGS)
+
 clang-format:
 	./tools/check_clang_format.sh $(CLANG_FORMAT) "-style=Google" $(FORMAT_SOURCES) $(TEST_SOURCES) $(FORMAT_HEADERS) $(TEST_HEADERS)
 

@@ -252,6 +252,15 @@ TEST(FbRingTest, AConcurrentReaderNeverAcceptsATornFrame) {
   EXPECT_GT(refused, 0) << "the producer never lapped a copy";
 }
 
+// base_name() undoes os_name(); a name that never had the platform's prefix
+// is a base already.
+TEST(ShmRegionTest, BaseNameIsTheInverseOfOsName) {
+  EXPECT_EQ(shm::base_name(shm::os_name("kcpc-fb-123")), "kcpc-fb-123");
+  EXPECT_EQ(shm::base_name("kcpc-fb-123"), "kcpc-fb-123");
+  EXPECT_NE(shm::os_name("kcpc-fb-123"), "kcpc-fb-123");
+  EXPECT_EQ(shm::base_name(shm::os_name("")), "");
+}
+
 TEST(ShmRegionTest, ARegionIsSharedBetweenMappingsAndGoneAfterClose) {
   std::string const base =
       "kcpc-region-" + std::to_string(startup_manifest_self_pid());
