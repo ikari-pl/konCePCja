@@ -78,6 +78,13 @@ make -j$(nproc) DEBUG=1
 # obj/<arch>-noui; CMake: -DKONCPC_BUILD_MODERN_UI=OFF, no test_runner)
 make -j$(nproc) KONCPC_MODERN_UI=0 koncepcja
 python3 test/integrated/headless_smoke.py --ui-free
+
+# Hardened standard library: an index past the end of a vector (or front()
+# of an empty one, ...) aborts instead of reading memory. libstdc++ and
+# libc++ both (-D_GLIBCXX_ASSERTIONS, _LIBCPP_HARDENING_MODE_DEBUG); objects
+# in obj/<arch>-harden. CI runs the unit suite this way on Linux and macOS.
+# Run it after touching container indexing (beads-p2qa).
+make -j$(nproc) HARDEN=1 unit_test
 ```
 
 ## Command Line Arguments
