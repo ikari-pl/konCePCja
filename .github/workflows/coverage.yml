@@ -15,7 +15,7 @@ on:
 jobs:
   coverage:
     name: Coverage Report
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     # The job runs apt-get (variable, occasionally 10+ min on a slow mirror),
     # a full cold coverage build (no ccache), and gcovr. 15 min was too tight:
     # a slow Install-dependencies step left the build <4 min and the job-level
