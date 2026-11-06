@@ -213,6 +213,17 @@ OBJDIR:=obj/$(ARCH)
 else
 OBJDIR:=obj/$(ARCH)-noui
 endif
+# HARDEN=1: the C++ standard library checks its own preconditions (an index
+# past the end of a vector, front() of an empty container, ...) and aborts
+# instead of reading or writing out of bounds (beads-p2qa). Both libraries
+# are covered: libstdc++ (Linux, MinGW) and libc++ (macOS). It gets its own
+# object tree for the same reason as -noui: make does not track flags.
+# Before this, the checks only ran where a runner's libstdc++ happened to
+# turn them on (ubuntu-26.04, which is how beads-z6jj was found).
+ifeq ($(HARDEN),1)
+COMMON_CFLAGS += -D_GLIBCXX_ASSERTIONS -D_LIBCPP_HARDENING_MODE=_LIBCPP_HARDENING_MODE_DEBUG
+OBJDIR:=$(OBJDIR)-harden
+endif
 RELEASE_DIR = release
 ARCHIVE = koncepcja-$(ARCH)
 ARCHIVE_DIR = $(RELEASE_DIR)/$(ARCHIVE)

@@ -31,7 +31,7 @@ permissions:
 jobs:
   compile-dxbc:
     name: Compile HLSL → DXBC and regenerate C++ headers
-    runs-on: windows-latest
+    runs-on: windows-2022
     # Skip auto-commits triggered by this workflow itself, otherwise we'd
     # loop.  The marker is the bot's commit message prefix below.
     if: ${{ github.event.head_commit.message == null || !startsWith(github.event.head_commit.message, 'chore(shaders):') }}
@@ -100,6 +100,16 @@ jobs:
           # empty placeholders, racing the Linux compile-spirv job).
           python scripts/blob_to_header.py --format dxbc
 
+      - name: Format headers like the tree
+        shell: pwsh
+        run: |
+          # The checked-in headers are clang-formatted (the clang-format
+          # check covers them); compare like with like, or every run sees a
+          # layout-only diff and commits it. Same pin as linux.yml.
+          python -m pip install --quiet clang-format==22.1.8
+          python -c "import sys, clang_format; sys.argv[0] = 'clang-format'; clang_format.clang_format()" -style=Google -i src/shaders/blit_dxbc_blobs.h src/shaders/crt_dxbc_blobs.h
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
       - name: Diff check
         id: diff
         shell: pwsh
@@ -125,7 +135,7 @@ jobs:
 
   compile-spirv:
     name: Compile GLSL → SPIRV and regenerate C++ headers
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     # Same anti-loop guard as compile-dxbc — skip when this workflow's own
     # auto-commit triggers another run.
     if: ${{ github.event.head_commit.message == null || !startsWith(github.event.head_commit.message, 'chore(shaders):') }}
@@ -169,6 +179,13 @@ jobs:
           # (no .dxbc files on this runner; they'd be overwritten as
           # empty placeholders, racing the Windows compile-dxbc job).
           python3 scripts/blob_to_header.py --format spirv
+
+      - name: Format headers like the tree
+        run: |
+          # See compile-dxbc: compare clang-formatted with clang-formatted.
+          pip install --break-system-packages --quiet clang-format==22.1.8
+          clang-format -style=Google -i \
+            src/shaders/blit_spirv_blobs.h src/shaders/crt_spirv_blobs.h
 
       - name: Diff check
         id: diff

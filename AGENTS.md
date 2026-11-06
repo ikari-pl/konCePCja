@@ -78,6 +78,13 @@ make -j$(nproc) DEBUG=1
 # obj/<arch>-noui; CMake: -DKONCPC_BUILD_MODERN_UI=OFF, no test_runner)
 make -j$(nproc) KONCPC_MODERN_UI=0 koncepcja
 python3 test/integrated/headless_smoke.py --ui-free
+
+# Hardened standard library: an index past the end of a vector (or front()
+# of an empty one, ...) aborts instead of reading memory. libstdc++ and
+# libc++ both (-D_GLIBCXX_ASSERTIONS, _LIBCPP_HARDENING_MODE_DEBUG); objects
+# in obj/<arch>-harden. CI runs the unit suite this way on Linux and macOS.
+# Run it after touching container indexing (beads-p2qa).
+make -j$(nproc) HARDEN=1 unit_test
 ```
 
 ## Command Line Arguments
@@ -709,6 +716,10 @@ Recurring patterns from code reviews. Follow these to avoid common pitfalls:
 
 - **NEVER merge a PR with failing CI checks.** Fix failures first.
 - **Auto-merge** (`gh pr merge --auto`) triggers only when **all CI checks pass AND all review comment threads are resolved**. A PR that is green on CI but has unresolved threads will stay blocked. Always resolve open threads before expecting auto-merge to fire.
+- **Runner images are pinned** (`ubuntu-26.04`, `macos-26`, `windows-2022`),
+  never `*-latest`. When `ubuntu-latest` moved from 24.04 to 26.04 it broke
+  master twice with no code change (beads-972k, beads-z6jj, beads-nv4a).
+  Move to a newer image in its own PR, with CI green on it.
 
 ### Automated PR review (`review` label)
 
