@@ -112,8 +112,8 @@ bool Machine::build(const uint8_t* rom, size_t rom_len) {
   return true;
 }
 
-// NOLINTNEXTLINE(readability-non-const-parameter): pointer written through a
-// cast or passed to a non-const callee
+// pointer written through a cast or passed to a non-const callee.
+// NOLINTNEXTLINE(readability-non-const-parameter)
 void Machine::attach_framebuffer(uint8_t* fb, int w, int h) {
   video_attach(&vdev_, &gdev_, fb, w, h);
   // The video Device reads Plus state (12-bit palette + sprites) from the ASIC;
@@ -136,8 +136,8 @@ void Machine::attach_cartridge(const uint8_t* image, size_t bytes) {
   mem_load_cartridge(&mdev_, image, bytes);
 }
 
-// NOLINTNEXTLINE(readability-non-const-parameter): pointer written through a
-// cast or passed to a non-const callee
+// pointer written through a cast or passed to a non-const callee.
+// NOLINTNEXTLINE(readability-non-const-parameter)
 bool Machine::insert_disk(uint8_t* dsk, size_t len, uint8_t unit) {
   return fdc_attach_disk(&fdev_, dsk, len, unit) == 0;
 }
@@ -894,8 +894,9 @@ int Machine::run_wake_us(VideoRegs& vr, uint32_t target, bool& vsync_seen) {
   n += 2;
   KONCPC_WAKE_SLOT(0)
   KONCPC_WAKE_SLOT(1)
-  // NOLINTNEXTLINE(readability-simplify-boolean-expr): boolean expression is
-  // produced by the wake-scheduler KONCPC_* macro; not rewritable at this site
+  // boolean expression is produced by the wake-scheduler KONCPC_* macro; not
+  // rewritable at this site.
+  // NOLINTNEXTLINE(readability-simplify-boolean-expr)
   if (KONCPC_ELIDABLE()) {
     KONCPC_ELIDE_PAIR(4)
   } else {
@@ -904,8 +905,9 @@ int Machine::run_wake_us(VideoRegs& vr, uint32_t target, bool& vsync_seen) {
   }
   KONCPC_WAKE_SLOT(4)
   KONCPC_WAKE_SLOT(5)
-  // NOLINTNEXTLINE(readability-simplify-boolean-expr): boolean expression is
-  // produced by the wake-scheduler KONCPC_* macro; not rewritable at this site
+  // boolean expression is produced by the wake-scheduler KONCPC_* macro; not
+  // rewritable at this site.
+  // NOLINTNEXTLINE(readability-simplify-boolean-expr)
   if (KONCPC_ELIDABLE()) {
     KONCPC_ELIDE_PAIR(8)
   } else {
@@ -914,8 +916,9 @@ int Machine::run_wake_us(VideoRegs& vr, uint32_t target, bool& vsync_seen) {
   }
   KONCPC_WAKE_SLOT(8)
   KONCPC_WAKE_SLOT(9)
-  // NOLINTNEXTLINE(readability-simplify-boolean-expr): boolean expression is
-  // produced by the wake-scheduler KONCPC_* macro; not rewritable at this site
+  // boolean expression is produced by the wake-scheduler KONCPC_* macro; not
+  // rewritable at this site.
+  // NOLINTNEXTLINE(readability-simplify-boolean-expr)
   if (KONCPC_ELIDABLE()) {
     KONCPC_ELIDE_PAIR(12)
   } else {
@@ -1496,8 +1499,10 @@ void Machine::recompose_active() {
   // call every master cycle. Everything else (the core chips, probe, tape,
   // printer) always ticks. Matched by state pointer, since board_.dev[] holds
   // copies of these Device views.
-  // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated
+  //
+  // clang-tidy FP — variable is mutated
   // (out-param/compound-assign/loop/reference)
+  // NOLINTNEXTLINE(misc-const-correctness)
   int n = 0;
   for (int i = 0; i < board_.count; ++i) {
     const void* s = board_.dev[i].self;
@@ -1854,8 +1859,8 @@ void Machine::silicon_disc_load(const uint8_t* src, size_t len) {
   std::memcpy(xmem_.data() + kSiliconStart, src, n);
 }
 
-// NOLINTNEXTLINE(readability-non-const-parameter): pointer written through a
-// cast or passed to a non-const callee
+// pointer written through a cast or passed to a non-const callee.
+// NOLINTNEXTLINE(readability-non-const-parameter)
 void Machine::silicon_disc_save(uint8_t* dst, size_t len) const {
   if (dst == nullptr || xmem_.size() < kSiliconEnd) return;
   size_t const n = len < kSiliconSize ? len : kSiliconSize;
@@ -1902,12 +1907,12 @@ bool Machine::at_instruction_boundary() const {
   return z80_at_instruction_boundary(&zdev_) != 0;
 }
 
-// NOLINTNEXTLINE(readability-make-member-function-const): mutates state via a
-// free function taking a non-const pointer
+// mutates state via a free function taking a non-const pointer.
+// NOLINTNEXTLINE(readability-make-member-function-const)
 void Machine::abandon_instruction() { z80_abandon_instruction(&zdev_); }
 
-// NOLINTNEXTLINE(readability-make-member-function-const): mutates state via a
-// free function taking a non-const pointer
+// mutates state via a free function taking a non-const pointer.
+// NOLINTNEXTLINE(readability-make-member-function-const)
 void Machine::finish_instruction() {
   if (!built_) return;
   // Same bound as step_instruction(): far above the longest instruction.
@@ -1939,8 +1944,8 @@ void Machine::poke_mem(uint16_t addr, uint8_t val) {
   mem_poke_cpu(&mdev_, addr, val);
 }
 
-// NOLINTNEXTLINE(readability-make-member-function-const): mutates state via a
-// free function taking a non-const pointer
+// mutates state via a free function taking a non-const pointer.
+// NOLINTNEXTLINE(readability-make-member-function-const)
 void Machine::step_instruction() {
   if (!built_) return;
   Z80Regs before{};
@@ -1954,8 +1959,8 @@ void Machine::step_instruction() {
   }
 }
 
-// NOLINTNEXTLINE(readability-make-member-function-const): mutates state via a
-// free function taking a non-const pointer
+// mutates state via a free function taking a non-const pointer.
+// NOLINTNEXTLINE(readability-make-member-function-const)
 bool Machine::run_to_fetch(uint16_t addr) {
   if (!built_) return false;
   // A probe with nothing armed is left out of the tick list until the next

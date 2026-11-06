@@ -185,11 +185,13 @@ std::ostream& operator<<(std::ostream& os, const DisassembledLine& line) {
 // ── DisassembledCode ────────────────────────────────────────────────────────
 
 uint64_t DisassembledCode::hash() const {
-  // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated
+  // clang-tidy FP — variable is mutated
   // (out-param/compound-assign/loop/reference)
+  // NOLINTNEXTLINE(misc-const-correctness)
   uint64_t h = 0;
-  // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated
+  // clang-tidy FP — variable is mutated
   // (out-param/compound-assign/loop/reference)
+  // NOLINTNEXTLINE(misc-const-correctness)
   int i = 0;
   for (const auto& line : lines) {
     h += i * (line.address_ + line.opcode_);
@@ -212,8 +214,9 @@ std::ostream& operator<<(std::ostream& os, const DisassembledCode& code) {
 
 // ── Disassembly core ────────────────────────────────────────────────────────
 
-// NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other
-// translation units/tests; internal linkage would break the link
+// external API consumed by other translation units/tests; internal linkage
+// would break the link.
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 DisassembledLine disassemble_one(dword start_address, DisassembledCode& result,
                                  std::vector<dword>& called_points) {
   const word start = static_cast<word>(start_address);
@@ -279,8 +282,9 @@ void disassemble_from(dword pos, DisassembledCode& result,
 }
 }  // namespace
 
-// NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other
-// translation units/tests; internal linkage would break the link
+// external API consumed by other translation units/tests; internal linkage
+// would break the link.
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 DisassembledCode disassemble(const std::vector<word>& entry_points) {
   DisassembledCode code;
   std::vector<dword> to_disassemble_from(entry_points.begin(),

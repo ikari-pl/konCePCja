@@ -131,8 +131,9 @@ int vid_render_line(const uint8_t* ram, uint8_t mode, const uint8_t* ink,
 
 int vid_px_per_char(uint8_t mode) {
   // Mode 3 shares mode 0's 160-pixel width (4 px/char); mode 1 is 8, mode 2 16.
-  // NOLINTNEXTLINE(readability-avoid-nested-conditional-operator): nested
-  // conditional kept intentionally; no clang-tidy auto-fix
+  //
+  // nested conditional kept intentionally; no clang-tidy auto-fix.
+  // NOLINTNEXTLINE(readability-avoid-nested-conditional-operator)
   return (mode == 0 || mode == 3) ? 4 : mode == 1 ? 8 : 16;
 }
 
@@ -290,8 +291,8 @@ void plus_refresh_line(video_state* v) {
     v->lc_id[v->lc_n] = static_cast<int8_t>(i);
     v->lc_row[v->lc_n] = static_cast<int8_t>((py - sy) / my);
     v->lc_shift[v->lc_n] =
-        // NOLINTNEXTLINE(readability-avoid-nested-conditional-operator): nested
-        // conditional kept intentionally; no clang-tidy auto-fix
+        // nested conditional kept intentionally; no clang-tidy auto-fix.
+        // NOLINTNEXTLINE(readability-avoid-nested-conditional-operator)
         static_cast<int8_t>((mx == 4) ? 2 : (mx == 2 ? 1 : 0));
     v->lc_n++;
   }

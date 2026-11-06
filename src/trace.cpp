@@ -92,7 +92,7 @@ void TraceRecorder::snapshot(std::vector<TraceEntry>& out) const {
   int const first = std::min(count, n - start);
   std::memcpy(out.data(), &buffer[start], first * sizeof(TraceEntry));
   if (first < count) {
-    std::memcpy(out.data() + first, &buffer[0],
+    std::memcpy(out.data() + first, buffer.data(),
                 (count - first) * sizeof(TraceEntry));
   }
 }

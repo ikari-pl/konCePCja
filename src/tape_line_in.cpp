@@ -110,8 +110,8 @@ void tape_line_audio_shutdown() {
 }
 
 void tape_line_out_set_volume(float level) {
-  // NOLINTNEXTLINE(readability-avoid-nested-conditional-operator): nested
-  // conditional kept intentionally; no clang-tidy auto-fix
+  // nested conditional kept intentionally; no clang-tidy auto-fix.
+  // NOLINTNEXTLINE(readability-avoid-nested-conditional-operator)
   g_out_volume = level < 0.0f ? 0.0f : (level > 1.0f ? 1.0f : level);
 }
 float tape_line_out_volume() { return g_out_volume; }
@@ -143,8 +143,9 @@ void tape_line_out_pump(subcycle::Machine& machine) {
   static std::vector<int16_t> frames;
   frames.clear();
   const float kCarrierStep = 2.0f * 3.14159265f * 19000.0f / 44100.0f;
-  // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated
+  // clang-tidy FP — variable is mutated
   // (out-param/compound-assign/loop/reference)
+  // NOLINTNEXTLINE(misc-const-correctness)
   static double decim_acc = 0.0;
   for (unsigned char const wire : wires) {
     decim_acc += 1.0;
@@ -224,8 +225,8 @@ void tape_line_in_pump(subcycle::Machine& machine) {
       const int16_t right = buf[(i * 2) + 1];
       const int16_t s =
           g_channel == 0 ? left
-          // NOLINTNEXTLINE(readability-avoid-nested-conditional-operator):
-          // nested conditional kept intentionally; no clang-tidy auto-fix
+          // nested conditional kept intentionally; no clang-tidy auto-fix.
+          // NOLINTNEXTLINE(readability-avoid-nested-conditional-operator)
           : g_channel == 1
               ? right
               : static_cast<int16_t>((static_cast<int>(left) + right) / 2);
@@ -268,8 +269,8 @@ void tape_line_out_pump(subcycle::Machine& /*machine*/) {}
 void tape_line_audio_shutdown() {}
 
 void tape_line_out_set_volume(float level) {
-  // NOLINTNEXTLINE(readability-avoid-nested-conditional-operator): nested
-  // conditional kept intentionally; no clang-tidy auto-fix
+  // nested conditional kept intentionally; no clang-tidy auto-fix.
+  // NOLINTNEXTLINE(readability-avoid-nested-conditional-operator)
   g_out_volume = level < 0.0f ? 0.0f : (level > 1.0f ? 1.0f : level);
 }
 float tape_line_out_volume() { return g_out_volume; }

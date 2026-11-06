@@ -325,8 +325,9 @@ bool Z80Assembler::eval_expr(const std::string& expr,
         return true;
       }
       if (t.type == ExprTokenType::SYMBOL) {
-        // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
-        // mutated (out-param/compound-assign/loop/reference)
+        // clang-tidy FP — variable is mutated
+        // (out-param/compound-assign/loop/reference)
+        // NOLINTNEXTLINE(misc-const-correctness)
         std::string upper;
         for (auto c : t.text)
           upper += static_cast<char>(toupper(static_cast<unsigned char>(c)));
@@ -550,11 +551,13 @@ bool Z80Assembler::is_directive(const std::string& mnemonic) {
 namespace {
 int count_defb_bytes(const std::string& operands) {
   int count = 0;
-  // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated
+  // clang-tidy FP — variable is mutated
   // (out-param/compound-assign/loop/reference)
+  // NOLINTNEXTLINE(misc-const-correctness)
   bool in_string = false;
-  // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated
+  // clang-tidy FP — variable is mutated
   // (out-param/compound-assign/loop/reference)
+  // NOLINTNEXTLINE(misc-const-correctness)
   int item_count = 0;
 
   for (char const c : operands) {
@@ -583,11 +586,13 @@ int count_defb_bytes(const std::string& operands) {
 // Count commas outside strings to determine DEFW item count
 namespace {
 int count_comma_items(const std::string& operands) {
-  // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated
+  // clang-tidy FP — variable is mutated
   // (out-param/compound-assign/loop/reference)
+  // NOLINTNEXTLINE(misc-const-correctness)
   int count = 1;
-  // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated
+  // clang-tidy FP — variable is mutated
   // (out-param/compound-assign/loop/reference)
+  // NOLINTNEXTLINE(misc-const-correctness)
   bool in_string = false;
   for (char const c : operands) {
     if (c == '"') in_string = !in_string;
@@ -668,8 +673,8 @@ bool Z80Assembler::encode_directive(const Line& line,
         if (!eval_expr(expr, symbols,
                        current_addr + static_cast<word>(output.size()), val,
                        error)) {
-          // NOLINTNEXTLINE(performance-inefficient-string-concatenation):
-          // one-shot error-message prefix; += offers no measurable benefit
+          // one-shot error-message prefix; += offers no measurable benefit.
+          // NOLINTNEXTLINE(performance-inefficient-string-concatenation)
           error = "in DEFB: " + error;
           return false;
         }
@@ -695,8 +700,8 @@ bool Z80Assembler::encode_directive(const Line& line,
         if (!eval_expr(expr, symbols,
                        current_addr + static_cast<word>(output.size()), val,
                        error)) {
-          // NOLINTNEXTLINE(performance-inefficient-string-concatenation):
-          // one-shot error-message prefix; += offers no measurable benefit
+          // one-shot error-message prefix; += offers no measurable benefit.
+          // NOLINTNEXTLINE(performance-inefficient-string-concatenation)
           error = "in DEFW: " + error;
           return false;
         }
@@ -1003,8 +1008,9 @@ bool Z80Assembler::encode_instruction(
     const std::string& mnemonic, const std::string& operands,
     const std::map<std::string, word>& symbols, word current_addr,
     std::vector<byte>& output, std::string& error) {
-  // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated
+  // clang-tidy FP — variable is mutated
   // (out-param/compound-assign/loop/reference)
+  // NOLINTNEXTLINE(misc-const-correctness)
   OperandMatch match;
   if (!try_match_opcode(mnemonic, operands, symbols, current_addr, match,
                         error))
@@ -1101,11 +1107,13 @@ bool Z80Assembler::encode_instruction(
 bool Z80Assembler::pass1(std::vector<Line>& lines,
                          std::map<std::string, word>& symbols,
                          std::vector<AsmError>& errors) {
-  // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated
+  // clang-tidy FP — variable is mutated
   // (out-param/compound-assign/loop/reference)
+  // NOLINTNEXTLINE(misc-const-correctness)
   word current_addr = 0;
-  // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated
+  // clang-tidy FP — variable is mutated
   // (out-param/compound-assign/loop/reference)
+  // NOLINTNEXTLINE(misc-const-correctness)
   bool hit_end = false;
 
   for (auto& line : lines) {
@@ -1193,17 +1201,20 @@ bool Z80Assembler::pass2(const std::vector<Line>& lines,
                          std::vector<AsmError>& errors,
                          std::vector<std::pair<word, byte>>* writes,
                          word& start_addr, word& end_addr, int& bytes_written) {
-  // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated
+  // clang-tidy FP — variable is mutated
   // (out-param/compound-assign/loop/reference)
+  // NOLINTNEXTLINE(misc-const-correctness)
   word current_addr = 0;
-  // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated
+  // clang-tidy FP — variable is mutated
   // (out-param/compound-assign/loop/reference)
+  // NOLINTNEXTLINE(misc-const-correctness)
   bool first_byte = true;
   start_addr = 0;
   end_addr = 0;
   bytes_written = 0;
-  // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated
+  // clang-tidy FP — variable is mutated
   // (out-param/compound-assign/loop/reference)
+  // NOLINTNEXTLINE(misc-const-correctness)
   bool hit_end = false;
 
   for (auto& line : lines) {
