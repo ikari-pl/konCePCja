@@ -1,5 +1,19 @@
 # Changelog
 
+## [6.6.0](https://github.com/ikari-pl/konCePCja/compare/v6.5.0...v6.6.0) (2026-11-06)
+
+
+### Features
+
+* **devtools:** trace file UI and Windows build tweaks ([#145](https://github.com/ikari-pl/konCePCja/issues/145)) ([11d3c43](https://github.com/ikari-pl/konCePCja/commit/11d3c43669c71450fa61428a7f302be5d0b6cd34))
+* **input:** joystick-presses-keys mode, key capture, positional layout ([#152](https://github.com/ikari-pl/konCePCja/issues/152)) ([9dffe0a](https://github.com/ikari-pl/konCePCja/commit/9dffe0a10b4d014651be0bc899112db2ff922e3f))
+* **kcpc:** C++ client library and frame-ring reader (beads-3sp.1) ([#151](https://github.com/ikari-pl/konCePCja/issues/151)) ([40d862e](https://github.com/ikari-pl/konCePCja/commit/40d862e811e8614b26f1593abd2362d94c2bafed))
+
+
+### Bug Fixes
+
+* **kcpc:** harden the C++ client: bounded sends, carried ERROR status, concurrent close, bounded keepalive, a ring reader that trusts no header (beads-3sp.11, beads-3sp.12) ([#159](https://github.com/ikari-pl/konCePCja/issues/159)) ([f15cdcd](https://github.com/ikari-pl/konCePCja/commit/f15cdcdbbd0d2c68181f77ab09fb39af46ab30f4))
+
 ## [6.5.0](https://github.com/ikari-pl/konCePCja/compare/v6.4.2...v6.5.0) (2026-10-31)
 
 
