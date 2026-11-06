@@ -712,6 +712,10 @@ Recurring patterns from code reviews. Follow these to avoid common pitfalls:
 
 - **NEVER merge a PR with failing CI checks.** Fix failures first.
 - **Auto-merge** (`gh pr merge --auto`) triggers only when **all CI checks pass AND all review comment threads are resolved**. A PR that is green on CI but has unresolved threads will stay blocked. Always resolve open threads before expecting auto-merge to fire.
+- **Runner images are pinned** (`ubuntu-26.04`, `macos-26`, `windows-2022`),
+  never `*-latest`. When `ubuntu-latest` moved from 24.04 to 26.04 it broke
+  master twice with no code change (beads-972k, beads-z6jj, beads-nv4a).
+  Move to a newer image in its own PR, with CI green on it.
 
 ### Automated PR review (`review` label)
 

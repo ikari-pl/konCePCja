@@ -49,7 +49,7 @@ jobs:
   gate:
     name: Decide whether to review
     if: github.event_name == 'workflow_dispatch' || github.event.label.name == 'review'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     permissions:
       pull-requests: read
     outputs:
@@ -90,7 +90,7 @@ jobs:
     name: ce-code-review
     needs: gate
     if: needs.gate.outputs.run == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 60
     permissions:
       contents: read
@@ -293,7 +293,7 @@ jobs:
     name: Post the review
     needs: [gate, review]
     if: always() && needs.gate.outputs.run == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     permissions:
       pull-requests: write
     steps:
