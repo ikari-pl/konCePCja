@@ -6,6 +6,7 @@
 #include "amdrum.h"
 #include "amx_mouse.h"
 #include "drive_sounds.h"
+#include "keyboard.h"
 #include "koncepcja.h"
 #include "koncepcja_ipc_server.h"
 #include "serial_interface.h"
@@ -371,6 +372,27 @@ TEST_F(ConfigurationTest, loadConfigurationWithInvalidValues) {
   ASSERT_EQ(0, CPC.printer);
   ASSERT_EQ(std::string(chAppPath) + "/resources",
             std::string(CPC.resources_path));
+}
+
+// A joy_to_keys_* name that is an emulator command (KONCPC_*) and not a CPC
+// key is refused like an unknown name: the slot gets its default
+// (beads-z0zb).
+TEST_F(ConfigurationTest, joyToKeysRefusesEmulatorCommands) {
+  std::ofstream configFile(getTmpFilename(0));
+  configFile << "[system]\n"
+             << "joy_to_keys_up=KONCPC_EXIT\n"
+             << "joy_to_keys_down=CPC_Q\n"
+             << "joy_to_keys_fire1=CPC_NO_SUCH_KEY\n";
+  configFile.close();
+
+  t_CPC CPC;
+  loadConfiguration(CPC, getTmpFilename(0));
+
+  EXPECT_EQ(InputMapper::CPCkeyFromName(kJoyToKeyDefaults[0]),
+            CPC.joy_to_keys[0]);
+  EXPECT_EQ(CPC_Q, CPC.joy_to_keys[1]);
+  EXPECT_EQ(InputMapper::CPCkeyFromName(kJoyToKeyDefaults[4]),
+            CPC.joy_to_keys[4]);
 }
 
 // Every key loadConfiguration reads, saveConfiguration must write back. Five

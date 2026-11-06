@@ -53,6 +53,7 @@
 #include "hw_views.h"
 #include "io_bus.h"
 #include "io_dispatch.h"
+#include "joy_key_capture.h"
 #include "kcpc/fb_publish.h"
 #include "kcpc/kcpc_host.h"
 #include "keyboard.h"
@@ -497,9 +498,11 @@ std::string JoystickEmulationToString(JoystickEmulation value) {
     case JoystickEmulation::None:
       return "off";
     case JoystickEmulation::Keyboard:
-      return "keyboard";
+      return "keys-press-joystick";
     case JoystickEmulation::Mouse:
       return "mouse";
+    case JoystickEmulation::JoystickToKeys:
+      return "joystick-presses-keys";
     case JoystickEmulation::Last:
       return "<invalid joystick emulation: last>";
   }
@@ -515,6 +518,8 @@ t_CPC::t_CPC() {
 }
 
 t_CPC CPC;
+// The Settings stick-to-keys capture (joy_key_capture.h).
+JoyKeyCapture g_joy_key_capture;
 
 // True once loadConfiguration() has populated CPC.  Gates every write-back
 // of the real config, so a process that never read it leaves the user file
@@ -2817,6 +2822,74 @@ void video_display_b() {
 }
 }  // namespace
 
+// The CPC keys controller `slot` presses for `mask` in the current joystick
+// emulation mode: the bound keys in JoystickToKeys, else the joystick bits.
+namespace {
+vjoy::VJoyKeys controller_keys(int slot, unsigned mask) {
+  bool const to_keys =
+      CPC.joystick_emulation == JoystickEmulation::JoystickToKeys;
+  return vjoy::vjoy_controller_keys(slot, mask,
+                                    to_keys ? CPC.joy_to_keys : nullptr);
+}
+
+// The controls (vjoy::VJOY_* bits) each controller slot holds down. In
+// JoystickToKeys both slots press the same keys, so a key goes up only when
+// no slot holds a control bound to it any more.
+unsigned controller_held[MAX_NB_JOYSTICKS] = {};
+
+// Whether any slot still holds a control that presses `key`.
+bool controller_key_still_held(CPC_KEYS key) {
+  for (int s = 0; s < MAX_NB_JOYSTICKS; ++s) {
+    if (vjoy::vjoy_keys_contain(controller_keys(s, controller_held[s]), key))
+      return true;
+  }
+  return false;
+}
+}  // namespace
+
+// Press/release one direction/fire (single bit) for a slot, via the shared
+// vjoystick mapping — the same keyboard-matrix row-9/row-6 path the on-screen
+// virtual joystick and IPC `input joy` drive, or the bound keys in
+// JoystickToKeys mode.  applyKeypress() respects the pause guard, matching the
+// historic raw-joystick handlers.
+void controller_apply_bit(int slot, unsigned bit, bool pressed) {
+  if (slot < 0 || slot >= MAX_NB_JOYSTICKS) return;
+  if (pressed) {
+    controller_held[slot] |= bit;
+  } else {
+    controller_held[slot] &= ~bit;
+  }
+  // controller_keys() drops a binding that is not a CPC key, so k.keys[0]
+  // always indexes the CPC key table.
+  vjoy::VJoyKeys const k = controller_keys(slot, bit);
+  if (k.count != 1) return;
+  if (!pressed && controller_key_still_held(k.keys[0])) return;
+  applyKeypress(CPC.InputMapper->CPCscancodeFromCPCkey(k.keys[0]),
+                keyboard_matrix, pressed);
+}
+
+void controller_release_all() {
+  for (int s = 0; s < MAX_NB_JOYSTICKS; ++s) {
+    vjoy::VJoyKeys const held = controller_keys(s, controller_held[s]);
+    controller_held[s] = 0;
+    // Direct: the Settings window that changes the mode pauses the CPC, and
+    // applyKeypress() drops keys while paused.
+    for (int i = 0; i < held.count; ++i) {
+      applyKeypressDirect(CPC.InputMapper->CPCscancodeFromCPCkey(held.keys[i]),
+                          keyboard_matrix, false);
+    }
+  }
+}
+
+void set_joystick_emulation_mode(JoystickEmulation mode) {
+  if (mode == CPC.joystick_emulation) return;
+  controller_release_all();  // as the old mode pressed them
+  CPC.joystick_emulation = mode;
+  // The host map is built from the mode (cursor keys and Z/X become joystick
+  // bits in one of them).
+  if (CPC.InputMapper != nullptr) CPC.InputMapper->set_joystick_emulation();
+}
+
 #ifdef KONCPC_SDL
 // ── Controller device tracking (gamepad + raw joystick, hotplug-aware) ──────
 // Return the slot (0/1) a given SDL instance id is mapped to, or -1 if unknown.
@@ -2889,9 +2962,12 @@ void controller_close(SDL_JoystickID id) {
     joysticks[slot] = nullptr;
   }
   device_instance[slot] = 0;
-  // Release every direction/fire this slot could have been holding down.
-  vjoy::VJoyKeys const all = vjoy::vjoy_all_keys(slot);
+  // Release every direction/fire this slot could have been holding down,
+  // except a key the other slot still holds (JoystickToKeys shares them).
+  controller_held[slot] = 0;
+  vjoy::VJoyKeys const all = controller_keys(slot, vjoy::VJOY_ALL);
   for (int i = 0; i < all.count; i++) {
+    if (controller_key_still_held(all.keys[i])) continue;
     applyKeypressDirect(CPC.InputMapper->CPCscancodeFromCPCkey(all.keys[i]),
                         keyboard_matrix, false);
   }
@@ -2957,20 +3033,6 @@ void joysticks_shutdown() {
     device_instance[i] = 0;
   }
   SDL_QuitSubSystem(SDL_INIT_GAMEPAD | SDL_INIT_JOYSTICK);
-}
-}  // namespace
-
-// Press/release one direction/fire (single bit) for a slot, via the shared
-// vjoystick mapping — the same keyboard-matrix row-9/row-6 path the on-screen
-// virtual joystick and IPC `input joy` drive.  applyKeypress() respects the
-// pause guard, matching the historic raw-joystick handlers.
-namespace {
-void controller_apply_bit(int slot, unsigned bit, bool pressed) {
-  vjoy::VJoyKeys const k = vjoy::vjoy_active_keys(slot, bit);
-  if (k.count == 1) {
-    applyKeypress(CPC.InputMapper->CPCscancodeFromCPCkey(k.keys[0]),
-                  keyboard_matrix, pressed);
-  }
 }
 }  // namespace
 #endif  // KONCPC_SDL: controllers
@@ -3167,6 +3229,25 @@ void loadConfiguration(t_CPC& CPC, const std::string& configFilename) {
       joy_emu_val = static_cast<int>(JoystickEmulation::None);
     }
     CPC.joystick_emulation = static_cast<JoystickEmulation>(joy_emu_val);
+  }
+  {
+    // Which CPC keys a stick presses in JoystickToKeys mode. Any name from
+    // the keyboard layout's CPC key table works (the same names the .map
+    // layout files use).
+    for (int i = 0; i < 6; ++i) {
+      std::string const name = conf.getStringValue("system", kJoyToKeySlots[i],
+                                                   kJoyToKeyDefaults[i]);
+      int key = InputMapper::CPCkeyFromName(name);
+      // The name table also holds the emulator commands (KONCPC_*); a stick
+      // can only press a CPC key.
+      if (!isCPCKey(key)) {
+        LOG_WARNING("'" << name << "' is not a CPC key name, for system."
+                        << kJoyToKeySlots[i] << "; using "
+                        << kJoyToKeyDefaults[i]);
+        key = InputMapper::CPCkeyFromName(kJoyToKeyDefaults[i]);
+      }
+      if (isCPCKey(key)) CPC.joy_to_keys[i] = key;
+    }
   }
   CPC.joysticks = read_flag("system", "joysticks", 1);
   CPC.joystick_menu_button =
@@ -3471,6 +3552,11 @@ bool saveConfiguration(t_CPC& CPC, const std::string& configFilename) {
   conf.setIntValue("system", "boot_time", CPC.boot_time);
   conf.setIntValue("system", "joystick_emulation",
                    static_cast<int>(CPC.joystick_emulation));
+  for (int i = 0; i < 6; ++i) {
+    conf.setStringValue("system", kJoyToKeySlots[i],
+                        InputMapper::CPCkeyToString(
+                            static_cast<CapriceKey>(CPC.joy_to_keys[i])));
+  }
   conf.setIntValue("system", "joysticks", CPC.joysticks);
   conf.setIntValue("system", "joystick_menu_button",
                    CPC.joystick_menu_button + 1);
@@ -3906,8 +3992,8 @@ void koncpc_menu_action(int action) {
       break;
 
     case KONCPC_JOY:
-      CPC.joystick_emulation = nextJoystickEmulation(CPC.joystick_emulation);
-      CPC.InputMapper->set_joystick_emulation();
+      set_joystick_emulation_mode(
+          nextJoystickEmulation(CPC.joystick_emulation));
 #ifdef KONCPC_SDL
       SDL_SetWindowRelativeMouseMode(
           mainSDLWindow, CPC.joystick_emulation == JoystickEmulation::Mouse);
@@ -4782,9 +4868,9 @@ EmuFrameResult emu_handle_stop() {
     return EmuFrameResult::kStopped;
   }
   if (z80.step_in >= 2) {
-    // Step In completed (one instruction) or Step Out completed (RET
-    // reached). cpc_pause(), not a bare CPC.paused write: g_emu_paused and
-    // the audio pause must follow (the -H loop used to skip both).
+    // Step In or Step Out finished. cpc_pause(), not a bare CPC.paused write:
+    // it settles g_emu_paused, the audio pause and the announced state
+    // together.
     CpcRunCause done;
     done.reason = CpcStopReason::StepDone;
     cpc_pause(done);
@@ -5562,6 +5648,19 @@ int koncpc_main(int argc, char** argv) {
           // second time. Drop that trailing QUIT.
           SDL_FlushEvent(SDL_EVENT_QUIT);
         }
+      }
+
+      // The Settings stick-to-keys capture takes key events while armed,
+      // ahead of the UI (Space/Return would press the focused slot button
+      // again, Esc would close Settings) and of the CPC.
+      if (event.type == SDL_EVENT_KEY_DOWN &&
+          g_joy_key_capture.on_key_down(event.key.scancode, event.key.mod,
+                                        event.key.repeat)) {
+        continue;
+      }
+      if (event.type == SDL_EVENT_KEY_UP &&
+          g_joy_key_capture.on_key_up(event.key.scancode)) {
+        continue;
       }
 
       // Feed event to the UI host (Dear ImGui in modern builds, no-op

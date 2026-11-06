@@ -22,6 +22,7 @@
 
 #include "amdrum.h"        // legacy g_amdrum: the UI toggles its enabled flag
 #include "amx_mouse.h"     // legacy g_amx_mouse: SDL events fill its counters
+#include "crtc_types.h"    // crtc_type_for_model: the model decides the chip
 #include "drive_sounds.h"  // host audio overlay: motor hum / seek clicks
 #include "flux_ingest.h"   // flux::to_scp: unified flux-container dispatcher
 #include "frame_pacer.h"   // the 50 Hz deadline subcycle_bridge_frame paces to
@@ -418,6 +419,15 @@ bool subcycle_bridge_start() {
               << rom_file << " (" << b.rom.size() << " bytes)");
     return false;
   }
+  // The model decides which CRTC the board gets: the ASIC's own on a 6128+,
+  // a UM6845R on a 6128, an HD6845S on a 464/664. Without this the Device
+  // keeps its default type 0, so a `model=3` machine ran a Plus with an
+  // HD6845S while `config get crtc_info` reported the wrong chip — faithfully,
+  // because it reads the Device. The legacy mirror is set from the model at
+  // reset (kon_cpc_ja), but subcycle_bridge_sync_chip_views copies the value
+  // back OUT of the Device, so the Device is the one that matters and no
+  // amount of correct configuration could fix it.
+  b.machine.set_crtc_type(crtc_type_for_model(CPC.model));
   b.machine.set_overlay(&g_drive_overlay);  // drive sounds (self-gated on cfg)
   if (model == 3 && pbCartridgeImage != nullptr) {
     // Plus: hand the memory device the WHOLE parsed CPR (32 x 16K banks, the

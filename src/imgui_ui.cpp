@@ -27,6 +27,8 @@ bool g_speedtest_open = false;
 #include <filesystem>
 #include <iomanip>
 #include <iostream>
+#include <iterator>
+#include <optional>
 #include <sstream>
 #include <thread>
 
@@ -44,6 +46,7 @@ bool g_speedtest_open = false;
 #include "imgui.h"
 #include "imgui_ui_testable.h"
 #include "ipc_mru.h"  // koncpc_mru_push
+#include "joy_key_capture.h"
 #include "keyboard.h"
 #include "koncepcja.h"
 #include "log.h"
@@ -368,8 +371,8 @@ void process_pending_dialog() {
       CPC.current_cart_path = dir;
       break;
     case FileDialogAction::LoadROM:
-      // Record it AND fit it: setting rom_file alone only took effect at the
-      // next full init, so picking a ROM here appeared to do nothing.
+      // CPC.rom_file is read when the machine is built, so load the slot now
+      // too.
       if (rom_slot >= 0 && rom_slot < MAX_ROM_SLOTS) {
         CPC.rom_file[rom_slot] = path;
         if (load_expansion_rom_slot(rom_slot, path) != 0) {
@@ -642,6 +645,10 @@ void imgui_render_ui() {
   if (imgui_state.show_menu) imgui_render_menu();
   imgui_render_about();
   if (imgui_state.show_options) imgui_render_options();
+  // Settings may have closed during that render, after the slot buttons were
+  // drawn; a key pressed next frame must not land on a closed window.
+  if (!imgui_state.show_options) g_joy_key_capture.disarm();
+  g_joy_key_capture.end_frame();
   if (imgui_state.show_serial_terminal) imgui_render_serial_terminal();
   if (imgui_state.show_plotter_preview) imgui_render_plotter_preview();
   if (imgui_state.show_devtools) imgui_render_devtools();
@@ -4055,10 +4062,82 @@ void imgui_render_options() {
 
       // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
       // mutated (out-param/compound-assign/loop/reference)
-      bool joy_emu = CPC.joystick_emulation != JoystickEmulation::None;
-      if (ImGui::Checkbox("Joystick Emulation", &joy_emu)) {
-        CPC.joystick_emulation =
-            joy_emu ? JoystickEmulation::Keyboard : JoystickEmulation::None;
+      // Three-way, not a checkbox: "keys drive the joystick" and "the stick
+      // presses keys" are different things (see JoystickEmulation). Mouse
+      // emulation keeps its own toggle below.
+      static constexpr JoystickEmulation kJoyModes[] = {
+          JoystickEmulation::None,
+          JoystickEmulation::Keyboard,
+          JoystickEmulation::JoystickToKeys,
+      };
+      static const char* const kJoyModeNames[] = {
+          "Off",
+          "Keys press joystick",
+          "Stick presses keys",
+      };
+      int joy_mode = 0;
+      for (int i = 0; i < 3; ++i) {
+        if (CPC.joystick_emulation == kJoyModes[i]) joy_mode = i;
+      }
+      if (ImGui::Combo("Joystick Emulation", &joy_mode, kJoyModeNames, 3)) {
+        // Releases what the old mode pressed and rebuilds the host map.
+        set_joystick_emulation_mode(kJoyModes[joy_mode]);
+      }
+      // Which keys the stick presses, for games that never read the joystick
+      // port. Editable here so the config file is not the only way in.
+      if (CPC.joystick_emulation == JoystickEmulation::JoystickToKeys &&
+          ImGui::TreeNode("Stick presses these keys")) {
+        static const char* const kSlotLabels[6] = {
+            "Up", "Down", "Left", "Right", "Fire 1", "Fire 2",
+        };
+        // The key events reach g_joy_key_capture straight from the event
+        // pump; here the slots arm it and the finished binding lands.
+        g_joy_key_capture.mark_shown();
+        if (std::optional<JoyKeyBinding> const b =
+                g_joy_key_capture.take_binding()) {
+          // Base keysym (modifier not folded in) plus the modifiers held
+          // when the key went down: the layout table is keyed by the pair.
+          SDL_Keycode const code =
+              SDL_GetKeyFromScancode(b->scancode, SDL_KMOD_NONE, true);
+          CapriceKey const unmapped = static_cast<CapriceKey>(0xff);
+          CapriceKey const key =
+              CPC.InputMapper != nullptr
+                  ? CPC.InputMapper->CPCkeyFromKeysym(code, b->mods)
+                  : unmapped;
+          if (isCPCKey(key)) {
+            // A pad may hold the slot's old key: let it go first.
+            controller_release_all();
+            CPC.joy_to_keys[b->slot] = static_cast<int>(key);
+          } else if (key != unmapped) {
+            // An emulator command (F-keys and the like), not a CPC key: keep
+            // waiting for a key the CPC has.
+            g_joy_key_capture.arm(b->slot);
+          }
+        }
+        // A click anywhere but on a slot button gives up the capture.
+        bool const clicked = ImGui::IsMouseClicked(ImGuiMouseButton_Left);
+        bool on_slot = false;
+        for (int i = 0; i < 6; ++i) {
+          ImGui::PushID(i);
+          bool const capturing = (g_joy_key_capture.slot() == i);
+          std::string const shown =
+              capturing ? std::string("press a key...")
+                        : InputMapper::CPCkeyToString(
+                              static_cast<CapriceKey>(CPC.joy_to_keys[i]));
+          if (ImGui::Button(shown.c_str(), ImVec2(ui_dpi_px(180), 0))) {
+            g_joy_key_capture.arm(i);
+          }
+          on_slot = on_slot || ImGui::IsItemHovered();
+          ImGui::SameLine();
+          ImGui::TextUnformatted(kSlotLabels[i]);
+          ImGui::PopID();
+        }
+        if (clicked && !on_slot) g_joy_key_capture.disarm();
+        ImGui::TextDisabled(
+            "Click a slot, then press the key, with Shift or Ctrl held if "
+            "the CPC key needs it. A modifier on its own binds when "
+            "released. Esc cancels.");
+        ImGui::TreePop();
       }
 
       // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
@@ -4600,6 +4679,17 @@ void imgui_render_options() {
         imgui_state.old_cpc_settings.scr_style, CPC.kbd_layout,
         imgui_state.old_cpc_settings.kbd_layout);
     imgui_state.fullscreen_request = imgui_state.old_cpc_settings.scr_window;
+    // The joystick mode combo rebuilt the host map live; a reverted mode has
+    // to rebuild it again, and let go of what the edited mode or bindings
+    // pressed, before the copy below changes them.
+    t_CPC const& old_cpc = imgui_state.old_cpc_settings;
+    if (old_cpc.joystick_emulation != CPC.joystick_emulation) {
+      set_joystick_emulation_mode(old_cpc.joystick_emulation);
+    } else if (!std::equal(std::begin(CPC.joy_to_keys),
+                           std::end(CPC.joy_to_keys),
+                           std::begin(old_cpc.joy_to_keys))) {
+      controller_release_all();
+    }
     CPC = imgui_state.old_cpc_settings;
     // The host keymap was reloaded live when the combo changed; a reverted
     // kbd_layout has to reach the live map the same way.

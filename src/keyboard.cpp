@@ -698,8 +698,12 @@ namespace {
 // Folds an SDL keysym + live modifier state into the PCKey lookup form.
 PCKey pckey_from_keysym(SDL_Keycode key, SDL_Keymod mod) {
   PCKey sdl_key = key;
-  if (mod & SDL_KMOD_SHIFT) sdl_key |= MOD_PC_SHIFT;
-  if (mod & SDL_KMOD_CTRL) sdl_key |= MOD_PC_CTRL;
+  // A modifier on its own is that key (LSHIFT → CPC_LSHIFT, LCTRL →
+  // CPC_CONTROL); only other keys carry its modifier bit.
+  bool const is_shift_key = (key == SDLK_LSHIFT || key == SDLK_RSHIFT);
+  bool const is_ctrl_key = (key == SDLK_LCTRL || key == SDLK_RCTRL);
+  if ((mod & SDL_KMOD_SHIFT) != 0 && !is_shift_key) sdl_key |= MOD_PC_SHIFT;
+  if ((mod & SDL_KMOD_CTRL) != 0 && !is_ctrl_key) sdl_key |= MOD_PC_CTRL;
   // Map right alt to Mode (AltGr). Not clear what determines whether SDL uses
   // one or the other and if both can happen together.
   if (mod & (SDL_KMOD_MODE | SDL_KMOD_RALT)) sdl_key |= MOD_PC_MODE;
@@ -736,6 +740,11 @@ CapriceKey InputMapper::CPCkeyFromKeysym(SDL_Keycode key, SDL_Keymod mod) {
   auto cpc_key = CPCkeysFromSDLkeysym.find(pckey_from_keysym(key, mod));
   if (cpc_key == CPCkeysFromSDLkeysym.end()) return kNoScancode;
   return cpc_key->second;
+}
+
+int InputMapper::CPCkeyFromName(const std::string& name) {
+  auto const it = CPCkeysFromStrings.find(name);
+  return it == CPCkeysFromStrings.end() ? -1 : static_cast<int>(it->second);
 }
 
 std::string InputMapper::CPCkeyToString(const CapriceKey cpc_key) {
@@ -814,44 +823,6 @@ void InputMapper::set_joystick_emulation() {
     } else {
       CPCkeysFromSDLkeysym[pc_idx] = cpc_key;
     }
-  }
-}
-
-CPCScancode InputMapper::CPCscancodeFromJoystickButton(
-    SDL_JoyButtonEvent jbutton) {
-  static constexpr CPC_KEYS fire[2][2] = {
-      {CPC_J0_FIRE1, CPC_J0_FIRE2},
-      {CPC_J1_FIRE1, CPC_J1_FIRE2},
-  };
-  if (jbutton.which > 1 || jbutton.button > 1) return kNoScancode;
-  return cpc_kbd[CPC->keyboard][fire[jbutton.which][jbutton.button]];
-}
-
-void InputMapper::CPCscancodeFromJoystickAxis(SDL_JoyAxisEvent jaxis,
-                                              CPCScancode* cpc_key,
-                                              bool& release) {
-  // Axes 0/2 steer left-right, axes 1/3 up-down; two joysticks supported.
-  static constexpr CPC_KEYS dir_neg[2][2] = {
-      {CPC_J0_LEFT, CPC_J0_UP},
-      {CPC_J1_LEFT, CPC_J1_UP},
-  };
-  static constexpr CPC_KEYS dir_pos[2][2] = {
-      {CPC_J0_RIGHT, CPC_J0_DOWN},
-      {CPC_J1_RIGHT, CPC_J1_DOWN},
-  };
-  if (jaxis.which > 1 || jaxis.axis > 3) return;
-  const int joy = jaxis.which;
-  const int dir = jaxis.axis & 1;  // 0 = horizontal, 1 = vertical
-
-  if (jaxis.value < -JOYSTICK_AXIS_THRESHOLD) {
-    cpc_key[0] = cpc_kbd[CPC->keyboard][dir_neg[joy][dir]];
-  } else if (jaxis.value > JOYSTICK_AXIS_THRESHOLD) {
-    cpc_key[0] = cpc_kbd[CPC->keyboard][dir_pos[joy][dir]];
-  } else {
-    // Centered: release both directions of this axis.
-    cpc_key[0] = cpc_kbd[CPC->keyboard][dir_neg[joy][dir]];
-    cpc_key[1] = cpc_kbd[CPC->keyboard][dir_pos[joy][dir]];
-    release = true;
   }
 }
 

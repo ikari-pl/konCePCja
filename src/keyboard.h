@@ -337,6 +337,10 @@ enum CPC_KEYS : std::uint8_t {
 // Number of different keys on a CPC keyboard.
 inline constexpr int CPC_KEY_NUM = CPC_FR_uGRAVE + 1;
 static_assert(CPC_KEY_NUM == 209, "CPC_KEYS_LIST changed size");
+// True for a key of the CPC keyboard (a CPC_KEYS value), false for an
+// emulator command (KONCPC_KEYS, above MOD_EMU_KEY) or anything else. Only a
+// CPC key can index the CPC key table (InputMapper::CPCscancodeFromCPCkey).
+constexpr bool isCPCKey(long long key) { return key >= 0 && key < CPC_KEY_NUM; }
 // Number of different keyboards supported (English, French, Spanish).
 inline constexpr int CPC_KEYBOARD_NUM = 3;
 
@@ -402,10 +406,10 @@ class InputMapper {
   CPCScancode CPCscancodeFromCPCkey(CPC_KEYS cpc_key);
   CPCScancode CPCscancodeFromKeysym(SDL_Keycode key, SDL_Keymod mod);
   CapriceKey CPCkeyFromKeysym(SDL_Keycode key, SDL_Keymod mod);
-  std::string CPCkeyToString(const CapriceKey cpc_key);
-  CPCScancode CPCscancodeFromJoystickButton(SDL_JoyButtonEvent jbutton);
-  void CPCscancodeFromJoystickAxis(SDL_JoyAxisEvent jaxis, CPCScancode* cpc_key,
-                                   bool& release);
+  static std::string CPCkeyToString(const CapriceKey cpc_key);
+  // CPC key by its layout-file name (e.g. "CPC_COLON"): -1 when the name is
+  // not in the table. The config loader uses it for stick-to-key bindings.
+  static int CPCkeyFromName(const std::string& name);
   void set_joystick_emulation();
   // Human-readable host shortcut(s) currently bound to an emulator command,
   // derived from the live binding map so menu/UI hints can never drift from the

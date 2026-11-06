@@ -56,4 +56,31 @@ inline VJoyKeys vjoy_all_keys(int target_joy) {
   return vjoy_active_keys(target_joy, VJOY_ALL);
 }
 
+// Pure: what a physical controller's held-button mask presses. With
+// `joy_to_keys` null the controls are the CPC joystick bits
+// (vjoy_active_keys); otherwise it holds the six CPC_KEYS a stick presses in
+// JoystickEmulation::JoystickToKeys, ordered {up, down, left, right, fire1,
+// fire2} like the VJOY_* bits, and both controller slots press the same keys.
+// An entry that is not a CPC key (an emulator command, -1, past the table)
+// presses nothing.
+inline VJoyKeys vjoy_controller_keys(int target_joy, unsigned mask,
+                                     const int* joy_to_keys) {
+  if (joy_to_keys == nullptr) return vjoy_active_keys(target_joy, mask);
+  VJoyKeys out;
+  for (int i = 0; i < 6; ++i) {
+    if ((mask & (1u << i)) != 0 && isCPCKey(joy_to_keys[i])) {
+      out.keys[out.count++] = static_cast<CPC_KEYS>(joy_to_keys[i]);
+    }
+  }
+  return out;
+}
+
+// Whether `key` is one of `keys`.
+inline bool vjoy_keys_contain(const VJoyKeys& keys, CPC_KEYS key) {
+  for (int i = 0; i < keys.count; ++i) {
+    if (keys.keys[i] == key) return true;
+  }
+  return false;
+}
+
 }  // namespace vjoy
