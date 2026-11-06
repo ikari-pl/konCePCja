@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+
 #include <string>
 
 #include "asic_debug.h"
