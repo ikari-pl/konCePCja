@@ -63,6 +63,10 @@ jobs:
       - name: Fetch submodules (retried)
         shell: bash
         run: |
+          # The container runs as root but the workspace belongs to the
+          # runner's uid: without this git refuses the checkout ("dubious
+          # ownership"), here and in the makefile's version hash.
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
           for i in 1 2 3; do
             git submodule update --init --recursive --depth=1 && exit 0
             echo "submodule fetch attempt $i failed; retrying in 15s" >&2
