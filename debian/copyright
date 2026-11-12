@@ -6,6 +6,12 @@ Comment:
  Provenance and third-party attributions are recorded in NOTICE.md. This is
  NOT free software in the Debian sense: redistribution of the software is not
  permitted, so the package is for personal and internal builds only.
+ .
+ Besides the vendored SDL3, the binary package carries a private copy of
+ the build system's libjpeg-turbo library in /usr/lib/koncepcja (see
+ debian/rules): copyright 1991-2020 Thomas G. Lane, Guido Vollbeding, the
+ libjpeg-turbo Project and D. R. Commander, under the IJG, BSD-3-clause and
+ zlib licences, https://github.com/libjpeg-turbo/libjpeg-turbo/blob/main/LICENSE.md.
 
 Files: *
 Copyright: 2016-2026 Cezar "ikari" Pokorski

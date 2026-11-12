@@ -1,0 +1,15 @@
+#!/bin/sh
+# Entry point of the konCePCja AppImage.
+#
+# The AppImage is mounted at a different directory on every run
+# (/tmp/.mount_xxxxxx), so no config file can name its resources and ROMs
+# by absolute path. They are passed as -O overrides instead: an override
+# lasts one run and is never written back to the user's config file, so a
+# settings save does not record this run's mount point. The user's own -O
+# options come later on the command line and win.
+HERE="$(dirname "$(readlink -f "$0")")"
+SHARE="$HERE/usr/share/koncepcja"
+exec "$HERE/usr/bin/koncepcja" \
+  -O "system.resources_path=$SHARE/resources" \
+  -O "rom.rom_path=$SHARE/rom" \
+  "$@"

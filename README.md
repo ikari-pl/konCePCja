@@ -189,10 +189,23 @@ make APP_PATH="$PWD"
 
 #### From releases
 
-Download a release from https://github.com/ikari-pl/konCePCja/releases, decompress it and run:
+Each release on https://github.com/ikari-pl/konCePCja/releases has three
+kinds of Linux download. Pick one:
+
+| File | For | How |
+|---|---|---|
+| `koncepcja_<version>-1_amd64.deb` (Intel/AMD PCs), `koncepcja_<version>-1_arm64.deb` (ARM, e.g. Raspberry Pi 4/5 with a 64-bit OS) | Debian 12 or newer, Ubuntu 22.04 or newer, and distributions built on them (Linux Mint, Pop!_OS, Raspberry Pi OS 64-bit, ...) | `sudo apt install ./koncepcja_<version>-1_amd64.deb`, then start konCePCja from the applications menu or type `koncepcja` |
+| `konCePCja-<version>-x86_64.AppImage`, `konCePCja-<version>-aarch64.AppImage` | Any other distribution (Fedora, Arch, openSUSE, ...) with glibc 2.35 or newer, or when you don't want to install anything | `chmod +x konCePCja-*.AppImage` and run it. Nothing is installed; deleting the file removes it |
+| `koncepcja-v<version>.tar.bz2` | Building it yourself | See [INSTALL.md](INSTALL.md) |
+
+To keep the settings you change in the app, give yourself a config file of
+your own first (otherwise konCePCja tries to save into a file it cannot
+write):
 
 ```
-./koncepcja
+mkdir -p ~/.config/koncepcja
+cp /etc/koncepcja.cfg ~/.config/koncepcja/      # .deb
+touch ~/.config/koncepcja/koncepcja.cfg         # AppImage
 ```
 
 ### Windows
