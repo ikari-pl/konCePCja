@@ -1,0 +1,177 @@
+name: Linux packages
+
+# The Linux downloads of a release: a .deb and an AppImage, each for x86_64
+# and arm64 (beads-zcgn). The source tarball stays in linux.yml.
+#
+# Both are built in an ubuntu:22.04 container, the oldest base supported
+# (glibc 2.35; Debian 12 has 2.36): a binary asks for the glibc symbols of
+# the system it was linked on, so building on the oldest base is what lets
+# one file run on everything newer. Every package is then installed / run on
+# a clean container of each distribution INSTALL.md promises, and only a
+# release whose packages all passed gets them attached.
+#
+# On a pull request (packaging files only) the packages are built, tested
+# and kept as workflow artifacts; the publish job runs only for a release.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'debian/**'
+      - 'scripts/appimage/**'
+      - 'test/integrated/linux_package_smoke.sh'
+      - '.github/workflows/linux-packages.yml'
+      - 'makefile'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build ${{ matrix.package }} (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        package: [deb, appimage]
+        arch: [x86_64, aarch64]
+        include:
+          - arch: x86_64
+            runner: ubuntu-24.04
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    container: ubuntu:22.04
+    timeout-minutes: 45
+    env:
+      DEBIAN_FRONTEND: noninteractive
+    steps:
+      # git first: without it actions/checkout falls back to a tarball of the
+      # repository, which has no submodules.
+      - name: Install build tools
+        run: |
+          apt-get update -qq
+          apt-get install -y -qq --no-install-recommends \
+            git ca-certificates curl file build-essential debhelper devscripts \
+            equivs fakeroot lintian
+      - uses: actions/checkout@v4
+        with:
+          submodules: false
+      # Same retry as linux.yml (beads-rbtp): a transient fetch failure of
+      # the SDL submodule should not redden the run.
+      - name: Fetch submodules (retried)
+        shell: bash
+        run: |
+          # The container runs as root but the workspace belongs to the
+          # runner's uid: without this git refuses the checkout ("dubious
+          # ownership"), here and in the makefile's version hash.
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          for i in 1 2 3; do
+            git submodule update --init --recursive --depth=1 && exit 0
+            echo "submodule fetch attempt $i failed; retrying in 15s" >&2
+            sleep 15
+          done
+          echo "submodule fetch failed after 3 attempts" >&2
+          exit 1
+      # The single list of build dependencies is debian/control; the
+      # AppImage build needs the same ones.
+      - name: Install build dependencies (debian/control)
+        run: mk-build-deps -i -r -t 'apt-get -y -qq --no-install-recommends' debian/control
+
+      - name: Build the .deb
+        if: matrix.package == 'deb'
+        run: make deb_pkg
+      - name: lintian
+        if: matrix.package == 'deb'
+        # --fail-on error: any E: tag fails the job. Warnings are printed.
+        run: lintian --info --fail-on error release/linux-packages/*.deb
+
+      - name: Build the AppImage
+        if: matrix.package == 'appimage'
+        run: make appimage
+
+      - name: Package contents
+        shell: bash
+        run: |
+          ls -l release/linux-packages
+          for f in release/linux-packages/*; do
+            case "$f" in
+              *.deb) dpkg-deb -c "$f" ;;
+              *.AppImage) "$f" --appimage-extract >/dev/null && find squashfs-root | sort && rm -rf squashfs-root ;;
+            esac
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.package }}-${{ matrix.arch }}
+          path: release/linux-packages/*
+          if-no-files-found: error
+
+  smoke:
+    name: Test ${{ matrix.package }} on ${{ matrix.distro }} (${{ matrix.arch }})
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        package: [deb, appimage]
+        arch: [x86_64, aarch64]
+        distro: ['debian:bookworm', 'debian:trixie', 'ubuntu:22.04', 'ubuntu:24.04']
+        include:
+          - arch: x86_64
+            runner: ubuntu-24.04
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    container: ${{ matrix.distro }}
+    timeout-minutes: 15
+    steps:
+      # No git in these images on purpose (nothing is installed before the
+      # package under test): checkout downloads a tarball of the commit.
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ matrix.package }}-${{ matrix.arch }}
+          path: pkg
+      # Nothing is installed for the AppImage: it must start on the bare
+      # image. (SDL loads the X11/Wayland/GL/audio libraries itself when a
+      # real display or sound server is used; the dummy drivers need none.)
+      - name: Install and run
+        shell: bash
+        run: |
+          version=$(sed -n 's/.*"\."[[:space:]]*:[[:space:]]*"\([0-9][^"]*\)".*/\1/p' .release-please-manifest.json)
+          test -n "$version"
+          ls -l pkg
+          # Artifacts do not keep the executable bit; the script restores it.
+          bash test/integrated/linux_package_smoke.sh pkg/* "$version"
+
+  publish:
+    name: Attach to the release
+    if: github.event_name == 'release'
+    needs: [build, smoke]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: pkg
+          merge-multiple: true
+      - name: Version from the tag
+        id: v
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+          ls -l pkg
+      # The names are spelled out from the tag, so a package built for any
+      # other version, or not built at all, fails the upload.
+      - name: Upload to the release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            pkg/koncepcja_${{ steps.v.outputs.version }}-1_amd64.deb
+            pkg/koncepcja_${{ steps.v.outputs.version }}-1_arm64.deb
+            pkg/konCePCja-${{ steps.v.outputs.version }}-x86_64.AppImage
+            pkg/konCePCja-${{ steps.v.outputs.version }}-aarch64.AppImage
+          fail_on_unmatched_files: true
+          token: ${{ secrets.GITHUB_TOKEN }}

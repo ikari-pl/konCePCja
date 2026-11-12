@@ -42,24 +42,62 @@ make APP_PATH="$PWD" -j$(nproc)
  * `WITHOUT_GL=TRUE` — build without OpenGL support
  * `APP_PATH=<path>` — where konCePCja looks for `koncepcja.cfg` at runtime (without this, it uses the current working directory)
 
-### Debian/Ubuntu package
+### Ready-made Linux packages
+
+Every release carries these Linux files (see the README's *From releases*
+for which one to pick):
+
+| File | What it is | Runs on |
+|---|---|---|
+| `koncepcja_<version>-1_amd64.deb`, `..._arm64.deb` | Debian package | Debian 12 (bookworm) and newer, Ubuntu 22.04 (jammy) and newer |
+| `konCePCja-<version>-x86_64.AppImage`, `...-aarch64.AppImage` | One self-contained file | Any distribution with glibc 2.35 or newer |
+| `koncepcja-v<version>.tar.bz2` | The source, vendored SDL3 included | Build it yourself (this file) |
+
+Both packages are built on Ubuntu 22.04, the oldest of the supported
+systems (a Linux binary runs on the glibc it was built against and any
+newer one, never an older one). Before a release gets them, CI installs and
+runs each one on clean Debian 12, Debian 13, Ubuntu 22.04 and Ubuntu 24.04,
+on both architectures (`.github/workflows/linux-packages.yml`).
+
+### Building the Debian/Ubuntu package
 
 The recipe in `debian/` builds a `koncepcja` package: it compiles the vendored
-SDL3 first and ships it privately under `/usr/lib/koncepcja`, installs the
+SDL3 first and ships it privately under `/usr/lib/koncepcja` (with a private
+libjpeg, whose package name differs between Debian and Ubuntu), installs the
 binary, man page, `/etc/koncepcja.cfg`, `/usr/share/koncepcja/{resources,rom}`,
-a desktop entry and an icon. Install the build tools plus the `Build-Depends`
-listed in `debian/control`, then, from a checkout with submodules:
+a desktop entry and icons. Install the build tools plus the `Build-Depends`
+listed in `debian/control` (`mk-build-deps` from `devscripts` does it), then,
+from a checkout with submodules:
 
 ```
-sudo apt-get install dpkg-dev debhelper devscripts fakeroot
-make debian-changelog          # stamps debian/changelog with the release version
-dpkg-buildpackage -us -uc -b   # ../koncepcja_<version>-1_<arch>.deb
+sudo apt-get install dpkg-dev debhelper devscripts equivs fakeroot
+sudo mk-build-deps -i -r debian/control
+make deb_pkg    # release/linux-packages/koncepcja_<version>-1_<arch>.deb
 ```
+
+`make deb_pkg` stamps `debian/changelog` with the release version
+(`make debian-changelog`) and runs `dpkg-buildpackage -us -uc -b`.
+Build on the oldest system you want the package to install on.
 
 `make distrib` produces the same tree as a source package under
-`release/koncepcja_linux/koncepcja-<version>/` (vendored SDL3 sources
-included), from which `dpkg-buildpackage` also works. The licence does not
-permit redistribution, so the package is for your own machines.
+`release/koncepcja-linux/koncepcja-<version>/` (vendored SDL3 sources
+included), from which `dpkg-buildpackage` also works.
+
+### Building the AppImage
+
+From a checkout with submodules, with the same build dependencies installed
+(plus `curl`):
+
+```
+make appimage   # release/linux-packages/konCePCja-<version>-<arch>.AppImage
+```
+
+`scripts/appimage/build-appimage.sh` builds the vendored SDL3 and the
+emulator, then bundles them with linuxdeploy and appimagetool, which it
+downloads at pinned versions and checks against pinned SHA-256 sums.
+
+The licence lets you build these for your own machines; it does not permit
+redistributing them.
 
 ## macOS
 

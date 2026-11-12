@@ -7,6 +7,7 @@ UNAME_S := $(shell uname -s)
 #  - clean
 #  - distrib
 #  - doc
+#  - deb_pkg, appimage (Linux release packages)
 # Supported variables:
 #  - ARCH = (linux|win32|win64|macos)
 #  - CXX (default = g++)
@@ -20,7 +21,6 @@ UNAME_S := $(shell uname -s)
 # inside it.  Still overridable on the command line for debian packaging.
 # Lazy (=, not :=) because KONCPC_VERSION is computed further down this file.
 VERSION = $(if $(KONCPC_VERSION),$(KONCPC_VERSION),latest)
-REVISION=0
 
 LAST_BUILD_IN_DEBUG = $(shell [ -e .debug ] && echo 1 || echo 0)
 
@@ -358,7 +358,7 @@ $(shell printf '%s' '$(KONCPC_MODERN_UI)' | cmp -s - $(UI_STAMP) 2>/dev/null \
 $(OBJECTS) $(TEST_OBJECTS): $(VERSION_STAMP)
 $(OBJDIR)/src/argparse.o $(OBJDIR)/src/kon_cpc_ja.o: $(HASH_STAMP)
 
-.PHONY: all check_deps clean deb_pkg debug debug_flag distrib doc tags unit_test e2e_test e2e_test_slow install doxygen coverage coverage-report coverage-clean sim sim_headless bench pgo board_only
+.PHONY: all appimage check_deps clean deb_pkg debian-changelog debug debug_flag distrib doc tags unit_test e2e_test e2e_test_slow install doxygen coverage coverage-report coverage-clean sim sim_headless bench pgo board_only
 
 WARNINGS = -Wall -Wextra -Wzero-as-null-pointer-constant -Wformat=2 -Wold-style-cast -Wmissing-include-dirs -Woverloaded-virtual -Wpointer-arith -Wredundant-decls -Wimplicit-fallthrough
 # Tier 1: always-errors even in release (undefined behavior / security critical)
@@ -572,10 +572,32 @@ else
 
 SRC_PACKAGE_DIR=$(ARCHIVE_DIR)/koncepcja-$(VERSION)
 
+# The version without the tag's leading "v": linux.yml passes the release tag
+# (VERSION=v6.6.0) to name the source tarball, and a Debian version must
+# start with a digit.
+PKG_VERSION = $(patsubst v%,%,$(VERSION))
+
 # Regenerate debian/changelog from the release version so the source package
 # and `dpkg-buildpackage` carry the version release-please cut.
 debian-changelog:
-	printf 'koncepcja (%s-1) unstable; urgency=medium\n\n  * Release %s. See https://github.com/ikari-pl/konCePCja/releases/tag/v%s\n\n -- Cezar "ikari" Pokorski <cezar@pokor.ski>  %s\n' "$(VERSION)" "$(VERSION)" "$(VERSION)" "$$(date -R)" > debian/changelog
+	printf 'koncepcja (%s-1) unstable; urgency=medium\n\n  * Release %s. See https://github.com/ikari-pl/konCePCja/releases/tag/v%s\n\n -- Cezar "ikari" Pokorski <cezar@pokor.ski>  %s\n' "$(PKG_VERSION)" "$(PKG_VERSION)" "$(PKG_VERSION)" "$$(date -R)" > debian/changelog
+
+# The Linux release packages (.github/workflows/linux-packages.yml builds
+# them on the oldest supported distribution, see INSTALL.md), both written
+# to release/linux-packages/:
+#   deb_pkg   koncepcja_<version>-1_<amd64|arm64>.deb
+#   appimage  konCePCja-<version>-<x86_64|aarch64>.AppImage
+LINUX_PKG_DIR = release/linux-packages
+
+# dpkg-buildpackage writes into the parent directory; the .deb is moved next
+# to the AppImage, the .buildinfo/.changes stay where they were made.
+deb_pkg: debian-changelog
+	dpkg-buildpackage -us -uc -b -j$$(nproc)
+	mkdir -p $(LINUX_PKG_DIR)
+	mv ../koncepcja_$(PKG_VERSION)-1_$$(dpkg --print-architecture).deb $(LINUX_PKG_DIR)/
+
+appimage:
+	VERSION=$(PKG_VERSION) scripts/appimage/build-appimage.sh
 
 # Create a debian source package: everything dpkg-buildpackage needs, the
 # vendored SDL3 sources included (its build products are left out).
@@ -802,12 +824,6 @@ endif
 e2e_test_slow: $(TARGET) $(FB_DUMP)
 	cd test/integrated && $(E2E_SLOW) ./run_tests.sh
 endif
-
-deb_pkg: all
-	# Both changelog files need to be patched with the proper version !
-	sed -i "1s/(.*)/($(VERSION)-$(REVISION))/" debian/changelog
-	sed -i "1s/(.*)/($(VERSION)-$(REVISION))/" $(ARCHIVE_DIR)/koncepcja-$(VERSION)/debian/changelog
-	cd $(ARCHIVE_DIR)/koncepcja-$(VERSION)/debian && debuild -e CXX -us -uc --lintian-opts --profile debian
 
 BUNDLE_DIR=release/koncepcja-macos-bundle/konCePCja.app
 macos_bundle: all

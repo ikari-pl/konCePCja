@@ -153,8 +153,6 @@ jobs:
           # unpinned install drifts with pip and mass-flags the whole tree.
           pip install --break-system-packages clang-format==22.1.8
           make clang-format
-      # Disabled for now as this is failing for unknown reasons.
-      #- run: make -j 3 deb_pkg VERSION=99.99.0 REVISION=1
 
       - run: make -j 3 clean
       - run: make -j 3 APP_PATH=/tmp/koncepcja DESTDIR=/tmp/koncepcja install
@@ -173,6 +171,10 @@ jobs:
 
       # ---- Release-only steps below ----
 
+      # The compile-it-yourself source tarball. The .deb and the AppImage are
+      # built and attached by linux-packages.yml. (make distrib also leaves
+      # the koncepcja_<v>.orig.tar.bz2 symlink Debian tooling looks for;
+      # it is the same file, so it is not uploaded.)
       - name: Build source package
         if: github.event_name == 'release'
         run: make -j 3 distrib VERSION=${{ github.event.release.tag_name }}
@@ -183,6 +185,5 @@ jobs:
         with:
           files: |
             release/koncepcja-linux/koncepcja-${{ github.event.release.tag_name }}.tar.bz2
-            release/koncepcja-linux/koncepcja_${{ github.event.release.tag_name }}.orig.tar.bz2
           fail_on_unmatched_files: true
           token: ${{ secrets.GITHUB_TOKEN }}

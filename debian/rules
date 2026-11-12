@@ -43,6 +43,13 @@ override_dh_auto_install:
 	# The SDL3 the binary was linked against, in its private directory.
 	install -d $(STAGE)$(SDL_PRIVATE_LIB)
 	cp -a $(SDL_INSTALL)/lib/libSDL3.so* $(STAGE)$(SDL_PRIVATE_LIB)/
+	# libjpeg too: Ubuntu's libjpeg-dev links libjpeg.so.8 (package libjpeg8),
+	# which Debian does not have (it ships libjpeg.so.62), so a package that
+	# depends on it installs on one of the two only. The private copy lets
+	# one .deb install on both. The soname is the one the binary asks for.
+	jpeg=$$(objdump -p koncepcja | awk '$$1 == "NEEDED" && $$2 ~ /^libjpeg/ {print $$2}'); \
+	test -n "$$jpeg"; \
+	cp -L "$$($(CC) -print-file-name=$$jpeg)" $(STAGE)$(SDL_PRIVATE_LIB)/$$jpeg
 
 override_dh_shlibdeps:
 	dh_shlibdeps -l$(STAGE)$(SDL_PRIVATE_LIB)
