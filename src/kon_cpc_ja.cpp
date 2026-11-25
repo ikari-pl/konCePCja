@@ -873,6 +873,37 @@ int emulator_patch_ROM() {
 }
 }  // namespace
 
+// system.ram_fill (see emulator_reset).  Unknown values fall back to zero.
+static std::string g_ram_fill = "0";
+static void ram_fill_apply(byte* ram, size_t len) {
+  const std::string& f = g_ram_fill;
+  if (f == "aa55") {
+    for (size_t i = 0; i < len; i++) ram[i] = (i & 1) ? 0x55 : 0xAA;
+    return;
+  }
+  if (f.rfind("rand:", 0) == 0) {
+    uint32_t s = 0x9E3779B9u;
+    try {
+      s ^= static_cast<uint32_t>(std::stoul(f.substr(5)));
+    } catch (const std::invalid_argument&) {
+    } catch (const std::out_of_range&) {
+    }
+    if (s == 0) s = 1;
+    for (size_t i = 0; i < len; i++) {
+      s ^= s << 13; s ^= s >> 17; s ^= s << 5;
+      ram[i] = static_cast<byte>(s >> 24);
+    }
+    return;
+  }
+  int v = 0;
+  try {
+    v = std::stoi(f, nullptr, 0);
+  } catch (const std::invalid_argument&) {
+  } catch (const std::out_of_range&) {
+  }
+  memset(ram, v & 0xFF, len);
+}
+
 void emulator_reset(const CpcRunCause& cause) {
   // Reset mutates the entire board. Under engine=1 the Z80 runs on its own
   // thread, so board_reset() must not race a concurrent run_frame() — a torn
@@ -941,7 +972,11 @@ void emulator_reset(const CpcRunCause& cause) {
   FDC.flags = STATUSDRVA_flag | STATUSDRVB_flag;
 
   // memory
-  memset(pbRAM, 0, CPC.ram_size * 1024);  // clear all memory used for CPC RAM
+  // RAM at power-on: system.ram_fill = 0 (default) | a byte (0xFF) | aa55
+  // (an alternation) | rand:<seed> (a seeded xorshift fill).  Real hardware
+  // powers up with arbitrary contents; a program that reads RAM it never
+  // wrote shows up under a non-zero fill.
+  ram_fill_apply(pbRAM, CPC.ram_size * 1024u);
   if (pbMF2ROM) {
     memset(pbMF2ROM + 8192, 0, 8192);  // clear the MF2's RAM area
   }
@@ -3187,6 +3222,7 @@ void loadConfiguration(t_CPC& CPC, const std::string& configFilename) {
   CPC.jumpers = conf.getIntValue("system", "jumpers", 0x1e) &
                 0x1e;  // OEM is Amstrad, video refresh is 50Hz
   CPC.ram_size = conf.getIntValue("system", "ram_size", 128);
+  g_ram_fill = conf.getStringValue("system", "ram_fill", "0");
   if (!is_valid_ram_size(CPC.ram_size)) {
     CPC.ram_size = 128;  // default to 128KB
   }
