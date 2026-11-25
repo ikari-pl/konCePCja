@@ -123,8 +123,10 @@ bool g_dma_psg_restore = true;
 void snoop_psg_select(asic_state* a, uint16_t port, uint8_t val) {
   if (port & 0x0800) return;
   const unsigned sel = (port >> 8) & 3;
-  if (sel == 0) a->ppi_a = val;
-  else if (sel == 2 && (val & 0xC0) == 0xC0) a->cpu_psg_reg = a->ppi_a & 0x0F;
+  if (sel == 0)
+    a->ppi_a = val;
+  else if (sel == 2 && (val & 0xC0) == 0xC0)
+    a->cpu_psg_reg = a->ppi_a & 0x0F;
 }
 
 // The DMA engine's cycle-by-cycle state. A burst: request the bus, wait for the
@@ -580,7 +582,7 @@ void asic_irq(asic_state* a, const Bus* in, Bus* out) {
     if (c) dma_int = true;
 
   if (in->cpu.m1 && in->cpu.iorq) {  // interrupt acknowledge
-    if (!a->ack_prev) {               // one acknowledge per cycle (edge)
+    if (!a->ack_prev) {              // one acknowledge per cycle (edge)
       a->ack_vector = asic_ack(a);
       a->ack_prev = 1;
     }
