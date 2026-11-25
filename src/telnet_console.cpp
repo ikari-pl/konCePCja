@@ -63,6 +63,14 @@ void TelnetConsole::on_txt_output(uint8_t ch) {
   output_head.store(next, std::memory_order_release);
 }
 
+void TelnetConsole::clear_output() {
+  // Called from emulator_reset, which holds a pause lease: the Z80 producer
+  // is idle and cannot be mid-write. The server thread only reads, so a
+  // client connecting later starts from an empty buffer.
+  output_tail.store(0, std::memory_order_relaxed);
+  output_head.store(0, std::memory_order_release);
+}
+
 // ── Input drain (called from main loop each frame) ─────
 
 void TelnetConsole::drain_input() {

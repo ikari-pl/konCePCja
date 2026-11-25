@@ -896,6 +896,7 @@ void emulator_reset(const CpcRunCause& cause) {
     return;
   }
   subcycle_bridge_reset();  // no-op unless the sub-cycle engine is active
+  g_telnet.clear_output();  // drop pre-reset console output (beads-dr4)
   if (CPC.model > 2) {
     if (pbCartridgePages[0] != nullptr) {
       pbROMlo = pbCartridgePages[0];

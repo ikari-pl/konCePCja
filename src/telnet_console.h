@@ -21,6 +21,10 @@ class TelnetConsole {
   // Called from main loop each frame — feeds pending input to autotype queue.
   void drain_input();
 
+  // Drop all buffered output. Called on CPC reset (beads-dr4) so a client
+  // connecting after the reset does not receive the previous session's text.
+  void clear_output();
+
  private:
   void run();
 
