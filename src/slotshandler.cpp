@@ -4,8 +4,6 @@
 // disc tools' parse target) in sync with what the sub-cycle engine plays.
 
 #include "slotshandler.h"
-#include "hw/asic.h"
-#include "hw/memory.h"
 
 #include <algorithm>
 #include <atomic>
@@ -25,6 +23,7 @@
 #include "errors.h"
 #include "fileutils.h"
 #include "flux_ingest.h"
+#include "hw/asic.h"
 #include "hw/crtc.h"
 #include "hw/fdc.h"
 #include "hw/gate_array.h"
@@ -841,8 +840,10 @@ int snapshot_load_machine(subcycle::Machine& m, FILE* pfile) {
                          (static_cast<uint32_t>(ch[6]) << 16) |
                          (static_cast<uint32_t>(ch[7]) << 24);
     std::vector<uint8_t>* want = nullptr;
-    if (memcmp(ch, "KCDV", 4) == 0) want = &kcdv;
-    else if (memcmp(ch, "CPC+", 4) == 0 && len == 0x8F8) want = &plus;
+    if (memcmp(ch, "KCDV", 4) == 0)
+      want = &kcdv;
+    else if (memcmp(ch, "CPC+", 4) == 0 && len == 0x8F8)
+      want = &plus;
     if (want != nullptr) {
       want->resize(len);
       if (len == 0 || fread(want->data(), len, 1, pfile) != 1) {
@@ -992,12 +993,15 @@ int snapshot_save_machine(subcycle::Machine& m, const std::string& filename) {
   if (ok == 0) {  // KCDV: the whole board (see snapshot_load_machine)
     const std::vector<uint8_t> blob = m.save_devices();
     const uint32_t len = static_cast<uint32_t>(blob.size());
-    const uint8_t ch[8] = {'K', 'C', 'D', 'V', static_cast<uint8_t>(len),
+    const uint8_t ch[8] = {'K',
+                           'C',
+                           'D',
+                           'V',
+                           static_cast<uint8_t>(len),
                            static_cast<uint8_t>(len >> 8),
                            static_cast<uint8_t>(len >> 16),
                            static_cast<uint8_t>(len >> 24)};
-    if (fwrite(ch, 8, 1, f) != 1 ||
-        fwrite(blob.data(), blob.size(), 1, f) != 1)
+    if (fwrite(ch, 8, 1, f) != 1 || fwrite(blob.data(), blob.size(), 1, f) != 1)
       ok = ERR_SNA_WRITE;
   }
   if (fclose(f) != 0) return ERR_SNA_WRITE;

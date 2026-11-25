@@ -732,16 +732,16 @@ void asic_plus_chunk_save(const Device* dev, uint8_t* p) {
                                 (a->sprite_px[id][x + 1][y] & 15));
   }
   for (int i = 0; i < 16; i++) {
-    uint8_t* s = p + 0x800 + i * 8;
+    uint8_t* s = p + 0x800 + (i * 8);
     s[0] = static_cast<uint8_t>(a->sprite_x[i]);
     s[1] = static_cast<uint8_t>(a->sprite_x[i] >> 8);
     s[2] = static_cast<uint8_t>(a->sprite_y[i]);
     s[3] = static_cast<uint8_t>(a->sprite_y[i] >> 8);
-    s[4] = a->page[0x2004 + i * 8];  // the magnification register as written
+    s[4] = a->page[0x2004 + (i * 8)];  // the magnification register as written
   }
   for (int n = 0; n < 32; n++) {
-    p[0x880 + n * 2] = static_cast<uint8_t>((a->pal_r[n] << 4) | a->pal_b[n]);
-    p[0x881 + n * 2] = a->pal_g[n];
+    p[0x880 + (n * 2)] = static_cast<uint8_t>((a->pal_r[n] << 4) | a->pal_b[n]);
+    p[0x881 + (n * 2)] = a->pal_g[n];
   }
   p[0x8C0] = a->pri_line;
   p[0x8C1] = a->split_line;
@@ -753,8 +753,8 @@ void asic_plus_chunk_save(const Device* dev, uint8_t* p) {
   for (int c = 0; c < 8; c++)  // no analogue device: the idle readings
     p[0x8C8 + c] = (c == 5 || c == 7) ? 0 : 0x3F;
   for (int c = 0; c < 3; c++) {
-    uint8_t* s = p + 0x8D0 + c * 4;
-    uint8_t* in = p + 0x8E0 + c * 7;
+    uint8_t* s = p + 0x8D0 + (c * 4);
+    uint8_t* in = p + 0x8E0 + (c * 7);
     s[0] = static_cast<uint8_t>(a->dma_source[c]);
     s[1] = static_cast<uint8_t>(a->dma_source[c] >> 8);
     s[2] = a->dma_prescaler[c];
@@ -778,20 +778,20 @@ void asic_plus_chunk_load(const Device* dev, const uint8_t* p) {
   asic_state* a = static_cast<asic_state*>(dev->self);
   a->locked = false;
   for (int i = 0; i < 2048; i++) {
-    decode_write(a, static_cast<uint16_t>(0x4000 + i * 2), p[i] >> 4);
-    decode_write(a, static_cast<uint16_t>(0x4001 + i * 2), p[i] & 15);
+    decode_write(a, static_cast<uint16_t>(0x4000 + (i * 2)), p[i] >> 4);
+    decode_write(a, static_cast<uint16_t>(0x4001 + (i * 2)), p[i] & 15);
   }
   for (int i = 0; i < 16; i++)
     for (int c = 0; c < 5; c++)
-      decode_write(a, static_cast<uint16_t>(0x6000 + i * 8 + c),
-                   p[0x800 + i * 8 + c]);
+      decode_write(a, static_cast<uint16_t>(0x6000 + (i * 8) + c),
+                   p[0x800 + (i * 8) + c]);
   for (int i = 0; i < 64; i++)
     decode_write(a, static_cast<uint16_t>(0x6400 + i), p[0x880 + i]);
   for (int i = 0; i < 6; i++)
     decode_write(a, static_cast<uint16_t>(0x6800 + i), p[0x8C0 + i]);
   for (int c = 0; c < 3; c++) {
-    const uint8_t* s = p + 0x8D0 + c * 4;
-    const uint8_t* in = p + 0x8E0 + c * 7;
+    const uint8_t* s = p + 0x8D0 + (c * 4);
+    const uint8_t* in = p + 0x8E0 + (c * 7);
     a->dma_source[c] = static_cast<uint16_t>(s[0] | (s[1] << 8));
     a->dma_prescaler[c] = s[2];
     a->dma_loops[c] = static_cast<uint16_t>(in[0] | (in[1] << 8));
@@ -800,9 +800,9 @@ void asic_plus_chunk_load(const Device* dev, const uint8_t* p) {
     a->dma_tick_cycles[c] = in[6];
     a->dma_enabled[c] = (p[0x8DF] >> c) & 1;
     a->dma_int[c] = (p[0x8DF] >> (6 - c)) & 1;
-    a->page[0x2C00 + c * 4] = s[0];
-    a->page[0x2C01 + c * 4] = s[1];
-    a->page[0x2C02 + c * 4] = s[2];
+    a->page[0x2C00 + (c * 4)] = s[0];
+    a->page[0x2C01 + (c * 4)] = s[1];
+    a->page[0x2C02 + (c * 4)] = s[2];
   }
   a->raster_acked = (p[0x8DF] & 0x80) ? 1 : 0;
   a->page[0x2C0F] = dcsr_compose(a);
