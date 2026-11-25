@@ -1951,6 +1951,53 @@ def test_step_in_accuracy():
         return True
 
 
+def test_config_save_ipc():
+    """config save persists the live configuration like Options ▸ Save.
+
+    The runner pins a throwaway copy of koncepcja.cfg.example as the session
+    config, so `config save` must succeed and rewrite that file; making the
+    file read-only must fail with ERR 500 instead of a bare OK.
+    """
+    print("Running IPC config save test...")
+    with EmulatorRunner() as emu:
+        if not emu.start():
+            print("FAIL: Could not start emulator")
+            return False
+        ok, resp = emu.ipc.send_command('config get file')
+        if not ok:
+            print(f"FAIL: config get file: {resp!r}")
+            return False
+        cfg_path = resp.replace('OK', '').strip()
+        if not cfg_path or not os.path.exists(cfg_path):
+            print(f"FAIL: session config file not found: {cfg_path!r}")
+            return False
+
+        ok, resp = emu.ipc.send_command('config set fullscreen 0')
+        if not ok:
+            print(f"note: config set fullscreen: {resp!r}")
+        ok, resp = emu.ipc.send_command('config save')
+        if not ok or 'saved to' not in resp:
+            print(f"FAIL: config save: {resp!r}")
+            return False
+        with open(cfg_path, 'r', encoding='utf-8', errors='replace') as f:
+            content = f.read()
+        if 'volume=' not in content:
+            print(f"FAIL: saved config lacks expected keys: {content[:200]!r}")
+            return False
+
+        os.chmod(cfg_path, 0o444)
+        try:
+            ok, resp = emu.ipc.send_command('config save')
+            if ok or 'config-save-failed' not in resp:
+                print(f"FAIL: read-only config should fail: {resp!r}")
+                return False
+        finally:
+            os.chmod(cfg_path, 0o644)
+
+        print("PASS: IPC config save")
+        return True
+
+
 def test_step_out_nested_call():
     """Step Out finishes the current frame while skipping a nested CALL."""
     print("Running step-out nested-call test...")
@@ -5171,6 +5218,7 @@ def main():
         test_rapid_pause_resume,
         test_reg_set_halt_is_refused,
         test_step_in_accuracy,
+        test_config_save_ipc,
         test_step_out_nested_call,
         test_step_out_gated_on_ret_not_sp,
         test_step_out_untaken_conditional_ret,
