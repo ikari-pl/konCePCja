@@ -977,6 +977,9 @@ void emulator_reset(const CpcRunCause& cause) {
   // powers up with arbitrary contents; a program that reads RAM it never
   // wrote shows up under a non-zero fill.
   ram_fill_apply(pbRAM, CPC.ram_size * 1024u);
+  // KC-RAM-FILL: the CPU runs on the sub-cycle machine's own RAM, not pbRAM
+  // (the fill above never reached it - every program read 0x00).
+  subcycle_bridge_load_ram(pbRAM, CPC.ram_size * 1024u);
   if (pbMF2ROM) {
     memset(pbMF2ROM + 8192, 0, 8192);  // clear the MF2's RAM area
   }

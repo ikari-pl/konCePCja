@@ -40,6 +40,11 @@ void subcycle_bridge_disk_leds(bool& drive_a, bool& drive_b);
 /* Cold-boot the machine (media persists — it is wiring). */
 void subcycle_bridge_reset();
 
+/* system.ram_fill: copy the host's power-on RAM image (`len` bytes from
+ * physical address 0) into the machine's own RAM - the base 64K and the
+ * expansion - so the CPU sees it.  No-op while the bridge is inactive. */
+void subcycle_bridge_load_ram(const unsigned char* src, size_t len);
+
 void subcycle_bridge_stop();
 
 /* Exit: write each disc's unsaved writes back to the file it came from, as an
