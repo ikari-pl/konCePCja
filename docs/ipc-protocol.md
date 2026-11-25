@@ -395,6 +395,7 @@ Ring-buffer recording of Z80 instruction execution.
 | `trace status` | `OK active=0\|1 entries=N` |
 | `trace dump <path>` | Write trace to text file. Format: `ADDR OPCODE A=xx F=xx BC=xxxx DE=xxxx HL=xxxx SP=xxxx` |
 | `trace on_crash <path>` | Enable tracing and auto-dump on breakpoint hit. |
+| `trace <n>` | Step-trace (max 65536): pause, execute N instructions one at a time, print one line per retired instruction, then leave the machine stopped. `OK count=N` followed by N lines: `  PC: BYTES MNEMONIC SP=xxxx (+d) A=xx F=xx BC=xxxx DE=xxxx HL=xxxx IX=xxxx IY=xxxx banks[ROMlo,RAM1,RAM2,ROMup]`. Registers are post-step; the SP delta annotates stack changes (e.g. `(-2)` on PUSH). `banks[...]` is the 16K-slot map (slot 0-3: ROM overlay or physical RAM page). |
 
 ## Frame Dumps
 

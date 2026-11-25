@@ -4,6 +4,7 @@
 #include "errors.h"
 #include "gfx_finder.h"
 #include "host_state.h"
+#include "hw/memory.h"
 #include "hw/tape.h"
 #include "hw_views.h"
 #include "log.h"
@@ -99,6 +100,8 @@ extern t_FDC FDC;
 extern byte* memmap_ROM[256];
 extern byte* pbExpansionROM;
 extern byte* pbROMhi;
+extern byte* membank_read[4];
+extern byte* membank_write[4];
 
 // Key tables are in cpc_key_tables.h (shared with autotype.cpp)
 // g_headless (declared in koncepcja.h) is true when running without a window
@@ -1731,7 +1734,7 @@ void init_command_registry() {
   register_command(
       "trace", "DEBUG",
       "trace on [buffer_size] | trace off | trace dump <path> | trace on_crash "
-      "<path> | trace status",
+      "<path> | trace status | trace <n>",
       "Z80 instruction trace",
       "Ring-buffer execution trace (default 65536 entries). Records every\n"
       "retired instruction (PC + A/F/BC/DE/HL/SP + opcode) under BOTH the\n"
@@ -1740,7 +1743,12 @@ void init_command_registry() {
       "  off:      Disable tracing.\n"
       "  dump:     Write trace buffer to text file.\n"
       "  on_crash: Auto-dump to file on breakpoint/watchpoint hit.\n"
-      "  status:   Show active state and entry count.");
+      "  status:   Show active state and entry count.\n"
+      "  <n>:      Step-trace (max 65536): pause, execute N instructions one\n"
+      "            at a time, print one line per retired instruction — PC, "
+      "raw\n"
+      "            bytes, disassembly, all registers with the SP delta, and\n"
+      "            the 16K-slot bank map. Leaves the machine stopped.");
 
   register_command("timer", "DEBUG", "timer list | timer clear", "Debug timers",
                    "List debug timers with hit count, last/min/max/average "
@@ -3508,8 +3516,89 @@ std::string handle_command(const std::string& line) {
     }
 
     // Trace commands: trace on [size], trace off, trace dump <path>, trace
-    // on_crash <path>
+    // on_crash <path>, trace <n> (step-trace)
     if (cmd == "trace" && parts.size() >= 2) {
+      // trace <n> — step-trace: pause, execute N instructions one at a time,
+      // dumping one line per retired instruction: PC, raw bytes, disassembly,
+      // all registers (SP annotated with its delta), and the 16K-slot bank
+      // map. Leaves the machine stopped, like step.
+      if (!parts[1].empty() &&
+          std::all_of(parts[1].begin(), parts[1].end(),
+                      [](unsigned char c) { return std::isdigit(c) != 0; })) {
+        int count = 0;
+        try {
+          count = parse_int(parts[1]);
+        } catch (const std::exception&) {
+          return "ERR 400 bad-count\n";
+        }
+        if (count < 1) return "ERR 400 bad-count\n";
+        if (count > 65536) return "ERR 400 too-many (max 65536)\n";
+        CpcPauseLease lease(CpcPauseLeaseMode::PauseOnly, kStepIdleWaitMs);
+        if (!lease.wait()) return z80_not_idle(lease);
+        struct StopOnExit {
+          CpcPauseLease& lease;
+          ~StopOnExit() { lease.release_stopped(); }
+        } const stop_on_exit{lease};
+        // One 16K slot's label: a ROM overlay when the read and write banks
+        // differ, else the physical RAM page under the PAL configuration.
+        auto const slot_label = [](int slot) {
+          if (membank_read[slot] != membank_write[slot]) {
+            // slot 0 = lower ROM, slot 3 = upper ROM, else expansion ROM
+            return std::string(slot == 0 ? "ROMlo"
+                                         : (slot == 3 ? "ROMup" : "ROMexp"));
+          }
+          uint8_t const cfg =
+              (CPC.ram_size > 64)
+                  ? static_cast<uint8_t>(GateArray.RAM_config & 7)
+                  : 0;
+          return "RAM" + std::to_string(mem_pal_slot_page(cfg, slot));
+        };
+        std::ostringstream resp;
+        resp << "OK count=" << count << "\n";
+        DisassembledCode dummy;
+        std::vector<dword> called;
+        for (int i = 0; i < count; i++) {
+          word const pc = z80.PC.w.l;
+          int const size = z80_instruction_length(pc);
+          std::string bytes;
+          for (int j = 0; j < size; j++) {
+            char b[4];
+            std::snprintf(b, sizeof(b), "%02X ",
+                          z80_read_mem(static_cast<word>(pc + j)));
+            bytes += b;
+          }
+          DisassembledLine const line = disassemble_one(pc, dummy, called);
+          word const sp_before = z80.SP.w.l;
+          z80_step_instruction();
+          int const sp_delta =
+              static_cast<int>(z80.SP.w.l) - static_cast<int>(sp_before);
+          char sp_note[16] = "";
+          if (sp_delta != 0)
+            std::snprintf(sp_note, sizeof(sp_note), " (%+d)", sp_delta);
+          char buf[320];
+          std::snprintf(buf, sizeof(buf),
+                        "  %04X: %-14s%-20s SP=%04X%s A=%02X F=%02X BC=%04X "
+                        "DE=%04X HL=%04X IX=%04X IY=%04X banks[%s,%s,%s,%s]\n",
+                        static_cast<unsigned>(pc), bytes.c_str(),
+                        line.instruction_.c_str(),
+                        static_cast<unsigned>(z80.SP.w.l), sp_note,
+                        static_cast<unsigned>(z80.AF.b.h),
+                        static_cast<unsigned>(z80.AF.b.l),
+                        static_cast<unsigned>(z80.BC.w.l),
+                        static_cast<unsigned>(z80.DE.w.l),
+                        static_cast<unsigned>(z80.HL.w.l),
+                        static_cast<unsigned>(z80.IX.w.l),
+                        static_cast<unsigned>(z80.IY.w.l),
+                        slot_label(0).c_str(), slot_label(1).c_str(),
+                        slot_label(2).c_str(), slot_label(3).c_str());
+          resp << buf;
+        }
+        CpcRunCause stepped;
+        stepped.reason = CpcStopReason::StepDone;
+        stepped.step = true;
+        lease.release_stopped(stepped);
+        return resp.str();
+      }
       if (parts[1] == "on") {
         int size = g_trace_default_size;
         if (parts.size() >= 3) size = parse_int(parts[2]);

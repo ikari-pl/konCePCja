@@ -104,6 +104,11 @@ void mem_peek_ram_range(const Device* dev, uint16_t addr, uint8_t* dst,
 const uint8_t* mem_lower_rom(const Device* dev);
 const uint8_t* mem_upper_rom(const Device* dev, uint8_t n);
 
+/* The 6128 PAL slot→page table (§2b): the physical 16K RAM page mapped at CPU
+ * slot (0-3) under PAL configuration `ram_config & 7`. Pages 0-3 are the base
+ * 64K, pages 4-7 belong to the selected expansion bank. Pure lookup. */
+uint8_t mem_pal_slot_page(uint8_t ram_config, uint8_t slot);
+
 /* --- Fast-tier batch seam (memory-device.md §batch, plan §4.3) ---
  *
  * The same CPU-visible view as mem_peek_cpu/mem_poke_cpu, but table-driven:

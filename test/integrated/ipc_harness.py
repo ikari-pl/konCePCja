@@ -1951,6 +1951,74 @@ def test_step_in_accuracy():
         return True
 
 
+def test_trace_step():
+    """trace <n>: pause, step N instructions, one dump line per instruction.
+
+    Plants a known run at 0x6000 (DI; LD A,$11; LD HL,$1234; PUSH DE; NOP),
+    disables interrupts, runs `trace 5`, and checks the per-line fields:
+    address, raw bytes, disassembly, post-step registers, the SP delta on the
+    PUSH, and the 16K-slot bank map. Also checks PC advanced exactly and the
+    machine is left stopped.
+    """
+    print("Running trace <n> step-trace test...")
+
+    with EmulatorRunner() as emu:
+        if not emu.start():
+            print("FAIL: Could not start emulator")
+            return False
+        emu.ipc.pause()
+        # DI first so no maskable interrupt can vector PC mid-trace.
+        ok, resp = emu.ipc.send_command('mem write 0x6000 F33E11213412D500')
+        if not ok:
+            print(f"FAIL: could not plant code: {resp}")
+            return False
+        if not emu.ipc.send_command('reg set PC 0x6000')[0]:
+            print("FAIL: could not set PC")
+            return False
+        if not emu.ipc.send_command('reg set IFF1 0')[0]:
+            print("FAIL: could not clear IFF1")
+            return False
+
+        ok, resp = emu.ipc.send_command('trace 5')
+        if not ok or not resp.startswith('OK count=5'):
+            print(f"FAIL: trace 5 replied {resp!r}")
+            return False
+        lines = [l for l in resp.splitlines() if l.strip()][1:]
+        if len(lines) != 5:
+            print(f"FAIL: expected 5 trace lines, got {len(lines)}: {resp!r}")
+            return False
+        if '6000:' not in lines[0] or 'F3' not in lines[0] or 'di' not in lines[0].lower():
+            print(f"FAIL: line 0 is not the DI: {lines[0]!r}")
+            return False
+        if '3E 11' not in lines[1] or 'ld a,$11' not in lines[1] or 'A=11' not in lines[1]:
+            print(f"FAIL: line 1 is not LD A,$11 with post-step A=11: {lines[1]!r}")
+            return False
+        if '21 34 12' not in lines[2] or 'ld hl,$1234' not in lines[2].lower() or 'HL=1234' not in lines[2]:
+            print(f"FAIL: line 2 is not LD HL,$1234: {lines[2]!r}")
+            return False
+        if 'D5' not in lines[3] or 'push de' not in lines[3] or '(-2)' not in lines[3]:
+            print(f"FAIL: line 3 is not PUSH DE with SP (-2): {lines[3]!r}")
+            return False
+        if '00' not in lines[4] or 'nop' not in lines[4].lower():
+            print(f"FAIL: line 4 is not the NOP: {lines[4]!r}")
+            return False
+        if 'banks[' not in lines[0] or 'ROM' not in lines[0]:
+            print(f"FAIL: no bank map on the trace line: {lines[0]!r}")
+            return False
+
+        ok_r, cur_pc = emu.ipc.get_reg('PC')
+        if not ok_r or cur_pc != 0x6008:  # DI(1) + LD A(2) + LD HL(3) + PUSH(1) + NOP(1)
+            print(f"FAIL: PC after trace 5 is 0x{cur_pc:04X}, want 0x6008")
+            return False
+        ok_p, resp_p = emu.ipc.send_command('pause')
+        if not ok_p:
+            print(f"FAIL: machine not stopped after trace: {resp_p!r}")
+            return False
+
+        print("PASS: trace <n> step-trace")
+        return True
+
+
 def test_step_out_nested_call():
     """Step Out finishes the current frame while skipping a nested CALL."""
     print("Running step-out nested-call test...")
@@ -5171,6 +5239,7 @@ def main():
         test_rapid_pause_resume,
         test_reg_set_halt_is_refused,
         test_step_in_accuracy,
+        test_trace_step,
         test_step_out_nested_call,
         test_step_out_gated_on_ret_not_sp,
         test_step_out_untaken_conditional_ret,

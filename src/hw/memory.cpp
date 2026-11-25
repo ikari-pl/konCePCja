@@ -370,6 +370,10 @@ void mem_load(void* self, const void* buf) {
 
 extern "C" {
 
+uint8_t mem_pal_slot_page(uint8_t ram_config, uint8_t slot) {
+  return kBankTable[ram_config & 7][slot & 3];
+}
+
 size_t mem_state_size(void) { return sizeof(mem_state); }
 
 Device mem_init(void* storage) {
