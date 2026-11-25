@@ -825,6 +825,27 @@ int snapshot_load_machine(subcycle::Machine& m, FILE* pfile) {
                      sh.z80_int_pending);
   }
 
+  // KCDV (zakcpc): konCePCja's whole-board device state, appended after the
+  // RAM dump as an SNA v3 chunk (4-char id, 32-bit LE length, data) - the
+  // Plus ASIC (registers, sprites, DMA, lock), RMR2 / the cartridge mapping
+  // and every other device exactly.  Other readers skip the unknown chunk;
+  // a file without it loads as before.
+  for (;;) {
+    uint8_t ch[8];
+    if (fread(ch, 8, 1, pfile) != 1) break;
+    const uint32_t len = static_cast<uint32_t>(ch[4]) |
+                         (static_cast<uint32_t>(ch[5]) << 8) |
+                         (static_cast<uint32_t>(ch[6]) << 16) |
+                         (static_cast<uint32_t>(ch[7]) << 24);
+    if (memcmp(ch, "KCDV", 4) == 0) {
+      std::vector<uint8_t> blob(len);
+      if (len == 0 || fread(blob.data(), len, 1, pfile) != 1) break;
+      m.load_devices(blob);
+      break;
+    }
+    if (fseek(pfile, static_cast<long>(len), SEEK_CUR) != 0) break;
+  }
+
   if (sh.version > 1 && sh.cpc_model != CPC.model) {
     LOG_ERROR("snapshot: saved for model " << static_cast<int>(sh.cpc_model)
                                            << ", machine is model " << CPC.model
@@ -938,7 +959,18 @@ int snapshot_save_machine(subcycle::Machine& m, const std::string& filename) {
   }
   std::vector<uint8_t> ram(ram_bytes);
   for (size_t i = 0; i < ram.size(); i++) ram[i] = m.ram_read(i);
-  const int ok = fwrite(ram.data(), ram.size(), 1, f) == 1 ? 0 : ERR_SNA_WRITE;
+  int ok = fwrite(ram.data(), ram.size(), 1, f) == 1 ? 0 : ERR_SNA_WRITE;
+  if (ok == 0) {  // KCDV: the whole board (see snapshot_load_machine)
+    const std::vector<uint8_t> blob = m.save_devices();
+    const uint32_t len = static_cast<uint32_t>(blob.size());
+    const uint8_t ch[8] = {'K', 'C', 'D', 'V', static_cast<uint8_t>(len),
+                           static_cast<uint8_t>(len >> 8),
+                           static_cast<uint8_t>(len >> 16),
+                           static_cast<uint8_t>(len >> 24)};
+    if (fwrite(ch, 8, 1, f) != 1 ||
+        fwrite(blob.data(), blob.size(), 1, f) != 1)
+      ok = ERR_SNA_WRITE;
+  }
   if (fclose(f) != 0) return ERR_SNA_WRITE;
   set_osd_message(ok == 0 ? "Snapshot saved (sub-cycle engine)"
                           : "Snapshot save FAILED");
