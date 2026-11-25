@@ -2,8 +2,11 @@
  * standalone sim's Machine and given the host-agnostic contract: byte-based
  * media, caller-owned framebuffer, overlay hook for drive sounds. */
 
-// zakcpc HW-35: the fast path's palette write phase = T-slot * 4 + this
+// The fast path's palette write phase = T-slot * 4 + this: an I/O write
+// (an ink OUT, calibrated on a GX4000 photo), and a memory write to the
+// ASIC palette page, whose strobe the per-cycle tiers see one T-state later.
 #define FAST_PH_C 1
+#define FAST_PH_MEM (FAST_PH_C + 4)
 #include "machine.h"
 
 #include <algorithm>
@@ -1307,7 +1310,7 @@ void Machine::fsb_mem_write(void* ctx, uint16_t addr, uint8_t val,
   const uint64_t j = (now - m->fs_t0_) / 4;
   m->fs_advance_chars(j + 1);
   m->fs_render_below(j);
-  asic_fast_write_phase(static_cast<int>(((now - m->fs_t0_) & 3) * 4 + FAST_PH_C));
+  asic_fast_write_phase(static_cast<int>(((now - m->fs_t0_) & 3) * 4 + FAST_PH_MEM));
   asic_fast_mem_write(&m->adev_, addr, val);  // claims: guard == page_claim
   // A page write can enable a DMA channel; the sequencer steals bus
   // masters the batch driver cannot model — leave the frame's remainder
