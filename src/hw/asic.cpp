@@ -627,7 +627,8 @@ void asic_tick(void* self, const Bus* __restrict in, Bus* __restrict out) {
   {  // a palette write's phase, at the strobe's first cycle: a Gate Array ink
      // write (OUT, data 01xxxxxx) or a page write to &6400-&643F
     const bool ink = in->cpu.iorq && in->cpu.wr && !in->cpu.m1 &&
-                     (in->cpu.addr & 0xC000) == 0x4000 && (in->cpu.data >> 6) == 1;
+                     (in->cpu.addr & 0xC000) == 0x4000 &&
+                     (in->cpu.data >> 6) == 1;
     const bool pal = in->cpu.mreq && in->cpu.wr && !a->locked && a->page_on &&
                      in->cpu.addr >= 0x6400 && in->cpu.addr < 0x6440;
     const bool w = ink || pal;
@@ -699,7 +700,8 @@ size_t asic_dev_state_size(const void* /*unused*/) {
 }
 void asic_save(const void* self, void* buf) {
   uint8_t* b = static_cast<uint8_t*>(buf);
-  b[0] = 5;  // v5 the palette write phase; v4 the PSG selection snoop; v3 the ack
+  b[0] =
+      5;  // v5 the palette write phase; v4 the PSG selection snoop; v3 the ack
   std::memcpy(b + 1, self, sizeof(asic_state));
   // vid_gen is a session-local cache key, not machine state: zero it in the
   // blob so saves stay canonical (byte-identical for identical hardware
@@ -993,7 +995,8 @@ void asic_fast_io_write(const Device* dev, uint16_t port, uint8_t val) {
   snoop_classic_palette(a, port, val);
   snoop_psg_select(a, port, val);
   if ((port & 0xC000) == 0x4000 && (val >> 6) == 1)
-    a->pal_phase = g_fast_wr_phase < 0 ? 0xFF : static_cast<uint8_t>(g_fast_wr_phase & 15);
+    a->pal_phase =
+        g_fast_wr_phase < 0 ? 0xFF : static_cast<uint8_t>(g_fast_wr_phase & 15);
   if (!a->locked && (port & 0xC000) == 0x4000 && (val >> 6) == 2 &&
       (val & 0x20))
     a->page_on = (((val >> 3) & 3) == 3) ? 1 : 0;
@@ -1012,7 +1015,8 @@ int asic_fast_mem_write(const Device* dev, uint16_t addr, uint8_t val) {
   if (!a->plugged || a->locked || !a->page_on) return 0;
   if (addr < 0x4000 || addr >= 0x8000) return 0;
   if (addr >= 0x6400 && addr < 0x6440)
-    a->pal_phase = g_fast_wr_phase < 0 ? 0xFF : static_cast<uint8_t>(g_fast_wr_phase & 15);
+    a->pal_phase =
+        g_fast_wr_phase < 0 ? 0xFF : static_cast<uint8_t>(g_fast_wr_phase & 15);
   decode_write(a, addr, val);  // once per access — the pgwr_prev edge's twin
   return 1;                    // the RAM underneath is vetoed
 }

@@ -248,8 +248,8 @@ void plus_read_regs(video_state* v, uint32_t gen) {
   std::memset(v->cc_valid, 0, sizeof(v->cc_valid));
   asic_vid_scroll(v->asic, &v->hscroll, nullptr);  // vscroll: the CRTC's job
   for (int i = 0; i < 16; ++i)
-    asic_vid_sprite_attr(v->asic, i, &v->spr_x[i], &v->spr_y[i],
-                         &v->spr_mx[i], &v->spr_my[i]);
+    asic_vid_sprite_attr(v->asic, i, &v->spr_x[i], &v->spr_y[i], &v->spr_mx[i],
+                         &v->spr_my[i]);
   for (int e = 0; e < 32; ++e) {
     const uint16_t rgb = asic_vid_palette(v->asic, e);
     v->pal_r[e] = static_cast<uint8_t>((rgb >> 8) & 0x0F);
@@ -425,8 +425,10 @@ void render_cell_plus(video_state* v, const GateArrayRegs* g, uint8_t mode,
       const int k = asic_vid_pal_offset(v->asic);
       if (k < 16 && char_w == 16 && v->last_row == v->beam_row &&
           v->last_x0 >= 0) {
-        uint8_t* q = v->fb + (((static_cast<size_t>(v->last_row) * v->fb_w) +
-                               v->last_x0 + k) * 3);
+        uint8_t* q =
+            v->fb +
+            (((static_cast<size_t>(v->last_row) * v->fb_w) + v->last_x0 + k) *
+             3);
         for (int lx = k; lx < 16; ++lx) {
           uint8_t r, gg, b;
           plus_index_rgb(v, g, v->last_idx[lx], &r, &gg, &b);
