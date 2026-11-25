@@ -1457,6 +1457,11 @@ extern "C" void koncpc_set_scale(int idx) { apply_scr_scale(idx); }
 extern "C" int koncpc_current_scale() { return CPC.scr_scale; }
 
 extern "C" void koncpc_set_renderer(int plugin_idx) {
+  // An out-of-range index must not become scr_style (it is unsigned): a
+  // huge wrapped value would index nowhere and crash the plugin flip.
+  if (plugin_idx < 0 ||
+      plugin_idx >= static_cast<int>(video_plugin_list.size()))
+    return;
   CPC.scr_style = plugin_idx;
   imgui_state.video_reinit_pending = true;
 }
@@ -2999,20 +3004,26 @@ std::string state_slots_dir() {
 
 namespace {
 std::string state_slot_path(int i) {
-  return state_slots_dir() + "state" + std::to_string(i) + ".sna";
+  return (std::filesystem::path(state_slots_dir()) /
+          ("state" + std::to_string(i) + ".sna"))
+      .string();
 }
 }  // namespace
 
 namespace {
 std::string state_slot_png(int i) {
-  return state_slots_dir() + "state" + std::to_string(i) + ".png";
+  return (std::filesystem::path(state_slots_dir()) /
+          ("state" + std::to_string(i) + ".png"))
+      .string();
 }
 }  // namespace
 
 // Raw RGBA thumbnail (".kthm") captured at save time for the pause-screen grid.
 namespace {
 std::string state_slot_thumb(int i) {
-  return state_slots_dir() + "state" + std::to_string(i) + ".kthm";
+  return (std::filesystem::path(state_slots_dir()) /
+          ("state" + std::to_string(i) + ".kthm"))
+      .string();
 }
 }  // namespace
 
@@ -3225,7 +3236,9 @@ void imgui_render_menu() {
       // mutated (out-param/compound-assign/loop/reference)
       std::error_code ec;
       if (dir.empty() || !std::filesystem::is_directory(dir, ec)) dir = ".";
-      std::string const shot = dir + "/screenshot_" + getDateString() + ".png";
+      std::string const shot = (std::filesystem::path(dir) /
+                                ("screenshot_" + getDateString() + ".png"))
+                                   .string();
       video_request_window_screenshot(shot);
       set_osd_message("Screenshot saved");
     }
