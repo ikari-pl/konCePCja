@@ -720,10 +720,13 @@ Device vram_device(Vram* s) {
 }
 }  // namespace
 
-// Plus horizontal soft scroll: it shifts the BACKGROUND right by hscroll,
-// pulling the reset carry (palette entry 0) in at the active left edge, while
-// leaving sprites alone.
-TEST(Video, PlusHscrollShiftsBackgroundCarry) {
+// Plus horizontal soft scroll: it shifts the BACKGROUND right by hscroll.
+// The strip it uncovers at the active left edge shows the character fetched
+// just before the display (the cell before the first active one), not
+// palette entry 0 - photographed on a GX4000 (two test cartridges: the strip
+// showed that character's colours, never pen 0).  Every byte of VRAM is
+// pen 3 here, so the strip is pen 3 too.
+TEST(Video, PlusHscrollEdgeShowsThePrefetchedCharacter) {
   const uint8_t seq[] = {0x81};  // GA: mode 1
 
   auto vram = std::make_unique<Vram>();
@@ -782,7 +785,7 @@ TEST(Video, PlusHscrollShiftsBackgroundCarry) {
       yellow++;
   }
   EXPECT_GT(yellow, 0) << "the active background is pen 3 (yellow)";
-  EXPECT_GT(magenta, 0)
-      << "hscroll pulled the reset carry (entry 0 = magenta) in at the edge";
-  EXPECT_LT(magenta, yellow) << "the carry is only the left-edge strip";
+  EXPECT_EQ(magenta, 0)
+      << "the uncovered strip is the prefetched character (pen 3), not "
+         "palette entry 0 (magenta)";
 }
