@@ -85,15 +85,15 @@ uint8_t vsync_width(const crtc_state* c) {
 
 // R8 DISPTMG skew (types 0/3 only): bits 5..4 delay the display window by 0..2
 // chars; value 3 disables the display entirely. Types 1/2 ignore R8 here.
-// Returns the shift, or 0xFF for display-off. Plus extend_border adds one char.
+// Returns the shift, or 0xFF for display-off.
 uint8_t disp_skew(const crtc_state* c) {
   if (c->type == 1 || c->type == 2) return 0;
   const uint8_t s = static_cast<uint8_t>((c->reg[8] >> 4) & 3);
   if (s == 3) return 0xFF;
-  uint8_t skew = s;
-  if (c->asic && asic_vid_active(c->asic) && asic_vid_extend_border(c->asic))
-    skew++;
-  return skew;
+  // (The Plus extend-border bit does NOT delay the window - a GX4000 photo,
+  // HW-28: the first character is covered by the border, the right edge
+  // stays; the video device paints it.)
+  return s;
 }
 
 // Register read (&BFxx on all types; &BExx too on type 3). Readable windows:

@@ -220,6 +220,13 @@ struct video_state {
   // the ×17 expansion hoists out of the pixel loop. Unset entries keep the
   // per-cell classic-ink fallback (the inks may move between cells).
   uint8_t line_rgb[32][3] = {};
+  // v2 (zakcpc, GX4000 photos HW-28 / HW-29): the soft scroll's uncovered
+  // strip shows the last character fetched BEFORE the display (the cell just
+  // before the first active one) - latched here at every non-active cell;
+  // and the extend-border bit (snapshotted with the registers) covers the
+  // first displayed character with the border, the window itself unmoved.
+  uint8_t pre0 = 0, pre1 = 0;
+  uint8_t ext_border = 0;
 };
 
 video_state* vself(void* self) { return static_cast<video_state*>(self); }
@@ -228,6 +235,7 @@ video_state* vself(void* self) { return static_cast<video_state*>(self); }
 // attributes, hscroll) and key them to the ASIC's write generation `gen`.
 void plus_read_regs(video_state* v, uint32_t gen) {
   v->snap_gen = gen;
+  v->ext_border = static_cast<uint8_t>(asic_vid_extend_border(v->asic) != 0);
   // New snapshot: every cached pal_set-pure byte expansion (F8 R12) is a
   // function of the registers refreshed below — reset it with them, in
   // BOTH execution shapes.
@@ -430,6 +438,34 @@ void render_cell_plus(video_state* v, const GateArrayRegs* g, uint8_t mode,
   const uint8_t m = mode & 3;              // the GA latch is 2 bits wide
   const int px_xbase = v->disp_char * 16;  // active-relative X of the cell
   const int hs = v->hscroll;  // horizontal soft scroll (background only)
+  if (v->disp_char == 0) {
+    // The scroll carry at the line's left edge: the character fetched just
+    // before the display (GX4000, HW-29), not pen 0.
+    std::memcpy(v->prev_pen, lut.cols[m][v->pre0], 8);
+    std::memcpy(v->prev_pen + 8, lut.cols[m][v->pre1], 8);
+    if (v->ext_border) {
+      // Extend border: the first character shows the border (pen 16); its
+      // pixels still feed the carry (HW-28: the window is not moved).
+      std::memcpy(v->prev_pen, lut.cols[m][v->fetch0], 8);
+      std::memcpy(v->prev_pen + 8, lut.cols[m][byte1], 8);
+      uint8_t r, gg, b;
+      if (v->pal_set[16]) {
+        r = v->line_rgb[16][0];
+        gg = v->line_rgb[16][1];
+        b = v->line_rgb[16][2];
+      } else {
+        plus_index_rgb(v, g, 16, &r, &gg, &b);
+      }
+      for (int dx = 0; dx < char_w; ++dx) {
+        px[0] = r;
+        px[1] = gg;
+        px[2] = b;
+        px += 3;
+      }
+      v->disp_char++;
+      return;
+    }
+  }
 
   // Sprite cull, X half — the Y half ran once per line in plus_refresh_line
   // (the snapshot is line-constant, so this is byte-identical to the old
@@ -578,6 +614,10 @@ void render_char(video_state* v, const Bus* in, uint8_t byte1) {
   const bool visible = !in->vid.hsync && !in->vid.vsync && v->beam_col >= 0 &&
                        v->beam_col < kVisChars && v->beam_row >= 0 &&
                        v->beam_row < v->fb_h;
+  if (v->plus_active && !in->vid.dispen) {  // the pre-display fetch latch
+    v->pre0 = v->fetch0;
+    v->pre1 = byte1;
+  }
   if (!visible) return;
   GateArrayRegs g{};
   ga_peek(v->gate_array, &g);
@@ -653,14 +693,18 @@ size_t video_dev_state_size(const void* /*unused*/) {
 void video_save(const void* self, void* buf) {
   const video_state* v = static_cast<const video_state*>(self);
   uint8_t* b = static_cast<uint8_t*>(buf);
-  b[0] = 1;
+  b[0] = 2;  // v2 appends the scroll latch + extend border (v1 loads)
   std::memcpy(b + 1, &v->beam_col, kVideoLogicalLen);
 }
 void video_load(void* self, const void* buf) {
   video_state* v = static_cast<video_state*>(self);
   const uint8_t* b = static_cast<const uint8_t*>(buf);
-  if (b[0] != 1) return;
-  std::memcpy(&v->beam_col, b + 1, kVideoLogicalLen);  // wiring untouched
+  if (b[0] == 2) {
+    std::memcpy(&v->beam_col, b + 1, kVideoLogicalLen);  // wiring untouched
+  } else if (b[0] == 1) {  // v1 predates pre0 / pre1 / ext_border
+    std::memcpy(&v->beam_col, b + 1,
+                offsetof(video_state, pre0) - kVideoLogicalOff);
+  }
 }
 
 }  // namespace
@@ -748,6 +792,10 @@ void video_batch_cells(const Device* vid, const uint8_t* ram,
       }
     }
 
+    if (v->plus_active && !(view.levels & CRTC_LVL_DISPEN)) {
+      v->pre0 = ram[vid_byte_addr(view.ma, view.ra, 0)];  // pre-display fetch
+      v->pre1 = ram[vid_byte_addr(view.ma, view.ra, 1)];
+    }
     const bool visible = !(view.levels & CRTC_LVL_HSYNC) &&
                          !(view.levels & CRTC_LVL_VSYNC) && v->beam_col >= 0 &&
                          v->beam_col < kVisChars && v->beam_row >= 0 &&
