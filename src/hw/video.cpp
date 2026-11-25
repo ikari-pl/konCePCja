@@ -224,6 +224,32 @@ struct video_state {
 
 video_state* vself(void* self) { return static_cast<video_state*>(self); }
 
+// Re-read the Plus registers the renderer snapshots (palette, sprite
+// attributes, hscroll) and key them to the ASIC's write generation `gen`.
+void plus_read_regs(video_state* v, uint32_t gen) {
+  v->snap_gen = gen;
+  // New snapshot: every cached pal_set-pure byte expansion (F8 R12) is a
+  // function of the registers refreshed below — reset it with them, in
+  // BOTH execution shapes.
+  std::memset(v->cc_valid, 0, sizeof(v->cc_valid));
+  asic_vid_scroll(v->asic, &v->hscroll, nullptr);  // vscroll: the CRTC's job
+  for (int i = 0; i < 16; ++i)
+    asic_vid_sprite_attr(v->asic, i, &v->spr_x[i], &v->spr_y[i],
+                         &v->spr_mx[i], &v->spr_my[i]);
+  for (int e = 0; e < 32; ++e) {
+    const uint16_t rgb = asic_vid_palette(v->asic, e);
+    v->pal_r[e] = static_cast<uint8_t>((rgb >> 8) & 0x0F);
+    v->pal_g[e] = static_cast<uint8_t>((rgb >> 4) & 0x0F);
+    v->pal_b[e] = static_cast<uint8_t>(rgb & 0x0F);
+    v->pal_set[e] = static_cast<uint8_t>(asic_vid_palette_set(v->asic, e));
+    if (v->pal_set[e]) {  // ×17 expansion — plus_index_rgb's set branch
+      v->line_rgb[e][0] = static_cast<uint8_t>(v->pal_r[e] * 17);
+      v->line_rgb[e][1] = static_cast<uint8_t>(v->pal_g[e] * 17);
+      v->line_rgb[e][2] = static_cast<uint8_t>(v->pal_b[e] * 17);
+    }
+  }
+}
+
 // Refresh the per-scanline Plus snapshot (sprite attributes + 12-bit palette).
 // Reading once per line means mid-frame register changes land on the next line
 // — the pin-level analog of a raster split.
@@ -249,29 +275,7 @@ void plus_refresh_line(video_state* v) {
   // every HSYNC fall). The sprite Y-cull below is NOT skippable — it also
   // depends on the line (beam_row) — and runs every refresh.
   const uint32_t gen = asic_vid_gen(v->asic);
-  if (!was_plus || gen != v->snap_gen) {
-    v->snap_gen = gen;
-    // New snapshot: every cached pal_set-pure byte expansion (F8 R12) is a
-    // function of the registers refreshed below — reset it with them, in
-    // BOTH execution shapes.
-    std::memset(v->cc_valid, 0, sizeof(v->cc_valid));
-    asic_vid_scroll(v->asic, &v->hscroll, nullptr);  // vscroll: the CRTC's job
-    for (int i = 0; i < 16; ++i)
-      asic_vid_sprite_attr(v->asic, i, &v->spr_x[i], &v->spr_y[i],
-                           &v->spr_mx[i], &v->spr_my[i]);
-    for (int e = 0; e < 32; ++e) {
-      const uint16_t rgb = asic_vid_palette(v->asic, e);
-      v->pal_r[e] = static_cast<uint8_t>((rgb >> 8) & 0x0F);
-      v->pal_g[e] = static_cast<uint8_t>((rgb >> 4) & 0x0F);
-      v->pal_b[e] = static_cast<uint8_t>(rgb & 0x0F);
-      v->pal_set[e] = static_cast<uint8_t>(asic_vid_palette_set(v->asic, e));
-      if (v->pal_set[e]) {  // ×17 expansion — plus_index_rgb's set branch
-        v->line_rgb[e][0] = static_cast<uint8_t>(v->pal_r[e] * 17);
-        v->line_rgb[e][1] = static_cast<uint8_t>(v->pal_g[e] * 17);
-        v->line_rgb[e][2] = static_cast<uint8_t>(v->pal_b[e] * 17);
-      }
-    }
-  }
+  if (!was_plus || gen != v->snap_gen) plus_read_regs(v, gen);
   // The line's sprite Y-cull, hoisted from render_cell_plus (the register
   // snapshot cannot move until the next refresh) — rebuilt EVERY line: py
   // moves with beam_row. px_y is line-constant: when first_active_row is
@@ -393,6 +397,14 @@ bool paint_byte_plus(video_state* v, const GateArrayRegs* g, uint8_t m,
 
 void render_cell_plus(video_state* v, const GateArrayRegs* g, uint8_t mode,
                       bool dispen, uint8_t byte1, int x0, int char_w) {
+  // A register write since the line's snapshot (a mid-line ink or palette
+  // change - the hardware shows it from the very next character; AceDL
+  // agrees, zakcpc tools/emu/tests/ink_test.asm): re-read now.  The line's
+  // sprite Y-cull stays as built at HSYNC.
+  {
+    const uint32_t gen = asic_vid_gen(v->asic);
+    if (gen != v->snap_gen) plus_read_regs(v, gen);
+  }
   if (dispen && v->first_active_row < 0)
     v->first_active_row = v->beam_row;  // sprite Y origin: first active line
   uint8_t* px =
