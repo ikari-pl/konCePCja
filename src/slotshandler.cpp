@@ -4,6 +4,8 @@
 // disc tools' parse target) in sync with what the sub-cycle engine plays.
 
 #include "slotshandler.h"
+#include "hw/asic.h"
+#include "hw/memory.h"
 
 #include <algorithm>
 #include <atomic>
@@ -825,11 +827,12 @@ int snapshot_load_machine(subcycle::Machine& m, FILE* pfile) {
                      sh.z80_int_pending);
   }
 
-  // KCDV (zakcpc): konCePCja's whole-board device state, appended after the
-  // RAM dump as an SNA v3 chunk (4-char id, 32-bit LE length, data) - the
-  // Plus ASIC (registers, sprites, DMA, lock), RMR2 / the cartridge mapping
-  // and every other device exactly.  Other readers skip the unknown chunk;
-  // a file without it loads as before.
+  // Chunks after the RAM dump (SNA v3: 4-char id, 32-bit LE length, data).
+  // KCDV (zakcpc): konCePCja's whole-board device state - exact, preferred.
+  // "CPC+": the standard Plus chunk (cpcwiki SNA format; what other
+  // emulators write) - applied when there is no KCDV.  Unknown chunks are
+  // skipped; a file without either loads as before.
+  std::vector<uint8_t> kcdv, plus;
   for (;;) {
     uint8_t ch[8];
     if (fread(ch, 8, 1, pfile) != 1) break;
@@ -837,13 +840,26 @@ int snapshot_load_machine(subcycle::Machine& m, FILE* pfile) {
                          (static_cast<uint32_t>(ch[5]) << 8) |
                          (static_cast<uint32_t>(ch[6]) << 16) |
                          (static_cast<uint32_t>(ch[7]) << 24);
-    if (memcmp(ch, "KCDV", 4) == 0) {
-      std::vector<uint8_t> blob(len);
-      if (len == 0 || fread(blob.data(), len, 1, pfile) != 1) break;
-      m.load_devices(blob);
+    std::vector<uint8_t>* want = nullptr;
+    if (memcmp(ch, "KCDV", 4) == 0) want = &kcdv;
+    else if (memcmp(ch, "CPC+", 4) == 0 && len == 0x8F8) want = &plus;
+    if (want != nullptr) {
+      want->resize(len);
+      if (len == 0 || fread(want->data(), len, 1, pfile) != 1) {
+        want->clear();
+        break;
+      }
+    } else if (fseek(pfile, static_cast<long>(len), SEEK_CUR) != 0) {
       break;
     }
-    if (fseek(pfile, static_cast<long>(len), SEEK_CUR) != 0) break;
+  }
+  if (!kcdv.empty()) {
+    m.load_devices(kcdv);
+  } else if (!plus.empty()) {
+    asic_plus_chunk_load(m.asic(), plus.data());  // leaves the ASIC unlocked
+    if ((plus[0x8F5] & 0xE0) == 0xA0)             // RMR2 through the GA port
+      m.io_write(0x7F00, plus[0x8F5]);
+    asic_set_locked(m.asic(), plus[0x8F6] == 0);
   }
 
   if (sh.version > 1 && sh.cpc_model != CPC.model) {
@@ -960,6 +976,19 @@ int snapshot_save_machine(subcycle::Machine& m, const std::string& filename) {
   std::vector<uint8_t> ram(ram_bytes);
   for (size_t i = 0; i < ram.size(); i++) ram[i] = m.ram_read(i);
   int ok = fwrite(ram.data(), ram.size(), 1, f) == 1 ? 0 : ERR_SNA_WRITE;
+  if (ok == 0 && CPC.model == 3) {  // "CPC+": the standard Plus chunk
+    uint8_t ch[8 + 0x8F8];
+    std::memcpy(ch, "CPC+", 4);
+    ch[4] = 0xF8;
+    ch[5] = 0x08;
+    ch[6] = 0;
+    ch[7] = 0;
+    asic_plus_chunk_save(m.asic(), ch + 8);
+    ch[8 + 0x8F5] = static_cast<uint8_t>(
+        asic_page_on(m.asic()) ? (mem_cart_rmr2(m.memory()) | 0x18)
+                               : mem_cart_rmr2(m.memory()));
+    if (fwrite(ch, sizeof(ch), 1, f) != 1) ok = ERR_SNA_WRITE;
+  }
   if (ok == 0) {  // KCDV: the whole board (see snapshot_load_machine)
     const std::vector<uint8_t> blob = m.save_devices();
     const uint32_t len = static_cast<uint32_t>(blob.size());

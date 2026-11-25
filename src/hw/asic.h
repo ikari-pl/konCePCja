@@ -40,6 +40,12 @@ size_t asic_state_size(void);
 // asic.dma_psg_restore (config): re-latch the CPU's PSG register after a DMA
 // LOAD (see asic.cpp g_dma_psg_restore).
 void asic_set_dma_psg_restore(int on);
+/* The SNA v3 "CPC+" chunk (0x8F8 bytes): build (RMR2 at 0x8F5 left for the
+ * caller) / apply (all but RMR2; leaves the ASIC unlocked). */
+void asic_plus_chunk_save(const Device* dev, uint8_t* chunk);
+void asic_plus_chunk_load(const Device* dev, const uint8_t* chunk);
+void asic_set_locked(const Device* dev, int locked);
+int asic_page_on(const Device* dev);
 Device asic_init(void* storage);
 
 /* model==3 puts the ASIC on the board (gates all decode). A hardware strap set

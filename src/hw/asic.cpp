@@ -713,6 +713,112 @@ size_t asic_state_size(void) { return sizeof(asic_state); }
 
 void asic_set_dma_psg_restore(int on) { g_dma_psg_restore = on != 0; }
 
+// The SNA v3 "CPC+" chunk (0x8F8 bytes; the cpcwiki / cpctech SNA layout as
+// libretro-cap32 implements it): 0x000 sprite pixels (two per byte, the high
+// nibble the even column, 128 bytes per sprite, row-major), 0x800 sprite
+// attributes (8 per sprite: X, Y little-endian, magnification), 0x880 the
+// palette (&6400-&643F), 0x8C0-0x8C5 &6800-&6805 (raster interrupt line,
+// split line, split address high / low, soft scroll, interrupt vector),
+// 0x8C8 the analogue inputs, 0x8D0 the DMA channels (address LE, prescaler),
+// 0x8DF DCSR, 0x8E0 per channel [loop count, loop address (the instruction
+// after the REPEAT), pause count, prescaler count], 0x8F5 RMR2 (filled by the
+// caller), 0x8F6 1 = unlocked, 0x8F7 the unlock sequence position (0: idle).
+void asic_plus_chunk_save(const Device* dev, uint8_t* p) {
+  const asic_state* a = static_cast<const asic_state*>(dev->self);
+  std::memset(p, 0, 0x8F8);
+  for (int i = 0; i < 2048; i++) {
+    const int id = i >> 7, y = (i >> 3) & 15, x = (i & 7) * 2;
+    p[i] = static_cast<uint8_t>(((a->sprite_px[id][x][y] & 15) << 4) |
+                                (a->sprite_px[id][x + 1][y] & 15));
+  }
+  for (int i = 0; i < 16; i++) {
+    uint8_t* s = p + 0x800 + i * 8;
+    s[0] = static_cast<uint8_t>(a->sprite_x[i]);
+    s[1] = static_cast<uint8_t>(a->sprite_x[i] >> 8);
+    s[2] = static_cast<uint8_t>(a->sprite_y[i]);
+    s[3] = static_cast<uint8_t>(a->sprite_y[i] >> 8);
+    s[4] = a->page[0x2004 + i * 8];  // the magnification register as written
+  }
+  for (int n = 0; n < 32; n++) {
+    p[0x880 + n * 2] = static_cast<uint8_t>((a->pal_r[n] << 4) | a->pal_b[n]);
+    p[0x881 + n * 2] = a->pal_g[n];
+  }
+  p[0x8C0] = a->pri_line;
+  p[0x8C1] = a->split_line;
+  p[0x8C2] = static_cast<uint8_t>(a->split_addr >> 8);
+  p[0x8C3] = static_cast<uint8_t>(a->split_addr);
+  p[0x8C4] = static_cast<uint8_t>(a->hscroll | (a->vscroll << 4) |
+                                  (a->extend_border ? 0x80 : 0));
+  p[0x8C5] = a->page[0x2805];
+  for (int c = 0; c < 8; c++)  // no analogue device: the idle readings
+    p[0x8C8 + c] = (c == 5 || c == 7) ? 0 : 0x3F;
+  for (int c = 0; c < 3; c++) {
+    uint8_t* s = p + 0x8D0 + c * 4;
+    uint8_t* in = p + 0x8E0 + c * 7;
+    s[0] = static_cast<uint8_t>(a->dma_source[c]);
+    s[1] = static_cast<uint8_t>(a->dma_source[c] >> 8);
+    s[2] = a->dma_prescaler[c];
+    in[0] = static_cast<uint8_t>(a->dma_loops[c]);
+    in[1] = static_cast<uint8_t>(a->dma_loops[c] >> 8);
+    in[2] = static_cast<uint8_t>(a->dma_loop_addr[c]);
+    in[3] = static_cast<uint8_t>(a->dma_loop_addr[c] >> 8);
+    in[4] = static_cast<uint8_t>(a->dma_pause_ticks[c]);
+    in[5] = static_cast<uint8_t>(a->dma_pause_ticks[c] >> 8);
+    in[6] = static_cast<uint8_t>(a->dma_tick_cycles[c]);
+  }
+  p[0x8DF] = dcsr_compose(a);
+  p[0x8F6] = a->locked ? 0 : 1;
+  p[0x8F7] = 0;
+}
+
+// Apply a "CPC+" chunk (all but RMR2, which the caller replays as a Gate Array
+// write).  Leaves the ASIC unlocked so that write is honoured; the caller
+// then sets the saved lock state (asic_set_locked).
+void asic_plus_chunk_load(const Device* dev, const uint8_t* p) {
+  asic_state* a = static_cast<asic_state*>(dev->self);
+  a->locked = false;
+  for (int i = 0; i < 2048; i++) {
+    decode_write(a, static_cast<uint16_t>(0x4000 + i * 2), p[i] >> 4);
+    decode_write(a, static_cast<uint16_t>(0x4001 + i * 2), p[i] & 15);
+  }
+  for (int i = 0; i < 16; i++)
+    for (int c = 0; c < 5; c++)
+      decode_write(a, static_cast<uint16_t>(0x6000 + i * 8 + c),
+                   p[0x800 + i * 8 + c]);
+  for (int i = 0; i < 64; i++)
+    decode_write(a, static_cast<uint16_t>(0x6400 + i), p[0x880 + i]);
+  for (int i = 0; i < 6; i++)
+    decode_write(a, static_cast<uint16_t>(0x6800 + i), p[0x8C0 + i]);
+  for (int c = 0; c < 3; c++) {
+    const uint8_t* s = p + 0x8D0 + c * 4;
+    const uint8_t* in = p + 0x8E0 + c * 7;
+    a->dma_source[c] = static_cast<uint16_t>(s[0] | (s[1] << 8));
+    a->dma_prescaler[c] = s[2];
+    a->dma_loops[c] = static_cast<uint16_t>(in[0] | (in[1] << 8));
+    a->dma_loop_addr[c] = static_cast<uint16_t>(in[2] | (in[3] << 8));
+    a->dma_pause_ticks[c] = static_cast<uint16_t>(in[4] | (in[5] << 8));
+    a->dma_tick_cycles[c] = in[6];
+    a->dma_enabled[c] = (p[0x8DF] >> c) & 1;
+    a->dma_int[c] = (p[0x8DF] >> (6 - c)) & 1;
+    a->page[0x2C00 + c * 4] = s[0];
+    a->page[0x2C01 + c * 4] = s[1];
+    a->page[0x2C02 + c * 4] = s[2];
+  }
+  a->raster_acked = (p[0x8DF] & 0x80) ? 1 : 0;
+  a->page[0x2C0F] = dcsr_compose(a);
+  a->dma_phase = DMA_IDLE;
+  a->lockpos = 0;
+  a->vid_gen++;
+}
+
+void asic_set_locked(const Device* dev, int locked) {
+  static_cast<asic_state*>(dev->self)->locked = locked != 0;
+}
+
+int asic_page_on(const Device* dev) {
+  return static_cast<const asic_state*>(dev->self)->page_on;
+}
+
 Device asic_init(void* storage) {
   // The pointer is stored in Device::self (void*), so it cannot be const.
   // NOLINTNEXTLINE(misc-const-correctness)

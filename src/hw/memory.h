@@ -36,6 +36,8 @@ typedef struct MemRegs {
 size_t mem_state_size(void);
 Device mem_init(void* storage);
 void mem_peek(const Device* dev, MemRegs* out);
+/* RMR2 as last written, without the register-page membank (see asic). */
+uint8_t mem_cart_rmr2(const Device* dev);
 
 /* Load ROM contents (up to 16K each). Persist across reset (they are the
  * firmware). */
