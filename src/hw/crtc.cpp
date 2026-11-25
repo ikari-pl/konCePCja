@@ -199,7 +199,11 @@ void crtc_newscanline(crtc_state* c) {
   // sl_count == split_sl, crtc.cpp:1342).
   c->scanline = static_cast<uint16_t>(c->scanline + 1);
   snapshot_split(c);  // the live registers (a mid-frame re-arm counts)
-  const bool split_here = c->plus_split && c->scanline == c->split_sl_snap;
+  // The split takes effect on the line AFTER the programmed one (a GX4000
+  // photo, zakcpc tools/emu/tests/split_line_photo.asm: a split at line 96
+  // leaves line 96 showing the old address; AceDL agrees).
+  const bool split_here =
+      c->plus_split && c->scanline == c->split_sl_snap + 1;
 
   if (c->in_vsync) {  // VSYNC width is measured in scanlines (per-type,
                       // §helpers)
