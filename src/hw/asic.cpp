@@ -105,7 +105,26 @@ struct asic_state {
   // first tick, and drive the same vector for the rest of the cycle.
   uint8_t ack_prev = 0;
   uint8_t ack_vector = 0xFF;
+  // v4: the CPU's PSG register selection, snooped from the PPI writes (port A
+  // = the number, port C = 11xxxxxx latches it), re-latched after each DMA
+  // LOAD when g_dma_psg_restore is on (zakcpc KC-PHANTOM-KEY / HW-34).
+  uint8_t ppi_a = 0;
+  uint8_t cpu_psg_reg = 0;
 };
+
+// asic.dma_psg_restore: after a DMA LOAD, latch the CPU's selected PSG
+// register again (one more AY bus cycle).  Off (0) by default: the LOAD
+// leaves its own register latched.  Which one the real ASIC does is the
+// open question HW-34 measures.
+bool g_dma_psg_restore = false;
+
+// PPI decode (A11 low; A9..A8 = the port): port A = 0, port C = 2.
+void snoop_psg_select(asic_state* a, uint16_t port, uint8_t val) {
+  if (port & 0x0800) return;
+  const unsigned sel = (port >> 8) & 3;
+  if (sel == 0) a->ppi_a = val;
+  else if (sel == 2 && (val & 0xC0) == 0xC0) a->cpu_psg_reg = a->ppi_a & 0x0F;
+}
 
 // The DMA engine's cycle-by-cycle state. A burst: request the bus, wait for the
 // grant, then per active channel a 4-cycle banked-RAM fetch of one 16-bit
@@ -120,6 +139,7 @@ enum DmaPhase : uint8_t {
   DMA_EXEC,        // latch high, decode + execute
   DMA_PSG_SEL,     // AY bus: latch the register address (bdir & bc1)
   DMA_PSG_WR,      // AY bus: write the value (bdir & !bc1)
+  DMA_PSG_RESEL,   // AY bus: latch the CPU's register again (dma_psg_restore)
   DMA_ADVANCE,     // writeback, then next channel or release the bus
 };
 
@@ -518,6 +538,12 @@ bool dma_service(asic_state* a, const Bus* in, Bus* out) {
       out->ay.bdir = true;
       out->ay.bc1 = false;
       out->ay.da = a->dma_psg_v;
+      a->dma_phase = g_dma_psg_restore ? DMA_PSG_RESEL : DMA_ADVANCE;
+      break;
+    case DMA_PSG_RESEL:  // AY bus: the CPU's selection back
+      out->ay.bdir = true;
+      out->ay.bc1 = true;
+      out->ay.da = a->cpu_psg_reg;
       a->dma_phase = DMA_ADVANCE;
       break;
     case DMA_ADVANCE:
@@ -575,8 +601,10 @@ void asic_tick(void* self, const Bus* __restrict in, Bus* __restrict out) {
 
   // Classic Gate Array ink writes share the ASIC's one palette RAM — always
   // live, lock or no lock (see snoop_classic_palette).
-  if (in->cpu.iorq && in->cpu.wr)
+  if (in->cpu.iorq && in->cpu.wr) {
     snoop_classic_palette(a, in->cpu.addr, in->cpu.data);
+    if (!in->cpu.m1) snoop_psg_select(a, in->cpu.addr, in->cpu.data);
+  }
 
   // RMR2 (6128+ secondary ROM/register-page map): a Gate-Array fn-2 write
   // (A15=0, A14=1, data 10xxxxxx) with bit5 set, honoured only while unlocked.
@@ -642,7 +670,7 @@ size_t asic_dev_state_size(const void* /*unused*/) {
 }
 void asic_save(const void* self, void* buf) {
   uint8_t* b = static_cast<uint8_t*>(buf);
-  b[0] = 3;  // v3 appends the acknowledge state (v1 / v2 blobs still load)
+  b[0] = 4;  // v4 appends the PSG selection snoop; v3 the acknowledge state
   std::memcpy(b + 1, self, sizeof(asic_state));
   // vid_gen is a session-local cache key, not machine state: zero it in the
   // blob so saves stay canonical (byte-identical for identical hardware
@@ -653,8 +681,11 @@ void asic_load(void* self, const void* buf) {
   asic_state* a = self_of(self);
   const uint32_t live_gen = a->vid_gen;
   const uint8_t* b = static_cast<const uint8_t*>(buf);
-  if (b[0] == 3) {
+  if (b[0] == 4) {
     std::memcpy(self, b + 1, sizeof(asic_state));
+  } else if (b[0] == 3) {
+    // v3 predates the PSG selection snoop: those stay at their reset values.
+    std::memcpy(self, b + 1, offsetof(asic_state, ppi_a));
   } else if (b[0] == 2) {
     // v2 predates the acknowledge state: the power-up values stay.
     std::memcpy(self, b + 1, offsetof(asic_state, dma_keep_status));
@@ -673,6 +704,8 @@ void asic_load(void* self, const void* buf) {
 extern "C" {
 
 size_t asic_state_size(void) { return sizeof(asic_state); }
+
+void asic_set_dma_psg_restore(int on) { g_dma_psg_restore = on != 0; }
 
 Device asic_init(void* storage) {
   // The pointer is stored in Device::self (void*), so it cannot be const.
@@ -808,6 +841,7 @@ void asic_fast_io_write(const Device* dev, uint16_t port, uint8_t val) {
   // per-cycle edge detector collapses a held strobe the same way).
   if (!(port & 0x4000) && ((port >> 8) & 3) == 0) feed_knock(a, val);
   snoop_classic_palette(a, port, val);
+  snoop_psg_select(a, port, val);
   if (!a->locked && (port & 0xC000) == 0x4000 && (val >> 6) == 2 &&
       (val & 0x20))
     a->page_on = (((val >> 3) & 3) == 3) ? 1 : 0;

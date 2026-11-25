@@ -37,6 +37,9 @@ typedef struct AsicRegs {
 } AsicRegs;
 
 size_t asic_state_size(void);
+// asic.dma_psg_restore (config): re-latch the CPU's PSG register after a DMA
+// LOAD (see asic.cpp g_dma_psg_restore).
+void asic_set_dma_psg_restore(int on);
 Device asic_init(void* storage);
 
 /* model==3 puts the ASIC on the board (gates all decode). A hardware strap set
