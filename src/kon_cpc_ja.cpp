@@ -874,8 +874,9 @@ int emulator_patch_ROM() {
 }  // namespace
 
 // system.ram_fill (see emulator_reset).  Unknown values fall back to zero.
-static std::string g_ram_fill = "0";
-static void ram_fill_apply(byte* ram, size_t len) {
+namespace {
+std::string g_ram_fill = "0";
+void ram_fill_apply(byte* ram, size_t len) {
   const std::string& f = g_ram_fill;
   if (f == "aa55") {
     for (size_t i = 0; i < len; i++) ram[i] = (i & 1) ? 0x55 : 0xAA;
@@ -898,11 +899,13 @@ static void ram_fill_apply(byte* ram, size_t len) {
     } catch (const std::out_of_range&) {
     }
     if (s == 0) s = 1;
-    if (permille > 1000) permille = 1000;
+    permille = std::min(permille, 1000U);
     for (size_t i = 0; i < len; i++) {
       byte v = 0;
       for (int bit = 0; bit < 8; bit++) {
-        s ^= s << 13; s ^= s >> 17; s ^= s << 5;
+        s ^= s << 13;
+        s ^= s >> 17;
+        s ^= s << 5;
         if ((s % 1000u) < permille) v = static_cast<byte>(v | (1u << bit));
       }
       ram[i] = v;
@@ -918,7 +921,9 @@ static void ram_fill_apply(byte* ram, size_t len) {
     }
     if (s == 0) s = 1;
     for (size_t i = 0; i < len; i++) {
-      s ^= s << 13; s ^= s >> 17; s ^= s << 5;
+      s ^= s << 13;
+      s ^= s >> 17;
+      s ^= s << 5;
       ram[i] = static_cast<byte>(s >> 24);
     }
     return;
@@ -931,6 +936,7 @@ static void ram_fill_apply(byte* ram, size_t len) {
   }
   memset(ram, v & 0xFF, len);
 }
+}  // namespace
 
 void emulator_reset(const CpcRunCause& cause) {
   // Reset mutates the entire board. Under engine=1 the Z80 runs on its own
@@ -1002,9 +1008,9 @@ void emulator_reset(const CpcRunCause& cause) {
   // memory
   // RAM at power-on: system.ram_fill = 0 (default) | a byte (0xFF) | aa55
   // (an alternation) | rand:<seed> (a seeded xorshift fill) |
-  // sparse:<seed>[:<per mille>] (scattered set bits, as real hardware).  Real hardware
-  // powers up with arbitrary contents; a program that reads RAM it never
-  // wrote shows up under a non-zero fill.
+  // sparse:<seed>[:<per mille>] (scattered set bits, as real hardware).  Real
+  // hardware powers up with arbitrary contents; a program that reads RAM it
+  // never wrote shows up under a non-zero fill.
   ram_fill_apply(pbRAM, CPC.ram_size * 1024u);
   // KC-RAM-FILL: the CPU runs on the sub-cycle machine's own RAM, not pbRAM
   // (the fill above never reached it - every program read 0x00).
