@@ -76,7 +76,18 @@ struct mem_state {
   uint16_t pgx_wpos = 0;
   uint32_t pgx_commits = 0;  // bumped by every stop that ends a write
   int8_t rd_cart[4] = {-1, -1, -1, -1};  // fast cache: slot -> cart bank
+  // ---- v3: the PicoGX is busy after a commit (writing its SD card): it
+  // ignores commands and keeps serving the ROM (zakcpc HW-31b rev 2 on a
+  // real PicoGX: a READ issued straight after a write's stop is not taken).
+  // Counted down per frame by the host (mem_picogx_frame).
+  uint16_t pgx_busy = 0;         // frames left
+  uint16_t pgx_busy_frames = 0;  // setting (system.picogx_busy_ms), wiring
 };
+
+// The blob size of mem_state before v3 (its tail ended at rd_cart).
+constexpr size_t kMemStateV2 =
+    (offsetof(mem_state, rd_cart) + sizeof(mem_state::rd_cart) + alignof(mem_state) - 1) &
+    ~(alignof(mem_state) - 1);
 
 mem_state* self_of(void* self) { return static_cast<mem_state*>(self); }
 
@@ -150,6 +161,10 @@ static void pgx_store(mem_state* m, uint8_t b) {
 // data path and its command recogniser.  `rom` = the cartridge byte.
 uint8_t pgx_access(mem_state* m, int bank, uint16_t offs, uint8_t rom) {
   uint8_t v = rom;
+  if (m->pgx_busy) {  // committing: commands ignored, the ROM served
+    m->pgx_seq = 0;
+    return v;
+  }
   if (bank != 0) {  // another bank's read breaks a command sequence
     if (m->pgx_mode == 6) {  // (write mode: the held reads were data)
       if (m->pgx_seq >= 1) pgx_store(m, 0x3C);
@@ -189,7 +204,10 @@ uint8_t pgx_access(mem_state* m, int bank, uint16_t offs, uint8_t rom) {
       m->pgx_mode = 6;
       m->pgx_wpos = 0;
     } else if (cmd == 7) {
-      if (m->pgx_mode == 6) m->pgx_commits++;
+      if (m->pgx_mode == 6) {
+        m->pgx_commits++;
+        m->pgx_busy = m->pgx_busy_frames;
+      }
       m->pgx_mode = 0;
     }
     m->pgx_seq = 0;
@@ -418,7 +436,7 @@ size_t mem_dev_state_size(const void* self) {
 void mem_save(const void* self, void* buf) {
   const mem_state* m = static_cast<const mem_state*>(self);
   uint8_t* b = static_cast<uint8_t*>(buf);
-  b[0] = 2;  // v2 appends the PicoGX channel (v1 blobs still load)
+  b[0] = 3;  // v2 appends the PicoGX channel, v3 its busy time (older load)
   std::memcpy(b + 1, self, sizeof(mem_state));
   std::memset(b + 1 + offsetof(mem_state, pgx_save), 0, sizeof(void*));
   // Zero the wiring-pointer fields in the blob (their host addresses are not
@@ -442,7 +460,8 @@ void mem_save(const void* self, void* buf) {
 }
 void mem_load(void* self, const void* buf) {
   const uint8_t* b = static_cast<const uint8_t*>(buf);
-  if (b[0] != 1 && b[0] != 2) return;
+  if (b[0] != 1 && b[0] != 2 && b[0] != 3) return;
+  const uint16_t busy_frames = self_of(self)->pgx_busy_frames;  // a setting
   // Preserve the caller-owned attachments across the blob copy (the expansion
   // pointer/length and the ROM table are live wiring, not serializable state).
   mem_state* m = self_of(self);
@@ -460,12 +479,18 @@ void mem_load(void* self, const void* buf) {
   std::memcpy(&blob_exp_len, b + 1 + offsetof(mem_state, expansion_len),
               sizeof(size_t));
   // v1 predates the PicoGX fields (the struct's tail): copy what it holds.
+  const size_t blob_state = b[0] == 3 ? sizeof(mem_state) : b[0] == 2 ? kMemStateV2
+                                                                       : sizeof(mem_state);
   std::memcpy(self, b + 1,
-              b[0] == 2 ? sizeof(mem_state) : offsetof(mem_state, pgx_save));
+              b[0] == 3   ? sizeof(mem_state)
+              : b[0] == 2 ? offsetof(mem_state, pgx_busy)
+                          : offsetof(mem_state, pgx_save));
   if (b[0] == 1) {
     m->pgx_seq = m->pgx_mode = m->pgx_rd_prev = 0;
     m->pgx_wpos = 0;
   }
+  if (b[0] < 3) m->pgx_busy = 0;
+  m->pgx_busy_frames = busy_frames;
   m->pgx_save = pgx;
   m->fast_dirty = 1;
   m->expansion = exp;
@@ -476,7 +501,7 @@ void mem_load(void* self, const void* buf) {
   std::memcpy(m->roms, saved_roms, sizeof(saved_roms));
   // Restore expansion RAM contents when the live buffer matches the saved size.
   if (exp && exp_len && blob_exp_len == exp_len)
-    std::memcpy(exp, b + 1 + sizeof(mem_state), exp_len);
+    std::memcpy(exp, b + 1 + blob_state, exp_len);
 }
 
 }  // namespace
@@ -535,6 +560,13 @@ void mem_attach_picogx(const Device* dev, uint8_t* save16k) {
   m->pgx_save = save16k;
   m->pgx_seq = m->pgx_mode = m->pgx_rd_prev = 0;
   m->pgx_wpos = 0;
+}
+void mem_picogx_set_busy_frames(const Device* dev, uint16_t frames) {
+  self_of(dev->self)->pgx_busy_frames = frames;
+}
+void mem_picogx_frame(const Device* dev) {
+  mem_state* m = self_of(dev->self);
+  if (m->pgx_busy) m->pgx_busy--;
 }
 uint32_t mem_picogx_commits(const Device* dev) {
   return static_cast<const mem_state*>(dev->self)->pgx_commits;

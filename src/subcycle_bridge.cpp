@@ -1108,11 +1108,18 @@ void pgx_plug(Bridge& b) {
     fclose(f);
   }
   b.machine.attach_picogx(g_pgx_save.data());
+  // system.picogx_busy_ms: the time after a commit in which the device takes
+  // no command (frames of 20 ms, rounded up).  Default 100 ms: a real PicoGX
+  // ignored a READ issued straight after a write's stop (zakcpc HW-31b rev 2);
+  // its true duration is unmeasured - 100 ms is a conservative stand-in.
+  const int ms = CPC.devices.picogx_busy_ms < 0 ? 0 : CPC.devices.picogx_busy_ms;
+  b.machine.picogx_set_busy_frames(static_cast<uint16_t>((ms + 19) / 20));
   g_pgx_seen = b.machine.picogx_commits();
 }
 
 void sync_picogx(Bridge& b) {
   if (g_pgx_save.empty()) return;
+  b.machine.picogx_frame();  // the busy time after a commit
   const uint32_t c = b.machine.picogx_commits();
   if (c == g_pgx_seen) return;
   g_pgx_seen = c;

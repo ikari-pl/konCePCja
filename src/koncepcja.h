@@ -239,6 +239,7 @@ struct t_DeviceConfig {
   bool silicon_disc = false;  // [system] silicon_disc
   bool smartwatch = false;    // [system] smartwatch
   bool picogx = false;        // [system] picogx - PicoGX cart save channel
+  int picogx_busy_ms = 100;   // [system] picogx_busy_ms - no commands after a commit
   bool amdrum = false;        // [sound] amdrum
   bool disk_sounds = false;   // [sound] disk_sounds
   bool tape_sounds = false;   // [sound] tape_sounds

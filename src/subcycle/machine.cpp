@@ -140,6 +140,10 @@ void Machine::attach_picogx(uint8_t* save16k) {
   mem_attach_picogx(&mdev_, save16k);
 }
 uint32_t Machine::picogx_commits() const { return mem_picogx_commits(&mdev_); }
+void Machine::picogx_set_busy_frames(uint16_t frames) {
+  mem_picogx_set_busy_frames(&mdev_, frames);
+}
+void Machine::picogx_frame() { mem_picogx_frame(&mdev_); }
 
 // pointer written through a cast or passed to a non-const callee.
 // NOLINTNEXTLINE(readability-non-const-parameter)
