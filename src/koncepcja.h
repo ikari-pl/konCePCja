@@ -238,6 +238,7 @@ inline constexpr const char* kJoyToKeyDefaults[6] = {
 struct t_DeviceConfig {
   bool silicon_disc = false;  // [system] silicon_disc
   bool smartwatch = false;    // [system] smartwatch
+  bool picogx = false;        // [system] picogx - PicoGX cart save channel
   bool amdrum = false;        // [sound] amdrum
   bool disk_sounds = false;   // [sound] disk_sounds
   bool tape_sounds = false;   // [sound] tape_sounds

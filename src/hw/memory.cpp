@@ -59,6 +59,23 @@ struct mem_state {
   const uint8_t* rd_bank[4] = {};
   uint8_t* wr_bank[4] = {};
   uint8_t fast_dirty = 1;
+
+  // ---- v2: the PicoGX cartridge's save channel (docs/hardware/picogx.md).
+  // The cartridge sees every CPU read it serves as (bank, offset); reads of
+  // bank 0 at offsets #133C, #25C4, then N with no other cartridge read in
+  // between issue command N: 5 = read (bank 0 shows the save), 6 = write
+  // (each bank-0 read stores its address's low byte, sequentially from the
+  // save's start), 7 = stop (bank 0 back; after a write the save is
+  // committed - the host writes the .SAV).  `pgx_save` is a host-owned 16K
+  // buffer (wiring, zeroed in the blob, like `cart`); nullptr = no PicoGX.
+  uint8_t* pgx_save = nullptr;
+  uint8_t pgx_seq = 0;      // 0 idle, 1 = #133C seen, 2 = #25C4 seen
+  uint8_t pgx_mode = 0;     // 0 normal, 5 read, 6 write
+  uint8_t pgx_rd_prev = 0;  // per-cycle path: one FSM step per access
+  uint8_t pgx_rd_val = 0;
+  uint16_t pgx_wpos = 0;
+  uint32_t pgx_commits = 0;  // bumped by every stop that ends a write
+  int8_t rd_cart[4] = {-1, -1, -1, -1};  // fast cache: slot -> cart bank
 };
 
 mem_state* self_of(void* self) { return static_cast<mem_state*>(self); }
@@ -111,6 +128,50 @@ uint8_t* banked_ptr(mem_state* m, uint16_t addr) {
   if ((bank + 1) * 0x10000 > m->expansion_len) bank = 0;
   return &m->expansion[(bank * 0x10000) |
                        (static_cast<size_t>(page - 4) << 14) | offs];
+}
+
+// The cartridge bank serving a CPU read of `addr`, or -1 (RAM / no cart).
+int cart_bank_of(const mem_state* m, uint16_t addr) {
+  if (!m->cart) return -1;
+  if (lower_rom_serves(m, addr))
+    return m->cart_lower < m->cart_banks ? m->cart_lower : 0;
+  if (addr >= 0xC000 && upper_rom_on(m))
+    return m->cart_upper < m->cart_banks ? m->cart_upper : 0;
+  return -1;
+}
+
+// One CPU read the PicoGX serves (bank, 14-bit offset): the save channel's
+// data path and its command recogniser.  `rom` = the cartridge byte.
+uint8_t pgx_access(mem_state* m, int bank, uint16_t offs, uint8_t rom) {
+  uint8_t v = rom;
+  if (bank != 0) {  // another bank's read breaks a command sequence
+    m->pgx_seq = 0;
+    return v;
+  }
+  if (m->pgx_mode == 5) {
+    v = m->pgx_save[offs & 0x3FFF];
+  } else if (m->pgx_mode == 6) {
+    m->pgx_save[m->pgx_wpos & 0x3FFF] = static_cast<uint8_t>(offs & 0xFF);
+    m->pgx_wpos = static_cast<uint16_t>(m->pgx_wpos + 1);
+  }
+  if (m->pgx_seq == 2) {
+    const uint8_t cmd = static_cast<uint8_t>(offs & 0xFF);
+    if (cmd == 5) {
+      m->pgx_mode = 5;
+    } else if (cmd == 6) {
+      m->pgx_mode = 6;
+      m->pgx_wpos = 0;
+    } else if (cmd == 7) {
+      if (m->pgx_mode == 6) m->pgx_commits++;
+      m->pgx_mode = 0;
+    }
+    m->pgx_seq = 0;
+  } else if (m->pgx_seq == 1 && offs == 0x25C4) {
+    m->pgx_seq = 2;
+  } else {
+    m->pgx_seq = (offs == 0x133C) ? 1 : 0;
+  }
+  return v;
 }
 
 uint8_t mem_read(mem_state* m, uint16_t addr) {
@@ -228,6 +289,9 @@ void mem_io_write_decode(mem_state* m, uint16_t addr, uint8_t d) {
 // 16K page is contiguous in its backing store, so slot base + (addr & 0x3FFF)
 // is exact.
 void fast_rebuild(mem_state* m) {
+  for (int slot = 0; slot < 4; ++slot)
+    m->rd_cart[slot] = static_cast<int8_t>(
+        cart_bank_of(m, static_cast<uint16_t>(slot << 14)));
   for (int slot = 0; slot < 4; ++slot) {
     uint8_t* ram = banked_ptr(m, static_cast<uint16_t>(slot << 14));
     m->wr_bank[slot] = ram;  // writes always land in banked RAM, never ROM
@@ -274,8 +338,20 @@ void mem_tick(void* self, const Bus* __restrict in, Bus* __restrict out) {
     const uint16_t addr = in->cpu.addr;
     const bool rom_serves =
         lower_rom_serves(m, addr) || (addr >= 0xC000 && upper_rom_on(m));
-    if (!(rom_serves ? in->cpu.romdis : in->cpu.ramdis))
+    if (!(rom_serves ? in->cpu.romdis : in->cpu.ramdis)) {
       out->cpu.data = mem_read(m, addr);
+      if (m->pgx_save) {  // PicoGX: one step per access, value held
+        const int bank = cart_bank_of(m, addr);
+        if (bank >= 0) {
+          if (!m->pgx_rd_prev)
+            m->pgx_rd_val = pgx_access(m, bank, addr & 0x3FFF, out->cpu.data);
+          out->cpu.data = m->pgx_rd_val;
+        }
+        m->pgx_rd_prev = 1;
+      }
+    }
+  } else {
+    m->pgx_rd_prev = 0;
   }
   const uint8_t wr_now = (in->cpu.mreq && in->cpu.wr) ? 1 : 0;
   if (wr_now && !m->wr_prev) {  // one latch per access
@@ -315,8 +391,9 @@ size_t mem_dev_state_size(const void* self) {
 void mem_save(const void* self, void* buf) {
   const mem_state* m = static_cast<const mem_state*>(self);
   uint8_t* b = static_cast<uint8_t*>(buf);
-  b[0] = 1;
+  b[0] = 2;  // v2 appends the PicoGX channel (v1 blobs still load)
   std::memcpy(b + 1, self, sizeof(mem_state));
+  std::memset(b + 1 + offsetof(mem_state, pgx_save), 0, sizeof(void*));
   // Zero the wiring-pointer fields in the blob (their host addresses are not
   // logical state and would make the blob non-deterministic). sizeof(void*):
   // all object-pointer sizes are equal, and spelling the field's exact type
@@ -338,7 +415,7 @@ void mem_save(const void* self, void* buf) {
 }
 void mem_load(void* self, const void* buf) {
   const uint8_t* b = static_cast<const uint8_t*>(buf);
-  if (b[0] != 1) return;
+  if (b[0] != 1 && b[0] != 2) return;
   // Preserve the caller-owned attachments across the blob copy (the expansion
   // pointer/length and the ROM table are live wiring, not serializable state).
   mem_state* m = self_of(self);
@@ -348,13 +425,22 @@ void mem_load(void* self, const void* buf) {
       m->cart;  // cartridge image + ASIC handle are live wiring
   const int cart_banks = m->cart_banks;
   const Device* asic = m->asic;
+  uint8_t* pgx = m->pgx_save;  // host-owned save buffer: live wiring
   const uint8_t* saved_roms[256];
   std::memcpy(saved_roms, m->roms, sizeof(saved_roms));
   // How many appended expansion bytes the blob carries (its own saved length).
   size_t blob_exp_len = 0;
   std::memcpy(&blob_exp_len, b + 1 + offsetof(mem_state, expansion_len),
               sizeof(size_t));
-  std::memcpy(self, b + 1, sizeof(mem_state));
+  // v1 predates the PicoGX fields (the struct's tail): copy what it holds.
+  std::memcpy(self, b + 1,
+              b[0] == 2 ? sizeof(mem_state) : offsetof(mem_state, pgx_save));
+  if (b[0] == 1) {
+    m->pgx_seq = m->pgx_mode = m->pgx_rd_prev = 0;
+    m->pgx_wpos = 0;
+  }
+  m->pgx_save = pgx;
+  m->fast_dirty = 1;
   m->expansion = exp;
   m->expansion_len = exp_len;
   m->cart = cart;
@@ -416,6 +502,17 @@ void mem_load_cartridge(const Device* dev, const uint8_t* image, size_t bytes) {
 // Intra-chip: the ASIC handle whose asic_unlocked() gates the RMR2 low-ROM
 // remap (the low-ROM bank select is invisible until the register page is
 // knocked open).
+// PicoGX: plug (a host-owned 16K save buffer) or unplug (nullptr).
+void mem_attach_picogx(const Device* dev, uint8_t* save16k) {
+  mem_state* m = static_cast<mem_state*>(dev->self);
+  m->pgx_save = save16k;
+  m->pgx_seq = m->pgx_mode = m->pgx_rd_prev = 0;
+  m->pgx_wpos = 0;
+}
+uint32_t mem_picogx_commits(const Device* dev) {
+  return static_cast<const mem_state*>(dev->self)->pgx_commits;
+}
+
 void mem_attach_asic(const Device* dev, const Device* asic) {
   static_cast<mem_state*>(dev->self)->asic = asic;
 }
@@ -480,7 +577,10 @@ const uint8_t* mem_upper_rom(const Device* dev, uint8_t n) {
 uint8_t mem_fast_read(const Device* dev, uint16_t addr) {
   mem_state* m = static_cast<mem_state*>(dev->self);
   if (m->fast_dirty) fast_rebuild(m);
-  return m->rd_bank[addr >> 14][addr & 0x3FFF];
+  const uint8_t v = m->rd_bank[addr >> 14][addr & 0x3FFF];
+  if (m->pgx_save && m->rd_cart[addr >> 14] >= 0)
+    return pgx_access(m, m->rd_cart[addr >> 14], addr & 0x3FFF, v);
+  return v;
 }
 
 void mem_fast_write(const Device* dev, uint16_t addr, uint8_t val) {
