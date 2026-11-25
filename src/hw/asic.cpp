@@ -113,10 +113,11 @@ struct asic_state {
 };
 
 // asic.dma_psg_restore: after a DMA LOAD, latch the CPU's selected PSG
-// register again (one more AY bus cycle).  Off (0) by default: the LOAD
-// leaves its own register latched.  Which one the real ASIC does is the
-// open question HW-34 measures.
-bool g_dma_psg_restore = false;
+// register again (one more AY bus cycle).  On (1) by default - a GX4000
+// keeps the CPU's selection while the DMA writes the PSG (zakcpc HW-34: a
+// keyboard read every few microseconds under a LOAD every line, no bad
+// read); 0 restores the old behaviour (the LOAD's register stays latched).
+bool g_dma_psg_restore = true;
 
 // PPI decode (A11 low; A9..A8 = the port): port A = 0, port C = 2.
 void snoop_psg_select(asic_state* a, uint16_t port, uint8_t val) {
@@ -481,6 +482,9 @@ bool dma_service(asic_state* a, const Bus* in, Bus* out) {
         } else {
           a->dma_tick_cycles[c] = 0;
           a->dma_pause_ticks[c]--;
+          // The line the pause runs out on fetches the next instruction
+          // (a GX4000: LOAD + PAUSE 37 + INT = 39 lines, zakcpc HW-32).
+          if (a->dma_pause_ticks[c] == 0) need_bus = true;
         }
       } else {
         need_bus = true;
