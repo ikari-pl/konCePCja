@@ -881,6 +881,34 @@ static void ram_fill_apply(byte* ram, size_t len) {
     for (size_t i = 0; i < len; i++) ram[i] = (i & 1) ? 0x55 : 0xAA;
     return;
   }
+  if (f.rfind("sparse:", 0) == 0) {
+    // What a real CPC 6128 Plus / GX4000 shows at power-on (zakcpc HW-39,
+    // three power-ups photographed): nearly all bits 0, a few scattered set
+    // bits (~2% of the bits in the sampled bytes).  sparse:<seed>[:<per mille
+    // per bit>], default 20.
+    uint32_t s = 0x9E3779B9u;
+    unsigned permille = 20;
+    try {
+      const std::string rest = f.substr(7);
+      const size_t colon = rest.find(':');
+      s ^= static_cast<uint32_t>(std::stoul(rest.substr(0, colon)));
+      if (colon != std::string::npos)
+        permille = static_cast<unsigned>(std::stoul(rest.substr(colon + 1)));
+    } catch (const std::invalid_argument&) {
+    } catch (const std::out_of_range&) {
+    }
+    if (s == 0) s = 1;
+    if (permille > 1000) permille = 1000;
+    for (size_t i = 0; i < len; i++) {
+      byte v = 0;
+      for (int bit = 0; bit < 8; bit++) {
+        s ^= s << 13; s ^= s >> 17; s ^= s << 5;
+        if ((s % 1000u) < permille) v = static_cast<byte>(v | (1u << bit));
+      }
+      ram[i] = v;
+    }
+    return;
+  }
   if (f.rfind("rand:", 0) == 0) {
     uint32_t s = 0x9E3779B9u;
     try {
@@ -973,7 +1001,8 @@ void emulator_reset(const CpcRunCause& cause) {
 
   // memory
   // RAM at power-on: system.ram_fill = 0 (default) | a byte (0xFF) | aa55
-  // (an alternation) | rand:<seed> (a seeded xorshift fill).  Real hardware
+  // (an alternation) | rand:<seed> (a seeded xorshift fill) |
+  // sparse:<seed>[:<per mille>] (scattered set bits, as real hardware).  Real hardware
   // powers up with arbitrary contents; a program that reads RAM it never
   // wrote shows up under a non-zero fill.
   ram_fill_apply(pbRAM, CPC.ram_size * 1024u);
