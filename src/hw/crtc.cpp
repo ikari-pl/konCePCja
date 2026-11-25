@@ -42,8 +42,8 @@ struct crtc_state {
   // Plus split screen (Amstrad Plus / ASIC "type-4"). The ASIC decodes
   // split_line/split_addr from &6800-&6803; the CRTC reads them via an attach
   // reference and, at the frame scanline == split_line, swaps the display base
-  // to split_addr for the rest of the frame (crtc.cpp:1342). Snapshotted per
-  // frame so the split is stable within a frame.
+  // to split_addr (crtc.cpp:1342). Re-read at every scanline (snapshot_split):
+  // a program may re-arm the split mid-frame for a second one.
   const Device* asic = nullptr;
   uint16_t scanline = 0;         // frame scanline counter (reset at frame top)
   bool plus_split = false;       // ASIC plugged and split_line != 0 this frame
@@ -126,8 +126,12 @@ void check_vsync_start(crtc_state* c) {
   c->r7match = match;
 }
 
-// Latch the Plus split registers from the ASIC once per frame (a no-op on
-// models 0-2, where no ASIC is attached or it is unplugged).
+// Read the Plus split registers from the ASIC (a no-op on models 0-2, where
+// no ASIC is attached or it is unplugged).  Called at EVERY scanline: the ASIC
+// compares the split line with the scanline counter as the frame runs, so a
+// program may re-arm &6801-&6803 mid-frame for a second split (zakcpc's verb
+// band at line 144 after the room band's split - AceDL, MAME and a GX4000
+// honour it); a once-per-frame latch ignored every split after the first.
 void snapshot_split(crtc_state* c) {
   c->plus_split = false;
   if (!c->asic || !asic_vid_active(c->asic)) return;
@@ -194,6 +198,7 @@ void crtc_newscanline(crtc_state* c) {
   // scanline then renders from split_addr (the legacy addr==split_addr at
   // sl_count == split_sl, crtc.cpp:1342).
   c->scanline = static_cast<uint16_t>(c->scanline + 1);
+  snapshot_split(c);  // the live registers (a mid-frame re-arm counts)
   const bool split_here = c->plus_split && c->scanline == c->split_sl_snap;
 
   if (c->in_vsync) {  // VSYNC width is measured in scanlines (per-type,
