@@ -30,5 +30,7 @@ PlotterViewStatus plotter_view_status();
 // Tear the sheet off (clears whichever store is live).
 void plotter_view_clear();
 
-// Export the live page as SVG.
-bool plotter_view_export_svg(const std::string& path);
+// Export the live page as SVG. On failure, `err` (when non-null) carries the
+// OS-level reason.
+bool plotter_view_export_svg(const std::string& path,
+                             std::string* err = nullptr);

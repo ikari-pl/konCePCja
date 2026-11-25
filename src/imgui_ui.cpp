@@ -399,12 +399,15 @@ void process_pending_dialog() {
         }
       }
       break;
-    case FileDialogAction::SavePlotterSVG:
-      if (plotter_view_export_svg(path))
+    case FileDialogAction::SavePlotterSVG: {
+      std::string err;
+      if (plotter_view_export_svg(path, &err))
         imgui_toast_success("SVG exported to " + fname);
       else
-        imgui_toast_error("Failed to export SVG");
+        imgui_toast_error("Failed to export SVG" +
+                          (err.empty() ? "" : ": " + err));
       break;
+    }
     default:
       break;
   }

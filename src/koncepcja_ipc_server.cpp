@@ -1826,6 +1826,7 @@ void init_command_registry() {
       "Query and control the HP 7470A plotter emulation.\n"
       "  status: Show pen position, pen up/down, selected pen, segment count.\n"
       "  export: Export current drawing to SVG (default: plotter_output.svg).\n"
+      "          On failure: ERR 500 export-failed <OS reason>.\n"
       "  clear:  Clear all drawn segments.");
 
   register_command(
@@ -5871,10 +5872,11 @@ std::string handle_command(const std::string& line) {
             path.find("..") != std::string::npos) {
           return "ERR 403 path-traversal-rejected\n";
         }
-        if (plotter_view_export_svg(path)) {
+        std::string err;
+        if (plotter_view_export_svg(path, &err)) {
           return "OK exported to " + path + "\n";
         }
-        return "ERR 500 export-failed\n";
+        return "ERR 500 export-failed" + (err.empty() ? "" : " " + err) + "\n";
       }
       if (parts[1] == "clear") {
         plotter_view_clear();

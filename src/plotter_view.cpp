@@ -105,11 +105,11 @@ void plotter_view_clear() {
   g_plotter.clear();
 }
 
-bool plotter_view_export_svg(const std::string& path) {
+bool plotter_view_export_svg(const std::string& path, std::string* err) {
   if (const Device* dev = live_device()) {
     // The Device carries no character-size state host-side; labels export at
     // the power-on default height (0.269 cm), matching a fresh HpglPlotter.
-    return plotter_export_svg_segments(device_segments(dev), 0.269f, path);
+    return plotter_export_svg_segments(device_segments(dev), 0.269f, path, err);
   }
-  return g_plotter.export_svg(path);
+  return g_plotter.export_svg(path, err);
 }

@@ -6,6 +6,7 @@
 
 #include "plotter.h"
 
+#include <cerrno>
 #include <cstdio>
 #include <cstring>
 #include <sstream>
@@ -492,18 +493,20 @@ void HpglPlotter::cmd_IW(const std::vector<float>& p) {
 
 // ── SVG Export ────────────────────────────────────────────────────────
 
-bool HpglPlotter::export_svg(const std::string& path) const {
-  return plotter_export_svg_segments(segments_, char_height_, path);
+bool HpglPlotter::export_svg(const std::string& path, std::string* err) const {
+  return plotter_export_svg_segments(segments_, char_height_, path, err);
 }
 
 // Free-function SVG writer over a segment list — shared by
 // HpglPlotter above and the sub-cycle plotter Device's page (plotter_view).
 bool plotter_export_svg_segments(const std::vector<PlotSegment>& segments,
-                                 float char_height_cm,
-                                 const std::string& path) {
+                                 float char_height_cm, const std::string& path,
+                                 std::string* err) {
   FILE* f = fopen(path.c_str(), "w");
   if (!f) {
-    LOG_ERROR("HP-GL: cannot open " << path << " for SVG export");
+    if (err) *err = std::string("cannot open: ") + std::strerror(errno);
+    LOG_ERROR("HP-GL: cannot open "
+              << path << " for SVG export: " << (err ? *err : "unknown"));
     return false;
   }
 
@@ -604,8 +607,15 @@ bool plotter_export_svg_segments(const std::vector<PlotSegment>& segments,
   // One check covers every fprintf above: the stream's error flag is sticky,
   // and fclose() flushes the tail (where a full disk usually shows up).
   bool const write_failed = ferror(f) != 0;
-  if (fclose(f) != 0 || write_failed) {
-    LOG_ERROR("HP-GL: SVG export to " << path << " failed (write error)");
+  int const write_errno = errno;  // set by the failed fprintf, if any
+  int const close_rc = fclose(f);
+  if (close_rc != 0 || write_failed) {
+    int const e = close_rc != 0 ? errno : write_errno;
+    if (err)
+      *err = std::string("write error: ") +
+             (e != 0 ? std::strerror(e) : "unknown error");
+    LOG_ERROR("HP-GL: SVG export to " << path << " failed (write error: "
+                                      << (err ? *err : "unknown") << ")");
     return false;
   }
   LOG_INFO("HP-GL: exported SVG to " << path);
