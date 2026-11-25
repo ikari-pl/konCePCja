@@ -24,6 +24,7 @@ on:
       - 'test/integrated/linux_package_smoke.sh'
       - '.github/workflows/linux-packages.yml'
       - 'makefile'
+      - '.release-please-manifest.json'
 
 permissions:
   contents: read
@@ -132,6 +133,7 @@ jobs:
         with:
           name: ${{ matrix.package }}-${{ matrix.arch }}
           path: pkg
+          if-no-files-found: error
       # Nothing is installed for the AppImage: it must start on the bare
       # image. (SDL loads the X11/Wayland/GL/audio libraries itself when a
       # real display or sound server is used; the dummy drivers need none.)
@@ -141,8 +143,12 @@ jobs:
           version=$(sed -n 's/.*"\."[[:space:]]*:[[:space:]]*"\([0-9][^"]*\)".*/\1/p' .release-please-manifest.json)
           test -n "$version"
           ls -l pkg
+          # Each artifact holds exactly one package; pass it explicitly so a
+          # second file cannot shift into the version argument.
+          files=(pkg/*)
+          [ ${#files[@]} -eq 1 ] || { echo "expected one package in pkg/, got: ${files[*]}" >&2; exit 1; }
           # Artifacts do not keep the executable bit; the script restores it.
-          bash test/integrated/linux_package_smoke.sh pkg/* "$version"
+          bash test/integrated/linux_package_smoke.sh "${files[0]}" "$version"
 
   publish:
     name: Attach to the release

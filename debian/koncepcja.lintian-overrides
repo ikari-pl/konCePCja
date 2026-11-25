@@ -3,9 +3,8 @@
 koncepcja: truetype-font-prohibits-installable-embedding
 # Not a Debian upload; there is no ITP bug to close.
 koncepcja: initial-upload-closes-no-bugs
-# A deliberate private copy (see debian/rules): Ubuntu's libjpeg is
-# libjpeg.so.8 (package libjpeg8), Debian's is libjpeg.so.62 (libjpeg62-turbo),
-# and no package provides both, so a .deb that depends on either installs on
-# one of the two only. It lives in /usr/lib/koncepcja next to the private SDL3,
-# reached through the binary's rpath, and nothing else can load it.
+# libjpeg is linked into the binary statically (see debian/rules): Ubuntu's
+# libjpeg is libjpeg.so.8 (package libjpeg8), Debian's is libjpeg.so.62
+# (libjpeg62-turbo), and no package provides both sonames, so a dynamic
+# dependency would make the .deb uninstallable on one of the two.
 koncepcja: embedded-library libjpeg *

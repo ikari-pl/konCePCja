@@ -116,6 +116,9 @@ COMMON_CFLAGS += -fPIC
 
 # Optional libjpeg support for AVI recording
 # jpeg-turbo on macOS is keg-only, so check both default and homebrew paths
+# JPEG_LIB is overridable: the Debian package links libjpeg statically, because
+# its soname differs between Debian (libjpeg.so.62) and Ubuntu (libjpeg.so.8).
+JPEG_LIB ?= -ljpeg
 BREW := $(shell which brew 2>/dev/null)
 ifneq ($(BREW),)
 JPEG_PREFIX := $(shell $(BREW) --prefix jpeg-turbo 2>/dev/null)
@@ -127,7 +130,7 @@ ifneq ($(JPEG_PREFIX),)
 HAS_LIBJPEG := $(shell test -f $(JPEG_PREFIX)/include/jpeglib.h && echo 1)
 ifeq ($(HAS_LIBJPEG),1)
 COMMON_CFLAGS += -DHAS_LIBJPEG -I$(JPEG_PREFIX)/include
-LIBS += -L$(JPEG_PREFIX)/lib -ljpeg
+LIBS += -L$(JPEG_PREFIX)/lib $(JPEG_LIB)
 endif
 else
 # Fallback: test whether the compiler can actually find and preprocess jpeglib.h
@@ -135,7 +138,7 @@ else
 HAS_LIBJPEG := $(shell printf '\043include <jpeglib.h>' | $(CXX) -x c++ -E - >/dev/null 2>&1 && echo 1)
 ifeq ($(HAS_LIBJPEG),1)
 COMMON_CFLAGS += -DHAS_LIBJPEG
-LIBS += -ljpeg
+LIBS += $(JPEG_LIB)
 endif
 endif
 

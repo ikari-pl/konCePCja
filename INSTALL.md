@@ -62,8 +62,9 @@ on both architectures (`.github/workflows/linux-packages.yml`).
 ### Building the Debian/Ubuntu package
 
 The recipe in `debian/` builds a `koncepcja` package: it compiles the vendored
-SDL3 first and ships it privately under `/usr/lib/koncepcja` (with a private
-libjpeg, whose package name differs between Debian and Ubuntu), installs the
+SDL3 first and ships it privately under `/usr/lib/koncepcja` (libjpeg-turbo
+is linked statically, since its soname differs between Debian and Ubuntu),
+installs the
 binary, man page, `/etc/koncepcja.cfg`, `/usr/share/koncepcja/{resources,rom}`,
 a desktop entry and icons. Install the build tools plus the `Build-Depends`
 listed in `debian/control` (`mk-build-deps` from `devscripts` does it), then,

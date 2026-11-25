@@ -12,7 +12,7 @@
 #      line to the printer port, captured in a file, and quits. Once in the
 #      GUI build (dummy video and audio driver), once in the -H loop.
 # Every check asserts the evidence it expects; a run that printed nothing
-# fails.
+# fails. The package contents are asserted too (check_contents below).
 set -euo pipefail
 
 pkg=$(readlink -f "$1")
@@ -38,6 +38,37 @@ case "$pkg" in
     ;;
 esac
 
+# check_contents: the package must carry the libraries it needs. The .deb
+# ships the vendored SDL3 privately and must not depend on a libjpeg package
+# (the soname differs between Debian and Ubuntu; the binary links libjpeg
+# statically). The AppImage bundles SDL3 and libcom_err (needed on Debian 13).
+check_contents() {
+  case "$pkg" in
+    *.deb)
+      # Capture first: with pipefail, "dpkg-deb -c | grep -q" would fail on
+      # the SIGPIPE grep -q gives the tar subprocess.
+      local listing
+      listing=$(dpkg-deb -c "$pkg")
+      grep -q 'usr/lib/koncepcja/libSDL3\.so' <<<"$listing" ||
+        fail "the .deb does not ship the private SDL3 under /usr/lib/koncepcja"
+      if grep -q libjpeg <<<"$(dpkg-deb -f "$pkg" Depends)"; then
+        fail "the .deb depends on a libjpeg package (soname differs between Debian and Ubuntu)"
+      fi
+      ;;
+    *.AppImage)
+      local d
+      d=$(mktemp -d)
+      (cd "$d" && env -u APPIMAGE_EXTRACT_AND_RUN "$pkg" --appimage-extract >/dev/null) ||
+        fail "could not extract the AppImage"
+      test -f "$d/squashfs-root/usr/lib/libSDL3.so.0" ||
+        fail "the AppImage does not bundle libSDL3"
+      test -f "$d/squashfs-root/usr/lib/libcom_err.so.2" ||
+        fail "the AppImage does not bundle libcom_err.so.2 (needed on Debian 13)"
+      rm -rf "$d"
+      ;;
+  esac
+}
+
 work=$(mktemp -d)
 cd "$work"
 export SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy KONCPC_NO_DIALOGS=1
@@ -48,11 +79,13 @@ fail() {
   exit 1
 }
 
+check_contents
+
 out=$("${exe[@]}" --version 2>&1) || fail "--version exited non-zero: $out"
 echo "--version: $out"
 case "$out" in
-  *"$version"*) ;;
-  *) fail "--version does not name $version" ;;
+  *"konCePCja v$version"*) ;;
+  *) fail "--version does not print 'konCePCja v$version': $out" ;;
 esac
 
 # run_basic <label> [extra koncepcja options...]
