@@ -1088,7 +1088,8 @@ uint32_t g_pgx_seen = 0;
 
 std::string pgx_path_for(const std::string& cart) {
   const size_t slash = cart.find_last_of("/\\");
-  const std::string dir = slash == std::string::npos ? "." : cart.substr(0, slash);
+  const std::string dir =
+      slash == std::string::npos ? "." : cart.substr(0, slash);
   std::string name = slash == std::string::npos ? cart : cart.substr(slash + 1);
   const size_t dot = name.find_last_of('.');
   if (dot != std::string::npos) name = name.substr(0, dot);
@@ -1112,7 +1113,8 @@ void pgx_plug(Bridge& b) {
   // no command (frames of 20 ms, rounded up).  Default 100 ms: a real PicoGX
   // ignored a READ issued straight after a write's stop (zakcpc HW-31b rev 2);
   // its true duration is unmeasured - 100 ms is a conservative stand-in.
-  const int ms = CPC.devices.picogx_busy_ms < 0 ? 0 : CPC.devices.picogx_busy_ms;
+  const int ms =
+      CPC.devices.picogx_busy_ms < 0 ? 0 : CPC.devices.picogx_busy_ms;
   b.machine.picogx_set_busy_frames(static_cast<uint16_t>((ms + 19) / 20));
   g_pgx_seen = b.machine.picogx_commits();
 }

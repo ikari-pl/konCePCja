@@ -86,7 +86,8 @@ struct mem_state {
 
 // The blob size of mem_state before v3 (its tail ended at rd_cart).
 constexpr size_t kMemStateV2 =
-    (offsetof(mem_state, rd_cart) + sizeof(mem_state::rd_cart) + alignof(mem_state) - 1) &
+    (offsetof(mem_state, rd_cart) + sizeof(mem_state::rd_cart) +
+     alignof(mem_state) - 1) &
     ~(alignof(mem_state) - 1);
 
 mem_state* self_of(void* self) { return static_cast<mem_state*>(self); }
@@ -152,7 +153,7 @@ int cart_bank_of(const mem_state* m, uint16_t addr) {
 }
 
 // Write mode: one byte into the save, at the write position.
-static void pgx_store(mem_state* m, uint8_t b) {
+void pgx_store(mem_state* m, uint8_t b) {
   m->pgx_save[m->pgx_wpos & 0x3FFF] = b;
   m->pgx_wpos = static_cast<uint16_t>(m->pgx_wpos + 1);
 }
@@ -165,7 +166,7 @@ uint8_t pgx_access(mem_state* m, int bank, uint16_t offs, uint8_t rom) {
     m->pgx_seq = 0;
     return v;
   }
-  if (bank != 0) {  // another bank's read breaks a command sequence
+  if (bank != 0) {           // another bank's read breaks a command sequence
     if (m->pgx_mode == 6) {  // (write mode: the held reads were data)
       if (m->pgx_seq >= 1) pgx_store(m, 0x3C);
       if (m->pgx_seq >= 2) pgx_store(m, 0xC4);
@@ -180,10 +181,11 @@ uint8_t pgx_access(mem_state* m, int bank, uint16_t offs, uint8_t rom) {
     // PicoGX, zakcpc HW-31b rev 2: the .SAV ends at the data, without the
     // stop's #133C / #25C4 / 7).  Its first reads are held (pgx_seq counts
     // them) and stored only once the sequence breaks.
-    const bool cont = (m->pgx_seq == 0 && offs == 0x133C) ||
-                      (m->pgx_seq == 1 && offs == 0x25C4) ||
-                      (m->pgx_seq == 2 && ((offs & 0xFF) == 5 || (offs & 0xFF) == 6 ||
-                                           (offs & 0xFF) == 7));
+    const bool cont =
+        (m->pgx_seq == 0 && offs == 0x133C) ||
+        (m->pgx_seq == 1 && offs == 0x25C4) ||
+        (m->pgx_seq == 2 &&
+         ((offs & 0xFF) == 5 || (offs & 0xFF) == 6 || (offs & 0xFF) == 7));
     if (!cont) {
       if (m->pgx_seq >= 1) pgx_store(m, 0x3C);
       if (m->pgx_seq >= 2) pgx_store(m, 0xC4);
@@ -335,8 +337,8 @@ void mem_io_write_decode(mem_state* m, uint16_t addr, uint8_t d) {
 // is exact.
 void fast_rebuild(mem_state* m) {
   for (int slot = 0; slot < 4; ++slot)
-    m->rd_cart[slot] = static_cast<int8_t>(
-        cart_bank_of(m, static_cast<uint16_t>(slot << 14)));
+    m->rd_cart[slot] =
+        static_cast<int8_t>(cart_bank_of(m, static_cast<uint16_t>(slot << 14)));
   for (int slot = 0; slot < 4; ++slot) {
     uint8_t* ram = banked_ptr(m, static_cast<uint16_t>(slot << 14));
     m->wr_bank[slot] = ram;  // writes always land in banked RAM, never ROM
@@ -479,12 +481,16 @@ void mem_load(void* self, const void* buf) {
   std::memcpy(&blob_exp_len, b + 1 + offsetof(mem_state, expansion_len),
               sizeof(size_t));
   // v1 predates the PicoGX fields (the struct's tail): copy what it holds.
-  const size_t blob_state = b[0] == 3 ? sizeof(mem_state) : b[0] == 2 ? kMemStateV2
-                                                                       : sizeof(mem_state);
-  std::memcpy(self, b + 1,
-              b[0] == 3   ? sizeof(mem_state)
-              : b[0] == 2 ? offsetof(mem_state, pgx_busy)
-                          : offsetof(mem_state, pgx_save));
+  // The blob's mem_state size, and how much of it this version holds.
+  size_t blob_state = sizeof(mem_state);
+  size_t copy_len = offsetof(mem_state, pgx_save);  // v1
+  if (b[0] == 2) {
+    blob_state = kMemStateV2;
+    copy_len = offsetof(mem_state, pgx_busy);
+  } else if (b[0] == 3) {
+    copy_len = sizeof(mem_state);
+  }
+  std::memcpy(self, b + 1, copy_len);
   if (b[0] == 1) {
     m->pgx_seq = m->pgx_mode = m->pgx_rd_prev = 0;
     m->pgx_wpos = 0;

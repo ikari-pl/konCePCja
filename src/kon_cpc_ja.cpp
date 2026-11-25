@@ -3384,7 +3384,8 @@ void loadConfiguration(t_CPC& CPC, const std::string& configFilename) {
       conf.getStringValue("sound", "drivesnd_params", ""));
   CPC.devices.smartwatch = read_flag("system", "smartwatch", 0) != 0;
   CPC.devices.picogx = read_flag("system", "picogx", 0) != 0;
-  CPC.devices.picogx_busy_ms = conf.getIntValue("system", "picogx_busy_ms", 100);
+  CPC.devices.picogx_busy_ms =
+      conf.getIntValue("system", "picogx_busy_ms", 100);
   CPC.devices.amx_mouse = read_flag("input", "amx_mouse", 0) != 0;
   // Light gun selection (0=off, 1=Amstrad Magnum Phaser, 2=Trojan Light
   // Phazer). Mirrors the F-key toggle; lets headless/CI runs and config files
