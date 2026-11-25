@@ -97,6 +97,9 @@ uint16_t asic_vid_palette(const Device* dev, int index);
  * byte-identical snapshot, so the video device may skip its per-line
  * re-read (F8 R17). */
 uint32_t asic_vid_gen(const Device* dev);
+/* The pixel (0..15) of the on-screen character a palette write shows from;
+ * 16 = unknown. */
+int asic_vid_pal_offset(const Device* dev);
 
 /* Whether palette entry `index` has been programmed by the Plus. Unset entries
  * read as the classic ink colour in the video Device (one palette RAM, Plus
@@ -154,6 +157,9 @@ void asic_dma_regs(const Device* dev, int ch, uint16_t* source,
 /* One I/O WRITE event: the unlock-knock snoop (CRTC-select decode, one FSM
  * feed per access), the classic Gate-Array palette snoop, and the RMR2
  * register-page map — asic_tick's three iorq-write arms. */
+/* The master phase (0..15) of the next asic_fast_*_write, from the fast
+ * path's T-state timing (-1 = unknown): a palette write's pixel. */
+void asic_fast_write_phase(int phase);
 void asic_fast_io_write(const Device* dev, uint16_t port, uint8_t val);
 /* The register-page overlay as a memory event: nonzero = the ASIC claims the
  * access (unlocked, paged in, &4000-&7FFF) — reads answer from the page,

@@ -110,7 +110,20 @@ struct asic_state {
   // LOAD when g_dma_psg_restore is on (zakcpc KC-PHANTOM-KEY / HW-34).
   uint8_t ppi_a = 0;
   uint8_t cpu_psg_reg = 0;
+  // v5: the master-clock phase (0..15) of the last palette / ink write, 0xFF
+  // = unknown (a fast-path write); the renderer repaints the character on
+  // screen at that moment from the matching pixel (zakcpc HW-35).
+  uint8_t pal_phase = 0xFF;
+  bool pal_wr_prev = false;  // the palette write strobe's previous cycle (edge)
 };
+
+// The pixel offset of a palette write inside the character being shown: one
+// master phase = one 768-wide pixel; calibrated so a Gate Array ink OUT lands
+// 4 pixels in, as AceDL draws it and the GX4000 photo HW-35 shows.
+constexpr int kPalPhaseToPixel = 3;
+// The fast path's write phase, handed in by the machine just before an
+// asic_fast_*_write (transient, not machine state): -1 = unknown.
+int g_fast_wr_phase = -1;
 
 // asic.dma_psg_restore: after a DMA LOAD, latch the CPU's selected PSG
 // register again (one more AY bus cycle).  On (1) by default - a GX4000
@@ -611,6 +624,16 @@ void asic_tick(void* self, const Bus* __restrict in, Bus* __restrict out) {
     snoop_classic_palette(a, in->cpu.addr, in->cpu.data);
     if (!in->cpu.m1) snoop_psg_select(a, in->cpu.addr, in->cpu.data);
   }
+  {  // a palette write's phase, at the strobe's first cycle: a Gate Array ink
+     // write (OUT, data 01xxxxxx) or a page write to &6400-&643F
+    const bool ink = in->cpu.iorq && in->cpu.wr && !in->cpu.m1 &&
+                     (in->cpu.addr & 0xC000) == 0x4000 && (in->cpu.data >> 6) == 1;
+    const bool pal = in->cpu.mreq && in->cpu.wr && !a->locked && a->page_on &&
+                     in->cpu.addr >= 0x6400 && in->cpu.addr < 0x6440;
+    const bool w = ink || pal;
+    if (w && !a->pal_wr_prev) a->pal_phase = in->clk.phase & 15;
+    a->pal_wr_prev = w;
+  }
 
   // RMR2 (6128+ secondary ROM/register-page map): a Gate-Array fn-2 write
   // (A15=0, A14=1, data 10xxxxxx) with bit5 set, honoured only while unlocked.
@@ -676,7 +699,7 @@ size_t asic_dev_state_size(const void* /*unused*/) {
 }
 void asic_save(const void* self, void* buf) {
   uint8_t* b = static_cast<uint8_t*>(buf);
-  b[0] = 4;  // v4 appends the PSG selection snoop; v3 the acknowledge state
+  b[0] = 5;  // v5 the palette write phase; v4 the PSG selection snoop; v3 the ack
   std::memcpy(b + 1, self, sizeof(asic_state));
   // vid_gen is a session-local cache key, not machine state: zero it in the
   // blob so saves stay canonical (byte-identical for identical hardware
@@ -687,8 +710,13 @@ void asic_load(void* self, const void* buf) {
   asic_state* a = self_of(self);
   const uint32_t live_gen = a->vid_gen;
   const uint8_t* b = static_cast<const uint8_t*>(buf);
-  if (b[0] == 4) {
+  if (b[0] == 5) {
     std::memcpy(self, b + 1, sizeof(asic_state));
+  } else if (b[0] == 4) {
+    // v4 predates the palette write phase: unknown (no sub-cell repaint).
+    std::memcpy(self, b + 1, offsetof(asic_state, pal_phase));
+    a->pal_phase = 0xFF;
+    a->pal_wr_prev = false;
   } else if (b[0] == 3) {
     // v3 predates the PSG selection snoop: those stay at their reset values.
     std::memcpy(self, b + 1, offsetof(asic_state, ppi_a));
@@ -712,6 +740,8 @@ extern "C" {
 size_t asic_state_size(void) { return sizeof(asic_state); }
 
 void asic_set_dma_psg_restore(int on) { g_dma_psg_restore = on != 0; }
+
+void asic_fast_write_phase(int phase) { g_fast_wr_phase = phase; }
 
 // The SNA v3 "CPC+" chunk (0x8F8 bytes; the cpcwiki / cpctech SNA layout as
 // libretro-cap32 implements it): 0x000 sprite pixels (two per byte, the high
@@ -884,6 +914,14 @@ uint32_t asic_vid_gen(const Device* dev) {
   return static_cast<const asic_state*>(dev->self)->vid_gen;
 }
 
+// The pixel (0..15) of the character on screen from which the last palette
+// write shows; 16 = none known (repaint nothing - the next character).
+int asic_vid_pal_offset(const Device* dev) {
+  const asic_state* a = static_cast<const asic_state*>(dev->self);
+  if (a->pal_phase == 0xFF) return 16;
+  return (a->pal_phase + kPalPhaseToPixel) & 15;
+}
+
 uint16_t asic_vid_palette(const Device* dev, int index) {
   const asic_state* a = static_cast<const asic_state*>(dev->self);
   const int i = index & 0x1F;
@@ -954,6 +992,8 @@ void asic_fast_io_write(const Device* dev, uint16_t port, uint8_t val) {
   if (!(port & 0x4000) && ((port >> 8) & 3) == 0) feed_knock(a, val);
   snoop_classic_palette(a, port, val);
   snoop_psg_select(a, port, val);
+  if ((port & 0xC000) == 0x4000 && (val >> 6) == 1)
+    a->pal_phase = g_fast_wr_phase < 0 ? 0xFF : static_cast<uint8_t>(g_fast_wr_phase & 15);
   if (!a->locked && (port & 0xC000) == 0x4000 && (val >> 6) == 2 &&
       (val & 0x20))
     a->page_on = (((val >> 3) & 3) == 3) ? 1 : 0;
@@ -971,6 +1011,8 @@ int asic_fast_mem_write(const Device* dev, uint16_t addr, uint8_t val) {
   asic_state* a = static_cast<asic_state*>(dev->self);
   if (!a->plugged || a->locked || !a->page_on) return 0;
   if (addr < 0x4000 || addr >= 0x8000) return 0;
+  if (addr >= 0x6400 && addr < 0x6440)
+    a->pal_phase = g_fast_wr_phase < 0 ? 0xFF : static_cast<uint8_t>(g_fast_wr_phase & 15);
   decode_write(a, addr, val);  // once per access — the pgwr_prev edge's twin
   return 1;                    // the RAM underneath is vetoed
 }
