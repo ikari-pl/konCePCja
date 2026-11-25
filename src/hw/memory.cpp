@@ -140,19 +140,46 @@ int cart_bank_of(const mem_state* m, uint16_t addr) {
   return -1;
 }
 
+// Write mode: one byte into the save, at the write position.
+static void pgx_store(mem_state* m, uint8_t b) {
+  m->pgx_save[m->pgx_wpos & 0x3FFF] = b;
+  m->pgx_wpos = static_cast<uint16_t>(m->pgx_wpos + 1);
+}
+
 // One CPU read the PicoGX serves (bank, 14-bit offset): the save channel's
 // data path and its command recogniser.  `rom` = the cartridge byte.
 uint8_t pgx_access(mem_state* m, int bank, uint16_t offs, uint8_t rom) {
   uint8_t v = rom;
   if (bank != 0) {  // another bank's read breaks a command sequence
+    if (m->pgx_mode == 6) {  // (write mode: the held reads were data)
+      if (m->pgx_seq >= 1) pgx_store(m, 0x3C);
+      if (m->pgx_seq >= 2) pgx_store(m, 0xC4);
+    }
     m->pgx_seq = 0;
     return v;
   }
   if (m->pgx_mode == 5) {
     v = m->pgx_save[offs & 0x3FFF];
   } else if (m->pgx_mode == 6) {
-    m->pgx_save[m->pgx_wpos & 0x3FFF] = static_cast<uint8_t>(offs & 0xFF);
-    m->pgx_wpos = static_cast<uint16_t>(m->pgx_wpos + 1);
+    // Write mode: a command sequence's own reads are not stored (the real
+    // PicoGX, zakcpc HW-31b rev 2: the .SAV ends at the data, without the
+    // stop's #133C / #25C4 / 7).  Its first reads are held (pgx_seq counts
+    // them) and stored only once the sequence breaks.
+    const bool cont = (m->pgx_seq == 0 && offs == 0x133C) ||
+                      (m->pgx_seq == 1 && offs == 0x25C4) ||
+                      (m->pgx_seq == 2 && ((offs & 0xFF) == 5 || (offs & 0xFF) == 6 ||
+                                           (offs & 0xFF) == 7));
+    if (!cont) {
+      if (m->pgx_seq >= 1) pgx_store(m, 0x3C);
+      if (m->pgx_seq >= 2) pgx_store(m, 0xC4);
+      m->pgx_seq = 0;
+      if (offs == 0x133C) {  // (it may start a new sequence)
+        m->pgx_seq = 1;
+        return v;
+      }
+      pgx_store(m, static_cast<uint8_t>(offs & 0xFF));
+      return v;
+    }
   }
   if (m->pgx_seq == 2) {
     const uint8_t cmd = static_cast<uint8_t>(offs & 0xFF);
