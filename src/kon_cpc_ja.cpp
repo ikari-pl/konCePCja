@@ -3187,6 +3187,7 @@ void loadConfiguration(t_CPC& CPC, const std::string& configFilename) {
   CPC.jumpers = conf.getIntValue("system", "jumpers", 0x1e) &
                 0x1e;  // OEM is Amstrad, video refresh is 50Hz
   CPC.ram_size = conf.getIntValue("system", "ram_size", 128);
+  asic_set_dma_psg_restore(conf.getIntValue("asic", "dma_psg_restore", 1));
   if (!is_valid_ram_size(CPC.ram_size)) {
     CPC.ram_size = 128;  // default to 128KB
   }

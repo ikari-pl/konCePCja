@@ -90,10 +90,44 @@ struct asic_state {
   // palette incl. classic-ink snoops, scroll/config) — F8 R17. The video
   // device skips its per-line re-snapshot while this is unchanged (a re-read
   // of unchanged registers is idempotent, so the skip is exact). Monotonic;
-  // MUST REMAIN THE LAST MEMBER: version-1 save blobs load as
-  // offsetof(asic_state, vid_gen) bytes.
+  // version-1 save blobs load as offsetof(asic_state, vid_gen) bytes,
+  // version-2 blobs as offsetof(asic_state, dma_keep_status).
   uint32_t vid_gen = 1;
+  // v3 (interrupt acknowledge per the ASIC documentation, as MAME/Arnold):
+  // IVR (&6805) bit 0 - 1 = a DMA interrupt's status is NOT cleared by the
+  // acknowledge (software clears it by writing 1 to its DCSR bit 6-4); it
+  // powers up 1 (MAME: "bit 0 is always 1" at startup).
+  uint8_t dma_keep_status = 1;
+  // DCSR bit 7: "set if last interrupt acknowledge cycle was caused by a
+  // raster interrupt" - LATCHED at the acknowledge, not the live request.
+  uint8_t raster_acked = 0;
+  // The acknowledge cycle spans several master ticks: serve it once, on its
+  // first tick, and drive the same vector for the rest of the cycle.
+  uint8_t ack_prev = 0;
+  uint8_t ack_vector = 0xFF;
+  // v4: the CPU's PSG register selection, snooped from the PPI writes (port A
+  // = the number, port C = 11xxxxxx latches it), re-latched after each DMA
+  // LOAD when g_dma_psg_restore is on (zakcpc KC-PHANTOM-KEY / HW-34).
+  uint8_t ppi_a = 0;
+  uint8_t cpu_psg_reg = 0;
 };
+
+// asic.dma_psg_restore: after a DMA LOAD, latch the CPU's selected PSG
+// register again (one more AY bus cycle).  On (1) by default - a GX4000
+// keeps the CPU's selection while the DMA writes the PSG (zakcpc HW-34: a
+// keyboard read every few microseconds under a LOAD every line, no bad
+// read); 0 restores the old behaviour (the LOAD's register stays latched).
+bool g_dma_psg_restore = true;
+
+// PPI decode (A11 low; A9..A8 = the port): port A = 0, port C = 2.
+void snoop_psg_select(asic_state* a, uint16_t port, uint8_t val) {
+  if (port & 0x0800) return;
+  const unsigned sel = (port >> 8) & 3;
+  if (sel == 0)
+    a->ppi_a = val;
+  else if (sel == 2 && (val & 0xC0) == 0xC0)
+    a->cpu_psg_reg = a->ppi_a & 0x0F;
+}
 
 // The DMA engine's cycle-by-cycle state. A burst: request the bus, wait for the
 // grant, then per active channel a 4-cycle banked-RAM fetch of one 16-bit
@@ -108,6 +142,7 @@ enum DmaPhase : uint8_t {
   DMA_EXEC,        // latch high, decode + execute
   DMA_PSG_SEL,     // AY bus: latch the register address (bdir & bc1)
   DMA_PSG_WR,      // AY bus: write the value (bdir & !bc1)
+  DMA_PSG_RESEL,   // AY bus: latch the CPU's register again (dma_psg_restore)
   DMA_ADVANCE,     // writeback, then next channel or release the bus
 };
 
@@ -233,6 +268,47 @@ void snoop_classic_palette(asic_state* a, uint16_t addr, uint8_t data) {
   }
 }
 
+// DCSR (&6C0F) as a CPU read sees it: bits 2-0 the channel enables, 6-4 the
+// channels' interrupt status (bit 6 = channel 0), bit 7 latched at the last
+// interrupt acknowledge (raster_acked). One composer for every path.
+uint8_t dcsr_compose(const asic_state* a) {
+  uint8_t dcsr = a->raster_acked ? 0x80 : 0;
+  for (int i = 0; i < 3; ++i) {
+    if (a->dma_enabled[i]) dcsr |= static_cast<uint8_t>(0x1 << i);
+    if (a->dma_int[i]) dcsr |= static_cast<uint8_t>(0x40 >> i);
+  }
+  return dcsr;
+}
+
+// The interrupt-acknowledge cycle (ASIC documentation; MAME's
+// amstrad_cpu_acknowledge_int): the vector names the highest-priority source
+// - raster (6) > DMA ch2 (0) > ch1 (2) > ch0 (4) - and ONLY that source is
+// served: a raster is cleared and latches DCSR bit 7; a DMA source resets bit
+// 7 and is cleared only while IVR bit 0 is 0 (otherwise its status, and the
+// request, stay until software writes 1 to its DCSR bit).  Other pending
+// sources keep requesting.  Real hardware has the "Plus Vectored Interrupt
+// Bug" (a raster ack occasionally drives 4 instead of 6); we implement the
+// intended behaviour, not the bug.  Returns the vector, 0xFF if nothing was
+// pending (the bus floats).
+uint8_t asic_ack(asic_state* a) {
+  uint8_t vector = 0xFF;
+  if (a->pri_pending) {
+    vector = static_cast<uint8_t>(a->int_vector | 6);
+    a->pri_pending = false;
+    a->raster_acked = 1;
+  } else {
+    for (int c = 2; c >= 0; --c) {
+      if (!a->dma_int[c]) continue;
+      vector = static_cast<uint8_t>(a->int_vector | ((2 - c) * 2));
+      a->raster_acked = 0;
+      if (!a->dma_keep_status) a->dma_int[c] = 0;
+      break;
+    }
+  }
+  a->page[0x2C0F] = dcsr_compose(a);
+  return vector;
+}
+
 // &6800-&6805: the raster/split/scroll/vector config block.
 void decode_config(asic_state* a, uint16_t addr, uint8_t val) {
   switch (addr) {
@@ -256,6 +332,7 @@ void decode_config(asic_state* a, uint16_t addr, uint8_t val) {
       break;
     case 0x6805:
       a->int_vector = val & 0xF8;
+      a->dma_keep_status = val & 1;
       break;
     default:
       break;
@@ -267,7 +344,12 @@ void decode_config(asic_state* a, uint16_t addr, uint8_t val) {
 // (asic.cpp).
 void decode_dma(asic_state* a, uint16_t addr, uint8_t val) {
   if (addr == 0x6C0F) {
-    for (int c = 0; c < 3; ++c) a->dma_enabled[c] = (val >> c) & 1;
+    for (int c = 0; c < 3; ++c) {
+      a->dma_enabled[c] = (val >> c) & 1;
+      if (val & (0x40 >> c)) a->dma_int[c] = 0;  // write 1: clear its INT
+    }
+    // decode_write mirrored the raw byte; the register reads as composed
+    a->page[0x2C0F] = dcsr_compose(a);
     return;
   }
   const int c = (addr & 0x0C) >> 2;
@@ -350,13 +432,7 @@ void dma_writeback(asic_state* a, int c) {
   const int base = 0x2C00 + (c << 2);
   a->page[base] = static_cast<uint8_t>(a->dma_source[c] & 0xFF);
   a->page[base + 1] = static_cast<uint8_t>((a->dma_source[c] >> 8) & 0xFF);
-  uint8_t dcsr = 0;
-  for (int i = 0; i < 3; ++i) {
-    if (a->dma_enabled[i]) dcsr |= static_cast<uint8_t>(0x1 << i);
-    if (a->dma_int[i]) dcsr |= static_cast<uint8_t>(0x40 >> i);
-  }
-  if (a->pri_pending) dcsr |= 0x80;  // bit 7 = raster interrupt (cpcwiki)
-  a->page[0x2C0F] = dcsr;
+  a->page[0x2C0F] = dcsr_compose(a);
 }
 
 // Advance dma_cur to the next channel that needs a fetch this burst (enabled
@@ -408,6 +484,9 @@ bool dma_service(asic_state* a, const Bus* in, Bus* out) {
         } else {
           a->dma_tick_cycles[c] = 0;
           a->dma_pause_ticks[c]--;
+          // The line the pause runs out on fetches the next instruction
+          // (a GX4000: LOAD + PAUSE 37 + INT = 39 lines, zakcpc HW-32).
+          if (a->dma_pause_ticks[c] == 0) need_bus = true;
         }
       } else {
         need_bus = true;
@@ -465,6 +544,12 @@ bool dma_service(asic_state* a, const Bus* in, Bus* out) {
       out->ay.bdir = true;
       out->ay.bc1 = false;
       out->ay.da = a->dma_psg_v;
+      a->dma_phase = g_dma_psg_restore ? DMA_PSG_RESEL : DMA_ADVANCE;
+      break;
+    case DMA_PSG_RESEL:  // AY bus: the CPU's selection back
+      out->ay.bdir = true;
+      out->ay.bc1 = true;
+      out->ay.da = a->cpu_psg_reg;
       a->dma_phase = DMA_ADVANCE;
       break;
     case DMA_ADVANCE:
@@ -489,35 +574,22 @@ void asic_irq(asic_state* a, const Bus* in, Bus* out) {
     a->pri_pending = true;  // fire once as the target line is reached
   a->pri_prev_line = line;
 
-  // Reflect the raster-int flag in DCSR bit 7 (&6C0F) so a CPU read sees it
-  // live, even with no DMA activity to trigger dma_writeback (cpcwiki: bit 7 =
-  // RasterInt).
-  a->page[0x2C0F] = static_cast<uint8_t>((a->page[0x2C0F] & 0x7F) |
-                                         (a->pri_pending ? 0x80 : 0));
+  // DCSR bit 7 is latched by the acknowledge (asic_ack), not the live
+  // request.
 
   bool dma_int = false;
   for (unsigned char const c : a->dma_int)
     if (c) dma_int = true;
 
   if (in->cpu.m1 && in->cpu.iorq) {  // interrupt acknowledge
-    if (a->pri_pending || dma_int) {
-      // IM2 vector = (programmed vector & 0xF8) | a 3-bit source code, chosen
-      // by priority (cpcwiki ASIC): raster (6, highest) > DMA ch2 (0) > ch1 (2)
-      // > ch0 (4, lowest). int_vector already holds the & 0xF8 part. Real
-      // hardware has the "Plus Vectored Interrupt Bug" (a raster ack
-      // occasionally drives 4 instead of 6); we implement the intended
-      // behaviour, not the bug.
-      uint8_t src = 0;
-      if (a->dma_int[0]) src = 4;
-      if (a->dma_int[1]) src = 2;
-      if (a->dma_int[2]) src = 0;
-      if (a->pri_pending) src = 6;
-      out->cpu.data = static_cast<uint8_t>(a->int_vector | src);  // IM2 vector
+    if (!a->ack_prev) {              // one acknowledge per cycle (edge)
+      a->ack_vector = asic_ack(a);
+      a->ack_prev = 1;
     }
-    a->pri_pending = false;
-    for (unsigned char& c : a->dma_int) c = 0;
-    return;  // the sources are cleared this cycle
+    if (a->ack_vector != 0xFF) out->cpu.data = a->ack_vector;  // IM2 vector
+    return;
   }
+  a->ack_prev = 0;
 
   if (a->pri_pending || dma_int) out->cpu.irq = true;  // wired-OR assert
 }
@@ -535,8 +607,10 @@ void asic_tick(void* self, const Bus* __restrict in, Bus* __restrict out) {
 
   // Classic Gate Array ink writes share the ASIC's one palette RAM — always
   // live, lock or no lock (see snoop_classic_palette).
-  if (in->cpu.iorq && in->cpu.wr)
+  if (in->cpu.iorq && in->cpu.wr) {
     snoop_classic_palette(a, in->cpu.addr, in->cpu.data);
+    if (!in->cpu.m1) snoop_psg_select(a, in->cpu.addr, in->cpu.data);
+  }
 
   // RMR2 (6128+ secondary ROM/register-page map): a Gate-Array fn-2 write
   // (A15=0, A14=1, data 10xxxxxx) with bit5 set, honoured only while unlocked.
@@ -592,6 +666,9 @@ void asic_dev_reset(void* self) {
   a->dma_hsync_prev = false;
   a->pri_prev_line = 0xFFFF;
   a->pri_pending = false;
+  a->raster_acked = 0;
+  a->ack_prev = 0;
+  a->ack_vector = 0xFF;
 }
 
 size_t asic_dev_state_size(const void* /*unused*/) {
@@ -599,7 +676,7 @@ size_t asic_dev_state_size(const void* /*unused*/) {
 }
 void asic_save(const void* self, void* buf) {
   uint8_t* b = static_cast<uint8_t*>(buf);
-  b[0] = 2;  // v2 appends vid_gen to the struct (v1 blobs still load)
+  b[0] = 4;  // v4 appends the PSG selection snoop; v3 the acknowledge state
   std::memcpy(b + 1, self, sizeof(asic_state));
   // vid_gen is a session-local cache key, not machine state: zero it in the
   // blob so saves stay canonical (byte-identical for identical hardware
@@ -610,8 +687,14 @@ void asic_load(void* self, const void* buf) {
   asic_state* a = self_of(self);
   const uint32_t live_gen = a->vid_gen;
   const uint8_t* b = static_cast<const uint8_t*>(buf);
-  if (b[0] == 2) {
+  if (b[0] == 4) {
     std::memcpy(self, b + 1, sizeof(asic_state));
+  } else if (b[0] == 3) {
+    // v3 predates the PSG selection snoop: those stay at their reset values.
+    std::memcpy(self, b + 1, offsetof(asic_state, ppi_a));
+  } else if (b[0] == 2) {
+    // v2 predates the acknowledge state: the power-up values stay.
+    std::memcpy(self, b + 1, offsetof(asic_state, dma_keep_status));
   } else if (b[0] == 1) {
     // v1 predates vid_gen (the last member) — its blob holds exactly the
     // bytes before it.
@@ -627,6 +710,114 @@ void asic_load(void* self, const void* buf) {
 extern "C" {
 
 size_t asic_state_size(void) { return sizeof(asic_state); }
+
+void asic_set_dma_psg_restore(int on) { g_dma_psg_restore = on != 0; }
+
+// The SNA v3 "CPC+" chunk (0x8F8 bytes; the cpcwiki / cpctech SNA layout as
+// libretro-cap32 implements it): 0x000 sprite pixels (two per byte, the high
+// nibble the even column, 128 bytes per sprite, row-major), 0x800 sprite
+// attributes (8 per sprite: X, Y little-endian, magnification), 0x880 the
+// palette (&6400-&643F), 0x8C0-0x8C5 &6800-&6805 (raster interrupt line,
+// split line, split address high / low, soft scroll, interrupt vector),
+// 0x8C8 the analogue inputs, 0x8D0 the DMA channels (address LE, prescaler),
+// 0x8DF DCSR, 0x8E0 per channel [loop count, loop address (the instruction
+// after the REPEAT), pause count, prescaler count], 0x8F5 RMR2 (filled by the
+// caller), 0x8F6 1 = unlocked, 0x8F7 the unlock sequence position (0: idle).
+void asic_plus_chunk_save(const Device* dev, uint8_t* p) {
+  const asic_state* a = static_cast<const asic_state*>(dev->self);
+  std::memset(p, 0, 0x8F8);
+  for (int i = 0; i < 2048; i++) {
+    const int id = i >> 7, y = (i >> 3) & 15, x = (i & 7) * 2;
+    p[i] = static_cast<uint8_t>(((a->sprite_px[id][x][y] & 15) << 4) |
+                                (a->sprite_px[id][x + 1][y] & 15));
+  }
+  for (int i = 0; i < 16; i++) {
+    uint8_t* s = p + 0x800 + (i * 8);
+    s[0] = static_cast<uint8_t>(a->sprite_x[i]);
+    s[1] = static_cast<uint8_t>(a->sprite_x[i] >> 8);
+    s[2] = static_cast<uint8_t>(a->sprite_y[i]);
+    s[3] = static_cast<uint8_t>(a->sprite_y[i] >> 8);
+    s[4] = a->page[0x2004 + (i * 8)];  // the magnification register as written
+  }
+  for (int n = 0; n < 32; n++) {
+    p[0x880 + (n * 2)] = static_cast<uint8_t>((a->pal_r[n] << 4) | a->pal_b[n]);
+    p[0x881 + (n * 2)] = a->pal_g[n];
+  }
+  p[0x8C0] = a->pri_line;
+  p[0x8C1] = a->split_line;
+  p[0x8C2] = static_cast<uint8_t>(a->split_addr >> 8);
+  p[0x8C3] = static_cast<uint8_t>(a->split_addr);
+  p[0x8C4] = static_cast<uint8_t>(a->hscroll | (a->vscroll << 4) |
+                                  (a->extend_border ? 0x80 : 0));
+  p[0x8C5] = a->page[0x2805];
+  for (int c = 0; c < 8; c++)  // no analogue device: the idle readings
+    p[0x8C8 + c] = (c == 5 || c == 7) ? 0 : 0x3F;
+  for (int c = 0; c < 3; c++) {
+    uint8_t* s = p + 0x8D0 + (c * 4);
+    uint8_t* in = p + 0x8E0 + (c * 7);
+    s[0] = static_cast<uint8_t>(a->dma_source[c]);
+    s[1] = static_cast<uint8_t>(a->dma_source[c] >> 8);
+    s[2] = a->dma_prescaler[c];
+    in[0] = static_cast<uint8_t>(a->dma_loops[c]);
+    in[1] = static_cast<uint8_t>(a->dma_loops[c] >> 8);
+    in[2] = static_cast<uint8_t>(a->dma_loop_addr[c]);
+    in[3] = static_cast<uint8_t>(a->dma_loop_addr[c] >> 8);
+    in[4] = static_cast<uint8_t>(a->dma_pause_ticks[c]);
+    in[5] = static_cast<uint8_t>(a->dma_pause_ticks[c] >> 8);
+    in[6] = static_cast<uint8_t>(a->dma_tick_cycles[c]);
+  }
+  p[0x8DF] = dcsr_compose(a);
+  p[0x8F6] = a->locked ? 0 : 1;
+  p[0x8F7] = 0;
+}
+
+// Apply a "CPC+" chunk (all but RMR2, which the caller replays as a Gate Array
+// write).  Leaves the ASIC unlocked so that write is honoured; the caller
+// then sets the saved lock state (asic_set_locked).
+void asic_plus_chunk_load(const Device* dev, const uint8_t* p) {
+  asic_state* a = static_cast<asic_state*>(dev->self);
+  a->locked = false;
+  for (int i = 0; i < 2048; i++) {
+    decode_write(a, static_cast<uint16_t>(0x4000 + (i * 2)), p[i] >> 4);
+    decode_write(a, static_cast<uint16_t>(0x4001 + (i * 2)), p[i] & 15);
+  }
+  for (int i = 0; i < 16; i++)
+    for (int c = 0; c < 5; c++)
+      decode_write(a, static_cast<uint16_t>(0x6000 + (i * 8) + c),
+                   p[0x800 + (i * 8) + c]);
+  for (int i = 0; i < 64; i++)
+    decode_write(a, static_cast<uint16_t>(0x6400 + i), p[0x880 + i]);
+  for (int i = 0; i < 6; i++)
+    decode_write(a, static_cast<uint16_t>(0x6800 + i), p[0x8C0 + i]);
+  for (int c = 0; c < 3; c++) {
+    const uint8_t* s = p + 0x8D0 + (c * 4);
+    const uint8_t* in = p + 0x8E0 + (c * 7);
+    a->dma_source[c] = static_cast<uint16_t>(s[0] | (s[1] << 8));
+    a->dma_prescaler[c] = s[2];
+    a->dma_loops[c] = static_cast<uint16_t>(in[0] | (in[1] << 8));
+    a->dma_loop_addr[c] = static_cast<uint16_t>(in[2] | (in[3] << 8));
+    a->dma_pause_ticks[c] = static_cast<uint16_t>(in[4] | (in[5] << 8));
+    a->dma_tick_cycles[c] = in[6];
+    a->dma_enabled[c] = (p[0x8DF] >> c) & 1;
+    a->dma_int[c] = (p[0x8DF] >> (6 - c)) & 1;
+    a->page[0x2C00 + (c * 4)] = s[0];
+    a->page[0x2C01 + (c * 4)] = s[1];
+    a->page[0x2C02 + (c * 4)] = s[2];
+  }
+  a->raster_acked = (p[0x8DF] & 0x80) ? 1 : 0;
+  a->page[0x2C0F] = dcsr_compose(a);
+  a->dma_phase = DMA_IDLE;
+  a->lockpos = 0;
+  a->vid_gen++;
+}
+
+void asic_set_locked(const Device* dev, int locked) {
+  static_cast<asic_state*>(dev->self)->locked = locked != 0;
+}
+
+int asic_page_on(const Device* dev) {
+  return static_cast<const asic_state*>(dev->self)->page_on;
+}
 
 Device asic_init(void* storage) {
   // The pointer is stored in Device::self (void*), so it cannot be const.
@@ -762,6 +953,7 @@ void asic_fast_io_write(const Device* dev, uint16_t port, uint8_t val) {
   // per-cycle edge detector collapses a held strobe the same way).
   if (!(port & 0x4000) && ((port >> 8) & 3) == 0) feed_knock(a, val);
   snoop_classic_palette(a, port, val);
+  snoop_psg_select(a, port, val);
   if (!a->locked && (port & 0xC000) == 0x4000 && (val >> 6) == 2 &&
       (val & 0x20))
     a->page_on = (((val >> 3) & 3) == 3) ? 1 : 0;
@@ -793,8 +985,6 @@ void asic_batch_frame_line(const Device* dev, uint16_t line) {
   if (a->pri_line != 0 && line == a->pri_line && a->pri_prev_line != line)
     a->pri_pending = true;  // fire once as the target line is reached
   a->pri_prev_line = line;
-  a->page[0x2C0F] = static_cast<uint8_t>((a->page[0x2C0F] & 0x7F) |
-                                         (a->pri_pending ? 0x80 : 0));
 }
 
 int asic_irq_asserted(const Device* dev) {
@@ -808,23 +998,8 @@ int asic_irq_asserted(const Device* dev) {
 
 uint8_t asic_batch_int_ack(const Device* dev) {
   asic_state* a = static_cast<asic_state*>(dev->self);
-  // asic_irq's m1+iorq arm: the IM2 vector by priority, then clear.
-  uint8_t vector = 0xFF;  // nothing pending → the bus floats
-  bool dma_int = false;
-  for (unsigned char const c : a->dma_int)
-    if (c) dma_int = true;
-  if (a->pri_pending || dma_int) {
-    uint8_t src = 0;
-    if (a->dma_int[0]) src = 4;
-    if (a->dma_int[1]) src = 2;
-    if (a->dma_int[2]) src = 0;
-    if (a->pri_pending) src = 6;
-    vector = static_cast<uint8_t>(a->int_vector | src);
-  }
-  a->pri_pending = false;
-  for (unsigned char& c : a->dma_int) c = 0;
-  a->page[0x2C0F] &= 0x7F;  // DCSR raster-int mirror follows the clear
-  return vector;
+  // asic_irq's m1+iorq arm: the same acknowledge (asic_ack).
+  return asic_ack(a);
 }
 
 int asic_dma_active(const Device* dev) {

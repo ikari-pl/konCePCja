@@ -404,6 +404,14 @@ void mem_attach_expansion(const Device* dev, uint8_t* buf, size_t len) {
 // Plus (6128+): overlay the low/high ROM windows with a parsed CPR image of
 // `bytes` (caller-owned, 16K banks). Enables cartridge banking; boots low=bank0
 // (OS), high=bank1 (BASIC). len==0 clears it (back to a plain ROM machine).
+// RMR2 as last written (0xA0 | membank << 3 | the cartridge page); the
+// register-page membank (3) is the ASIC's page_on, which the caller adds.
+uint8_t mem_cart_rmr2(const Device* dev) {
+  const mem_state* m = static_cast<const mem_state*>(dev->self);
+  return static_cast<uint8_t>(0xA0 | (m->cart_lower_slot << 3) |
+                              (m->cart_lower & 7));
+}
+
 void mem_load_cartridge(const Device* dev, const uint8_t* image, size_t bytes) {
   mem_state* m = static_cast<mem_state*>(dev->self);
   m->cart = bytes >= 0x4000 ? image : nullptr;
