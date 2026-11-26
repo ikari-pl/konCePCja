@@ -65,6 +65,18 @@ void mem_attach_rom(const Device* dev, uint8_t n, const uint8_t* data);
  * (or a non-Plus machine) leaves it a plain ROM box. */
 void mem_load_cartridge(const Device* dev, const uint8_t* image, size_t bytes);
 
+/* PicoGX cartridge save channel (docs/hardware/picogx.md): plug with a
+ * host-owned 16K buffer (the .SAV contents), nullptr unplugs.  The commit
+ * counter bumps on every stop that ends a write - the host then writes the
+ * buffer to the .SAV file. */
+void mem_attach_picogx(const Device* dev, uint8_t* save16k);
+uint32_t mem_picogx_commits(const Device* dev);
+/* After a commit the PicoGX is busy (its SD write) for `frames` frames:
+ * commands are ignored, the ROM is served.  The host calls
+ * mem_picogx_frame once a frame to count it down. */
+void mem_picogx_set_busy_frames(const Device* dev, uint16_t frames);
+void mem_picogx_frame(const Device* dev);
+
 /* Wire the ASIC handle whose asic_unlocked() gates the RMR2 low-ROM remap. Live
  * wiring (like the attach_* above); no-op effect until a cartridge is loaded.
  */

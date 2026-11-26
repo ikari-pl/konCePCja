@@ -238,11 +238,14 @@ inline constexpr const char* kJoyToKeyDefaults[6] = {
 struct t_DeviceConfig {
   bool silicon_disc = false;  // [system] silicon_disc
   bool smartwatch = false;    // [system] smartwatch
-  bool amdrum = false;        // [sound] amdrum
-  bool disk_sounds = false;   // [sound] disk_sounds
-  bool tape_sounds = false;   // [sound] tape_sounds
-  bool amx_mouse = false;     // [input] amx_mouse
-  bool symbiface = false;     // [peripheral] symbiface
+  bool picogx = false;        // [system] picogx - PicoGX cart save channel
+  int picogx_busy_ms =
+      100;              // [system] picogx_busy_ms - no commands after a commit
+  bool amdrum = false;  // [sound] amdrum
+  bool disk_sounds = false;  // [sound] disk_sounds
+  bool tape_sounds = false;  // [sound] tape_sounds
+  bool amx_mouse = false;    // [input] amx_mouse
+  bool symbiface = false;    // [peripheral] symbiface
   // [peripheral] ide_master / ide_slave: attached only when symbiface is on.
   std::string ide_master;
   std::string ide_slave;

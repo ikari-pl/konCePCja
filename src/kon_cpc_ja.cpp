@@ -3383,6 +3383,9 @@ void loadConfiguration(t_CPC& CPC, const std::string& configFilename) {
   drive_sounds_params_from_string(
       conf.getStringValue("sound", "drivesnd_params", ""));
   CPC.devices.smartwatch = read_flag("system", "smartwatch", 0) != 0;
+  CPC.devices.picogx = read_flag("system", "picogx", 0) != 0;
+  CPC.devices.picogx_busy_ms =
+      conf.getIntValue("system", "picogx_busy_ms", 100);
   CPC.devices.amx_mouse = read_flag("input", "amx_mouse", 0) != 0;
   // Light gun selection (0=off, 1=Amstrad Magnum Phaser, 2=Trojan Light
   // Phazer). Mirrors the F-key toggle; lets headless/CI runs and config files
@@ -3608,6 +3611,8 @@ bool saveConfiguration(t_CPC& CPC, const std::string& configFilename) {
   conf.setStringValue("sound", "drivesnd_params",
                       drive_sounds_params_to_string());
   conf.setIntValue("system", "smartwatch", CPC.devices.smartwatch ? 1 : 0);
+  conf.setIntValue("system", "picogx", CPC.devices.picogx ? 1 : 0);
+  conf.setIntValue("system", "picogx_busy_ms", CPC.devices.picogx_busy_ms);
   conf.setIntValue("input", "amx_mouse", CPC.devices.amx_mouse ? 1 : 0);
   // Via Value, not int: PhazerType converts implicitly to both Value and
   // bool, so a direct static_cast<int> is ambiguous.

@@ -395,6 +395,10 @@ void apply_tier_policy(Bridge& b) {
 }
 }  // namespace
 
+namespace {
+void pgx_plug(Bridge& b);  // the PicoGX save channel (defined below)
+}  // namespace
+
 bool subcycle_bridge_start() {
   g_bridge.tier_env_pinned = std::getenv("KONCPC_TIER") != nullptr ||
                              std::getenv("KONCPC_WAKE") != nullptr;
@@ -436,6 +440,7 @@ bool subcycle_bridge_start() {
     b.machine.attach_cartridge(pbCartridgeImage.get(),
                                static_cast<size_t>(32) * 0x4000);
   }
+  pgx_plug(b);  // the PicoGX save channel, when enabled
   b.amsdos = read_file(CPC.rom_path + "/amsdos.rom");
   b.machine.attach_amsdos(b.amsdos.data(), b.amsdos.size());
   // Expansion ROM slots the USER asked for ([rom] slotNN, the ROMs dialog,
@@ -1072,6 +1077,70 @@ void sync_symbiface(Bridge& b) {
   }
 }
 
+// ---- PicoGX save channel (docs/hardware/picogx.md) ----------------------
+// The cartridge keeps one 16K save per CPR: <cart dir>/saves/<name>.SAV,
+// loaded when the cart is plugged (absent: a blank save, all 0x00 - the
+// real cart's blank contents are undocumented), written back whenever the
+// program ends a write with the stop command.
+std::vector<uint8_t> g_pgx_save;
+std::string g_pgx_path;
+uint32_t g_pgx_seen = 0;
+
+std::string pgx_path_for(const std::string& cart) {
+  const size_t slash = cart.find_last_of("/\\");
+  const std::string dir =
+      slash == std::string::npos ? "." : cart.substr(0, slash);
+  std::string name = slash == std::string::npos ? cart : cart.substr(slash + 1);
+  const size_t dot = name.find_last_of('.');
+  if (dot != std::string::npos) name = name.substr(0, dot);
+  return dir + "/saves/" + name + ".SAV";
+}
+
+void pgx_plug(Bridge& b) {
+  if (!CPC.devices.picogx || CPC.model != 3 || pbCartridgeImage == nullptr) {
+    b.machine.attach_picogx(nullptr);
+    return;
+  }
+  g_pgx_save.assign(0x4000, 0x00);
+  g_pgx_path = pgx_path_for(CPC.cartridge.file);
+  if (FILE* f = fopen(g_pgx_path.c_str(), "rb")) {
+    const size_t n = fread(g_pgx_save.data(), 1, g_pgx_save.size(), f);
+    (void)n;  // a short file leaves the rest blank
+    fclose(f);
+  }
+  b.machine.attach_picogx(g_pgx_save.data());
+  // system.picogx_busy_ms: the time after a commit in which the device takes
+  // no command (frames of 20 ms, rounded up).  Default 100 ms: a real PicoGX
+  // ignored a READ issued straight after a write's stop (zakcpc HW-31b rev 2);
+  // its true duration is unmeasured - 100 ms is a conservative stand-in.
+  const int ms =
+      CPC.devices.picogx_busy_ms < 0 ? 0 : CPC.devices.picogx_busy_ms;
+  b.machine.picogx_set_busy_frames(static_cast<uint16_t>((ms + 19) / 20));
+  g_pgx_seen = b.machine.picogx_commits();
+}
+
+void sync_picogx(Bridge& b) {
+  if (g_pgx_save.empty()) return;
+  b.machine.picogx_frame();  // the busy time after a commit
+  const uint32_t c = b.machine.picogx_commits();
+  if (c == g_pgx_seen) return;
+  g_pgx_seen = c;
+  std::error_code ec;
+  std::filesystem::create_directories(
+      std::filesystem::path(g_pgx_path).parent_path(), ec);
+  FILE* f = fopen(g_pgx_path.c_str(), "wb");
+  if (f == nullptr) {
+    LOG_ERROR("PicoGX: cannot write " << g_pgx_path);
+    return;
+  }
+  const size_t n = fwrite(g_pgx_save.data(), 1, g_pgx_save.size(), f);
+  if (n != g_pgx_save.size() || fclose(f) != 0) {
+    LOG_ERROR("PicoGX: short write to " << g_pgx_path);
+  } else {
+    LOG_INFO("PicoGX: save committed to " << g_pgx_path);
+  }
+}
+
 // Refresh the DS1216 SmartWatch clock from the host (smartwatch-device.md §4).
 void sync_smartwatch(Bridge& b) {
   if (!g_smartwatch.enabled) return;
@@ -1382,6 +1451,7 @@ int subcycle_bridge_debug_sync() {
   sync_m4_command(b);        // execute a latched M4 command host-side (§3)
   sync_symbiface(b);         // DS12887 clock + PS/2 FIFO drain
   sync_smartwatch(b);        // DS1216 clock refresh
+  sync_picogx(b);            // PicoGX: write the .SAV after a commit
   sync_amx_mouse(b);         // drain the mickey accumulator into the Device
   if (!b.active) return 0;
 
@@ -1754,6 +1824,7 @@ void subcycle_bridge_attach_cartridge() {
   if (!g_bridge.active || pbCartridgeImage == nullptr) return;
   g_bridge.machine.attach_cartridge(pbCartridgeImage.get(),
                                     static_cast<size_t>(32) * 0x4000);
+  pgx_plug(g_bridge);
 }
 
 void subcycle_bridge_attach_rom_slot(int slot, const uint8_t* rom16k) {

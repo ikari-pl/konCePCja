@@ -87,6 +87,11 @@ class Machine {
   // Plus (6128+) cartridge: the parsed CPR image (caller-owned, 16K banks)
   // drives the low/high ROM banking (RMR2 + ROM-select). No-op on models 0-2.
   void attach_cartridge(const uint8_t* image, size_t bytes);
+  // PicoGX save channel: a host-owned 16K buffer, nullptr unplugs.
+  void attach_picogx(uint8_t* save16k);
+  uint32_t picogx_commits() const;
+  void picogx_set_busy_frames(uint16_t frames);
+  void picogx_frame();
 
   // Drive media — caller-owned buffers, parsed in place (see fdc.h). `unit`
   // picks the drive: 0 = A (default), 1 = B. MUTABLE: FDC writes/FORMAT edit
