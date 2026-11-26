@@ -308,11 +308,14 @@ TEST(AsicDma, PriRaisesIrqAtScanline) {
     if (board.bus.cpu.irq) saw_irq = true;
   }
   EXPECT_TRUE(saw_irq) << "PRI raised cpu.irq at pri_line";
-  EXPECT_EQ(pgread(&board, 0x6C0F) & 0x80, 0x80)
-      << "DCSR bit 7 = raster interrupt flag (cpcwiki)";
   EXPECT_EQ(ack(&board), 0x2E)
       << "IM2 vector = (0x28 & 0xF8) | 6: raster interrupt's source code — "
          "distinct from a DMA ack (which would be | 4/2/0)";
+  // DCSR bit 7 is "set if last interrupt acknowledge cycle was caused by a
+  // raster interrupt" (the ASIC specification; MAME and AceDL latch it at
+  // the acknowledge), so it is read after the ack, not from the live request.
+  EXPECT_EQ(pgread(&board, 0x6C0F) & 0x80, 0x80)
+      << "DCSR bit 7: the last acknowledge was the raster interrupt";
 }
 
 // PRI must fire exactly when frame_line reaches pri_line — not before.
