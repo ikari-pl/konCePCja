@@ -25,7 +25,15 @@ Build-Depends: debhelper-compat (= 13),
                libxkbcommon-dev,
                libdrm-dev,
                libgbm-dev,
-               libdecor-0-dev
+               libdecor-0-dev,
+# The vendored SDL3 builds a backend only when its headers are present (it
+# loads the library itself at run time): without these the package has no
+# sound (ALSA, PulseAudio, PipeWire) and no joystick hotplug (udev).
+               libasound2-dev,
+               libpulse-dev,
+               libpipewire-0.3-dev,
+               libudev-dev,
+               libdbus-1-dev
 Standards-Version: 4.6.2
 Homepage: https://github.com/ikari-pl/konCePCja
 Vcs-Git: https://github.com/ikari-pl/konCePCja.git
