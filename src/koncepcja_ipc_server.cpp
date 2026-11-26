@@ -1748,7 +1748,10 @@ void init_command_registry() {
       "            at a time, print one line per retired instruction — PC, "
       "raw\n"
       "            bytes, disassembly, all registers with the SP delta, and\n"
-      "            the 16K-slot bank map. Leaves the machine stopped.");
+      "            the 16K-slot bank map. Leaves the machine stopped.\n"
+      "            Breakpoints are NOT honored mid-trace (same as step in).\n"
+      "            <n> parses like every IPC number: 0x/$/# hex, else base-0\n"
+      "            auto-detect (so 010 is octal 8, not ten).");
 
   register_command("timer", "DEBUG", "timer list | timer clear", "Debug timers",
                    "List debug timers with hit count, last/min/max/average "
@@ -3539,14 +3542,25 @@ std::string handle_command(const std::string& line) {
           CpcPauseLease& lease;
           ~StopOnExit() { lease.release_stopped(); }
         } const stop_on_exit{lease};
-        // One 16K slot's label: a ROM overlay when the read and write banks
-        // differ, else the physical RAM page under the PAL configuration.
+        // One 16K slot's label: a ROM overlay or the physical RAM page under
+        // the PAL configuration. Slots 0/3 read the per-step-synced GA ROM
+        // register (membank_read/write are legacy host arrays and can be
+        // stale mid-trace under engine=1); slots 1/2 can only be expansion
+        // ROMs, so the pointer comparison is the best available there.
         auto const slot_label = [](int slot) {
-          if (membank_read[slot] != membank_write[slot]) {
-            // slot 0 = lower ROM, slot 3 = upper ROM, else expansion ROM
-            return std::string(slot == 0 ? "ROMlo"
-                                         : (slot == 3 ? "ROMup" : "ROMexp"));
+          bool rom_overlay = false;
+          const char* rom_name = "ROMexp";
+          if (slot == 0) {
+            rom_overlay = (GateArray.ROM_config & 0x04) == 0;
+            rom_name = "ROMlo";
+          } else if (slot == 3) {
+            rom_overlay = (GateArray.ROM_config & 0x08) == 0;
+            // rom_select >= 128 is an expansion ROM, not the built-in upper
+            rom_name = (GateArray.upper_ROM < 128) ? "ROMup" : "ROMexp";
+          } else {
+            rom_overlay = membank_read[slot] != membank_write[slot];
           }
+          if (rom_overlay) return std::string(rom_name);
           uint8_t const cfg =
               (CPC.ram_size > 64)
                   ? static_cast<uint8_t>(GateArray.RAM_config & 7)
@@ -3560,13 +3574,12 @@ std::string handle_command(const std::string& line) {
         for (int i = 0; i < count; i++) {
           word const pc = z80.PC.w.l;
           int const size = z80_instruction_length(pc);
-          std::string bytes;
-          for (int j = 0; j < size; j++) {
-            char b[4];
-            std::snprintf(b, sizeof(b), "%02X ",
+          char bytes[16] = "";
+          for (int j = 0; j < size && j < 4; j++) {
+            std::snprintf(bytes + j * 3, sizeof(bytes) - j * 3, "%02X ",
                           z80_read_mem(static_cast<word>(pc + j)));
-            bytes += b;
           }
+          called.clear();  // per-instruction, not cumulative across the trace
           DisassembledLine const line = disassemble_one(pc, dummy, called);
           word const sp_before = z80.SP.w.l;
           z80_step_instruction();
@@ -3579,7 +3592,7 @@ std::string handle_command(const std::string& line) {
           std::snprintf(buf, sizeof(buf),
                         "  %04X: %-14s%-20s SP=%04X%s A=%02X F=%02X BC=%04X "
                         "DE=%04X HL=%04X IX=%04X IY=%04X banks[%s,%s,%s,%s]\n",
-                        static_cast<unsigned>(pc), bytes.c_str(),
+                        static_cast<unsigned>(pc), bytes,
                         line.instruction_.c_str(),
                         static_cast<unsigned>(z80.SP.w.l), sp_note,
                         static_cast<unsigned>(z80.AF.b.h),

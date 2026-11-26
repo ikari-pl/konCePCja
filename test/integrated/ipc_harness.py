@@ -2010,9 +2010,11 @@ def test_trace_step():
         if not ok_r or cur_pc != 0x6008:  # DI(1) + LD A(2) + LD HL(3) + PUSH(1) + NOP(1)
             print(f"FAIL: PC after trace 5 is 0x{cur_pc:04X}, want 0x6008")
             return False
-        ok_p, resp_p = emu.ipc.send_command('pause')
-        if not ok_p:
-            print(f"FAIL: machine not stopped after trace: {resp_p!r}")
+        # pause is idempotent (OK whether or not already stopped), so assert
+        # the stopped state itself via status.
+        ok_s, resp_s = emu.ipc.send_command('status')
+        if not ok_s or 'paused=1' not in resp_s:
+            print(f"FAIL: machine not stopped after trace: {resp_s!r}")
             return False
 
         print("PASS: trace <n> step-trace")
