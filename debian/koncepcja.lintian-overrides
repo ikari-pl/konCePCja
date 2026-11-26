@@ -3,3 +3,8 @@
 koncepcja: truetype-font-prohibits-installable-embedding
 # Not a Debian upload; there is no ITP bug to close.
 koncepcja: initial-upload-closes-no-bugs
+# libjpeg is linked into the binary statically (see debian/rules): Ubuntu's
+# libjpeg is libjpeg.so.8 (package libjpeg8), Debian's is libjpeg.so.62
+# (libjpeg62-turbo), and no package provides both sonames, so a dynamic
+# dependency would make the .deb uninstallable on one of the two.
+koncepcja: embedded-library libjpeg *
