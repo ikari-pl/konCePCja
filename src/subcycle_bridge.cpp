@@ -62,6 +62,7 @@ extern byte* memmap_ROM[256];  // host-loaded 16K expansion ROM images
 #include "z80_view.h"  // legacy: the Wave-1 view struct + bench lists (transitional)
 
 extern t_CPC CPC;
+extern byte* pbRAM;  // host RAM image (kon_cpc_ja.cpp; system.ram_fill)
 extern std::string chROMFile[4];  // per-model system ROM names (kon_cpc_ja.cpp)
 extern std::unique_ptr<byte[]>
     pbCartridgeImage;  // parsed CPR banks (cartridge.cpp)
@@ -418,6 +419,13 @@ bool subcycle_bridge_start() {
     LOG_ERROR("subcycle engine: cannot load system ROM "
               << rom_file << " (" << b.rom.size() << " bytes)");
     return false;
+  }
+  // KC-RAM-FILL: the power-on reset filled the host's pbRAM (system.ram_fill)
+  // before this machine existed; its RAM starts as that image, not zeros.
+  if (pbRAM != nullptr) {
+    size_t const n = std::min(static_cast<size_t>(CPC.ram_size) * 1024,
+                              b.machine.ram_size());
+    for (size_t i = 0; i < n; i++) b.machine.ram_write(i, pbRAM[i]);
   }
   // The model decides which CRTC the board gets: the ASIC's own on a 6128+,
   // a UM6845R on a 6128, an HD6845S on a 464/664. Without this the Device
@@ -1571,6 +1579,12 @@ int subcycle_bridge_debug_sync() {
 
 void subcycle_bridge_reset() {
   if (g_bridge.active) g_bridge.machine.reset();
+}
+
+void subcycle_bridge_load_ram(const unsigned char* src, size_t len) {
+  if (!g_bridge.active || src == nullptr) return;
+  size_t const n = std::min(len, g_bridge.machine.ram_size());
+  for (size_t i = 0; i < n; i++) g_bridge.machine.ram_write(i, src[i]);
 }
 
 namespace {
