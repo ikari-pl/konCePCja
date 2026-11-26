@@ -37,6 +37,15 @@ typedef struct AsicRegs {
 } AsicRegs;
 
 size_t asic_state_size(void);
+// asic.dma_psg_restore (config): re-latch the CPU's PSG register after a DMA
+// LOAD (see asic.cpp g_dma_psg_restore).
+void asic_set_dma_psg_restore(int on);
+/* The SNA v3 "CPC+" chunk `p` (0x8F8 bytes): build (RMR2 at 0x8F5 left for the
+ * caller) / apply (all but RMR2; leaves the ASIC unlocked). */
+void asic_plus_chunk_save(const Device* dev, uint8_t* p);
+void asic_plus_chunk_load(const Device* dev, const uint8_t* p);
+void asic_set_locked(const Device* dev, int locked);
+int asic_page_on(const Device* dev);
 Device asic_init(void* storage);
 
 /* model==3 puts the ASIC on the board (gates all decode). A hardware strap set
@@ -88,6 +97,9 @@ uint16_t asic_vid_palette(const Device* dev, int index);
  * byte-identical snapshot, so the video device may skip its per-line
  * re-read (F8 R17). */
 uint32_t asic_vid_gen(const Device* dev);
+/* The pixel (0..15) of the on-screen character a palette write shows from;
+ * 16 = unknown. */
+int asic_vid_pal_offset(const Device* dev);
 
 /* Whether palette entry `index` has been programmed by the Plus. Unset entries
  * read as the classic ink colour in the video Device (one palette RAM, Plus
@@ -145,6 +157,9 @@ void asic_dma_regs(const Device* dev, int ch, uint16_t* source,
 /* One I/O WRITE event: the unlock-knock snoop (CRTC-select decode, one FSM
  * feed per access), the classic Gate-Array palette snoop, and the RMR2
  * register-page map — asic_tick's three iorq-write arms. */
+/* The master phase (0..15) of the next asic_fast_*_write, from the fast
+ * path's T-state timing (-1 = unknown): a palette write's pixel. */
+void asic_fast_write_phase(int phase);
 void asic_fast_io_write(const Device* dev, uint16_t port, uint8_t val);
 /* The register-page overlay as a memory event: nonzero = the ASIC claims the
  * access (unlocked, paged in, &4000-&7FFF) — reads answer from the page,

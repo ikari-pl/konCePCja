@@ -18,6 +18,14 @@
 #include "hw/video.h"
 #include "hw/z80.h"
 
+namespace {
+// The fast path's palette write phase = T-slot * 4 + this: an I/O write
+// (an ink OUT, calibrated on a GX4000 photo), and a memory write to the
+// ASIC palette page, whose strobe the per-cycle tiers see one T-state later.
+constexpr int kFastPhaseIo = 1;
+constexpr int kFastPhaseMem = kFastPhaseIo + 4;
+}  // namespace
+
 namespace subcycle {
 
 bool Machine::build(const uint8_t* rom, size_t rom_len) {
@@ -1162,7 +1170,8 @@ void Machine::fs_io_write_event(uint16_t port, uint8_t val, uint64_t rel_t1) {
   if (!ga_early) ga_fast_io_write(&gdev_, port, val);
   mem_fast_io_write(&mdev_, port, val);
   if (fs_asic_on_)  // knock snoop, classic-palette snoop, RMR2 page map
-    asic_fast_io_write(&adev_, port, val);
+    asic_fast_write_phase(static_cast<int>(((rel_t1 & 3) * 4) + kFastPhaseIo));
+  asic_fast_io_write(&adev_, port, val);
   PpiAyLines lines{};
   if (ppi_fast_io_write(&pdev_, port, val, &lines) != 0) {
     // Relay the AY line change as one event (edge semantics shared with the
@@ -1304,6 +1313,8 @@ void Machine::fsb_mem_write(void* ctx, uint16_t addr, uint8_t val,
   const uint64_t j = (now - m->fs_t0_) / 4;
   m->fs_advance_chars(j + 1);
   m->fs_render_below(j);
+  asic_fast_write_phase(
+      static_cast<int>((((now - m->fs_t0_) & 3) * 4) + kFastPhaseMem));
   asic_fast_mem_write(&m->adev_, addr, val);  // claims: guard == page_claim
   // A page write can enable a DMA channel; the sequencer steals bus
   // masters the batch driver cannot model — leave the frame's remainder

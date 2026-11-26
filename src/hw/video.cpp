@@ -186,6 +186,12 @@ struct video_state {
   uint8_t cc_border[48] = {};       // one border cell (16 px), built per call
   uint32_t snap_gen = 0xFFFFFFFF;   // asic_vid_gen of the held line snapshot
                                     // (F8 R17); sentinel = no snapshot held
+  // The character painted last (zakcpc HW-35, derived render state - above
+  // beam_col, never serialized): its final palette indices and where they
+  // went, so a palette write landing while it is on screen repaints it from
+  // the write's pixel (asic_vid_pal_offset) instead of waiting a character.
+  uint8_t last_idx[16] = {};
+  int last_x0 = -1, last_row = -1;
   int beam_col = 0;    // visible char column of the beam (0..kVisChars-1)
   int beam_row = 0;    // visible scanline of the beam (0..fb_h-1)
   uint8_t fetch0 = 0;  // byte 0 of the character, latched off the RAM fetch bus
@@ -220,9 +226,43 @@ struct video_state {
   // the ×17 expansion hoists out of the pixel loop. Unset entries keep the
   // per-cell classic-ink fallback (the inks may move between cells).
   uint8_t line_rgb[32][3] = {};
+  // v2 (zakcpc, GX4000 photos HW-28 / HW-29): the soft scroll's uncovered
+  // strip shows the last character fetched BEFORE the display (the cell just
+  // before the first active one) - latched here at every non-active cell;
+  // and the extend-border bit (snapshotted with the registers) covers the
+  // first displayed character with the border, the window itself unmoved.
+  uint8_t pre0 = 0, pre1 = 0;
+  uint8_t ext_border = 0;
 };
 
 video_state* vself(void* self) { return static_cast<video_state*>(self); }
+
+// Re-read the Plus registers the renderer snapshots (palette, sprite
+// attributes, hscroll) and key them to the ASIC's write generation `gen`.
+void plus_read_regs(video_state* v, uint32_t gen) {
+  v->snap_gen = gen;
+  v->ext_border = static_cast<uint8_t>(asic_vid_extend_border(v->asic) != 0);
+  // New snapshot: every cached pal_set-pure byte expansion (F8 R12) is a
+  // function of the registers refreshed below — reset it with them, in
+  // BOTH execution shapes.
+  std::memset(v->cc_valid, 0, sizeof(v->cc_valid));
+  asic_vid_scroll(v->asic, &v->hscroll, nullptr);  // vscroll: the CRTC's job
+  for (int i = 0; i < 16; ++i)
+    asic_vid_sprite_attr(v->asic, i, &v->spr_x[i], &v->spr_y[i], &v->spr_mx[i],
+                         &v->spr_my[i]);
+  for (int e = 0; e < 32; ++e) {
+    const uint16_t rgb = asic_vid_palette(v->asic, e);
+    v->pal_r[e] = static_cast<uint8_t>((rgb >> 8) & 0x0F);
+    v->pal_g[e] = static_cast<uint8_t>((rgb >> 4) & 0x0F);
+    v->pal_b[e] = static_cast<uint8_t>(rgb & 0x0F);
+    v->pal_set[e] = static_cast<uint8_t>(asic_vid_palette_set(v->asic, e));
+    if (v->pal_set[e]) {  // ×17 expansion — plus_index_rgb's set branch
+      v->line_rgb[e][0] = static_cast<uint8_t>(v->pal_r[e] * 17);
+      v->line_rgb[e][1] = static_cast<uint8_t>(v->pal_g[e] * 17);
+      v->line_rgb[e][2] = static_cast<uint8_t>(v->pal_b[e] * 17);
+    }
+  }
+}
 
 // Refresh the per-scanline Plus snapshot (sprite attributes + 12-bit palette).
 // Reading once per line means mid-frame register changes land on the next line
@@ -249,29 +289,7 @@ void plus_refresh_line(video_state* v) {
   // every HSYNC fall). The sprite Y-cull below is NOT skippable — it also
   // depends on the line (beam_row) — and runs every refresh.
   const uint32_t gen = asic_vid_gen(v->asic);
-  if (!was_plus || gen != v->snap_gen) {
-    v->snap_gen = gen;
-    // New snapshot: every cached pal_set-pure byte expansion (F8 R12) is a
-    // function of the registers refreshed below — reset it with them, in
-    // BOTH execution shapes.
-    std::memset(v->cc_valid, 0, sizeof(v->cc_valid));
-    asic_vid_scroll(v->asic, &v->hscroll, nullptr);  // vscroll: the CRTC's job
-    for (int i = 0; i < 16; ++i)
-      asic_vid_sprite_attr(v->asic, i, &v->spr_x[i], &v->spr_y[i],
-                           &v->spr_mx[i], &v->spr_my[i]);
-    for (int e = 0; e < 32; ++e) {
-      const uint16_t rgb = asic_vid_palette(v->asic, e);
-      v->pal_r[e] = static_cast<uint8_t>((rgb >> 8) & 0x0F);
-      v->pal_g[e] = static_cast<uint8_t>((rgb >> 4) & 0x0F);
-      v->pal_b[e] = static_cast<uint8_t>(rgb & 0x0F);
-      v->pal_set[e] = static_cast<uint8_t>(asic_vid_palette_set(v->asic, e));
-      if (v->pal_set[e]) {  // ×17 expansion — plus_index_rgb's set branch
-        v->line_rgb[e][0] = static_cast<uint8_t>(v->pal_r[e] * 17);
-        v->line_rgb[e][1] = static_cast<uint8_t>(v->pal_g[e] * 17);
-        v->line_rgb[e][2] = static_cast<uint8_t>(v->pal_b[e] * 17);
-      }
-    }
-  }
+  if (!was_plus || gen != v->snap_gen) plus_read_regs(v, gen);
   // The line's sprite Y-cull, hoisted from render_cell_plus (the register
   // snapshot cannot move until the next refresh) — rebuilt EVERY line: py
   // moves with beam_row. px_y is line-constant: when first_active_row is
@@ -393,11 +411,43 @@ bool paint_byte_plus(video_state* v, const GateArrayRegs* g, uint8_t m,
 
 void render_cell_plus(video_state* v, const GateArrayRegs* g, uint8_t mode,
                       bool dispen, uint8_t byte1, int x0, int char_w) {
+  // A register write since the line's snapshot (a mid-line ink or palette
+  // change - the hardware shows it from the very next character; AceDL
+  // agrees, zakcpc tools/emu/tests/ink_test.asm): re-read now.  The line's
+  // sprite Y-cull stays as built at HSYNC.
+  {
+    const uint32_t gen = asic_vid_gen(v->asic);
+    if (gen != v->snap_gen) {
+      plus_read_regs(v, gen);
+      // A palette write lands while the previous character is on screen
+      // (its pixels shift out during the next microsecond): from the write's
+      // pixel on, that character shows the new colours (GX4000 HW-35).
+      const int k = asic_vid_pal_offset(v->asic);
+      if (k < 16 && char_w == 16 && v->last_row == v->beam_row &&
+          v->last_x0 >= 0) {
+        uint8_t* q =
+            v->fb +
+            (((static_cast<size_t>(v->last_row) * v->fb_w) + v->last_x0 + k) *
+             3);
+        for (int lx = k; lx < 16; ++lx) {
+          uint8_t r, gg, b;
+          plus_index_rgb(v, g, v->last_idx[lx], &r, &gg, &b);
+          q[0] = r;
+          q[1] = gg;
+          q[2] = b;
+          q += 3;
+        }
+      }
+    }
+  }
+  v->last_x0 = x0;  // this character becomes the one on screen next
+  v->last_row = v->beam_row;
   if (dispen && v->first_active_row < 0)
     v->first_active_row = v->beam_row;  // sprite Y origin: first active line
   uint8_t* px =
       v->fb + (((static_cast<size_t>(v->beam_row) * v->fb_w) + x0) * 3);
   if (!dispen) {  // border — palette entry 16 (no sprites over border)
+    std::memset(v->last_idx, 16, sizeof(v->last_idx));
     uint8_t r, gg, b;
     if (v->pal_set[16]) {  // line-expanded (the common programmed case)
       r = v->line_rgb[16][0];
@@ -418,6 +468,35 @@ void render_cell_plus(video_state* v, const GateArrayRegs* g, uint8_t mode,
   const uint8_t m = mode & 3;              // the GA latch is 2 bits wide
   const int px_xbase = v->disp_char * 16;  // active-relative X of the cell
   const int hs = v->hscroll;  // horizontal soft scroll (background only)
+  if (v->disp_char == 0) {
+    // The scroll carry at the line's left edge: the character fetched just
+    // before the display (GX4000, HW-29), not pen 0.
+    std::memcpy(v->prev_pen, lut.cols[m][v->pre0], 8);
+    std::memcpy(v->prev_pen + 8, lut.cols[m][v->pre1], 8);
+    if (v->ext_border) {
+      // Extend border: the first character shows the border (pen 16); its
+      // pixels still feed the carry (HW-28: the window is not moved).
+      std::memcpy(v->prev_pen, lut.cols[m][v->fetch0], 8);
+      std::memcpy(v->prev_pen + 8, lut.cols[m][byte1], 8);
+      std::memset(v->last_idx, 16, sizeof(v->last_idx));
+      uint8_t r, gg, b;
+      if (v->pal_set[16]) {
+        r = v->line_rgb[16][0];
+        gg = v->line_rgb[16][1];
+        b = v->line_rgb[16][2];
+      } else {
+        plus_index_rgb(v, g, 16, &r, &gg, &b);
+      }
+      for (int dx = 0; dx < char_w; ++dx) {
+        px[0] = r;
+        px[1] = gg;
+        px[2] = b;
+        px += 3;
+      }
+      v->disp_char++;
+      return;
+    }
+  }
 
   // Sprite cull, X half — the Y half ran once per line in plus_refresh_line
   // (the snapshot is line-constant, so this is byte-identical to the old
@@ -437,6 +516,8 @@ void render_cell_plus(video_state* v, const GateArrayRegs* g, uint8_t mode,
   // line-constant, so with hs == 0 prev_pen is never read before the next
   // HSYNC-fall reset — its carry update is skipped.
   if (hs == 0 && ncand == 0 && char_w == 16) {
+    std::memcpy(v->last_idx, lut.cols[m][v->fetch0], 8);  // = the pens here
+    std::memcpy(v->last_idx + 8, lut.cols[m][byte1], 8);
     const uint8_t bytes2[2] = {v->fetch0, byte1};
     for (int k = 0; k < 2; ++k) {
       const uint8_t byte = bytes2[k];
@@ -483,6 +564,7 @@ void render_cell_plus(video_state* v, const GateArrayRegs* g, uint8_t mode,
         break;
       }
     }
+    if (lx < 16) v->last_idx[lx] = static_cast<uint8_t>(index);
     if (v->pal_set[index]) {  // line-expanded (the common programmed case)
       px[0] = v->line_rgb[index][0];
       px[1] = v->line_rgb[index][1];
@@ -566,6 +648,10 @@ void render_char(video_state* v, const Bus* in, uint8_t byte1) {
   const bool visible = !in->vid.hsync && !in->vid.vsync && v->beam_col >= 0 &&
                        v->beam_col < kVisChars && v->beam_row >= 0 &&
                        v->beam_row < v->fb_h;
+  if (v->plus_active && !in->vid.dispen) {  // the pre-display fetch latch
+    v->pre0 = v->fetch0;
+    v->pre1 = byte1;
+  }
   if (!visible) return;
   GateArrayRegs g{};
   ga_peek(v->gate_array, &g);
@@ -641,14 +727,18 @@ size_t video_dev_state_size(const void* /*unused*/) {
 void video_save(const void* self, void* buf) {
   const video_state* v = static_cast<const video_state*>(self);
   uint8_t* b = static_cast<uint8_t*>(buf);
-  b[0] = 1;
+  b[0] = 2;  // v2 appends the scroll latch + extend border (v1 loads)
   std::memcpy(b + 1, &v->beam_col, kVideoLogicalLen);
 }
 void video_load(void* self, const void* buf) {
   video_state* v = static_cast<video_state*>(self);
   const uint8_t* b = static_cast<const uint8_t*>(buf);
-  if (b[0] != 1) return;
-  std::memcpy(&v->beam_col, b + 1, kVideoLogicalLen);  // wiring untouched
+  if (b[0] == 2) {
+    std::memcpy(&v->beam_col, b + 1, kVideoLogicalLen);  // wiring untouched
+  } else if (b[0] == 1) {  // v1 predates pre0 / pre1 / ext_border
+    std::memcpy(&v->beam_col, b + 1,
+                offsetof(video_state, pre0) - kVideoLogicalOff);
+  }
 }
 
 }  // namespace
@@ -736,6 +826,10 @@ void video_batch_cells(const Device* vid, const uint8_t* ram,
       }
     }
 
+    if (v->plus_active && !(view.levels & CRTC_LVL_DISPEN)) {
+      v->pre0 = ram[vid_byte_addr(view.ma, view.ra, 0)];  // pre-display fetch
+      v->pre1 = ram[vid_byte_addr(view.ma, view.ra, 1)];
+    }
     const bool visible = !(view.levels & CRTC_LVL_HSYNC) &&
                          !(view.levels & CRTC_LVL_VSYNC) && v->beam_col >= 0 &&
                          v->beam_col < kVisChars && v->beam_row >= 0 &&
