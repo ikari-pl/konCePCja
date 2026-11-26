@@ -32,7 +32,14 @@ override_dh_auto_configure:
 	cmake --install $(SDL_BUILD)
 
 override_dh_auto_build:
-	$(MAKE) -j$(NUMJOBS) APP_PATH=$(SHARE) koncepcja
+	# Link libjpeg statically: Ubuntu's libjpeg is libjpeg.so.8 (package
+	# libjpeg8), Debian's is libjpeg.so.62 (libjpeg62-turbo), and no package
+	# provides both sonames, so a dynamic dependency would make the .deb
+	# uninstallable on one of the two. The static archive comes from
+	# libjpeg-dev (Build-Depends).
+	jpeg_a=$$($(CC) -print-file-name=libjpeg.a); \
+	test -f "$$jpeg_a" || { echo "libjpeg.a not found; is libjpeg-dev installed?" >&2; exit 1; }; \
+	$(MAKE) -j$(NUMJOBS) APP_PATH=$(SHARE) JPEG_LIB="$$jpeg_a" koncepcja
 
 override_dh_auto_test:
 	# The unit suite needs the googletest checkout the makefile clones on
@@ -43,6 +50,8 @@ override_dh_auto_install:
 	# The SDL3 the binary was linked against, in its private directory.
 	install -d $(STAGE)$(SDL_PRIVATE_LIB)
 	cp -a $(SDL_INSTALL)/lib/libSDL3.so* $(STAGE)$(SDL_PRIVATE_LIB)/
+	# libjpeg is linked into the binary statically (see override_dh_auto_build):
+	# nothing to ship for it.
 
 override_dh_shlibdeps:
 	dh_shlibdeps -l$(STAGE)$(SDL_PRIVATE_LIB)
