@@ -55,8 +55,11 @@ TEST_F(PlotterSvgExportTest, WritesCompleteDocument) {
 
 TEST_F(PlotterSvgExportTest, UnopenablePathFails) {
   // A directory cannot be opened for writing.
+  std::string err;
   EXPECT_FALSE(plotter_export_svg_segments(
-      some_lines(1), 0.269f, std::filesystem::temp_directory_path().string()));
+      some_lines(1), 0.269f, std::filesystem::temp_directory_path().string(),
+      &err));
+  EXPECT_FALSE(err.empty()) << "failure must carry the OS-level reason";
 }
 
 TEST_F(PlotterSvgExportTest, WriteErrorAfterOpenFails) {
@@ -64,11 +67,14 @@ TEST_F(PlotterSvgExportTest, WriteErrorAfterOpenFails) {
     GTEST_SKIP() << "no per-process file size limit on this platform";
   }
   bool ok = true;
+  std::string err;
   {
     // Opens fine, then runs out of room a few hundred bytes in.
     ScopedFileSizeLimit const limit(256);
     ASSERT_TRUE(limit.active());
-    ok = plotter_export_svg_segments(some_lines(200), 0.269f, path_.string());
+    ok = plotter_export_svg_segments(some_lines(200), 0.269f, path_.string(),
+                                     &err);
   }
   EXPECT_FALSE(ok) << "a truncated SVG was reported as exported";
+  EXPECT_FALSE(err.empty()) << "failure must carry the OS-level reason";
 }
