@@ -1979,6 +1979,12 @@ def test_telnet_reset_clears_buffer():
         if not emu.ipc.wait_vbl(200, timeout_ms=25000):
             print("FAIL: wait_vbl before reset")
             return False
+        # Prove the BEFOREMARK keys were actually consumed before the reset,
+        # so a missing mark can never pass as a cleared buffer.
+        ok, resp = emu.ipc.send_command('autotype status')
+        if not ok or 'idle' not in resp:
+            print(f"FAIL: autotype queue not drained before reset: {resp!r}")
+            return False
 
         ok, resp = emu.ipc.send_command('reset')
         if not ok:
@@ -1992,6 +1998,10 @@ def test_telnet_reset_clears_buffer():
         emu.ipc.send_command('autotype print "AFTERMARK"~RETURN~')
         if not emu.ipc.wait_vbl(200, timeout_ms=25000):
             print("FAIL: wait_vbl after reset")
+            return False
+        ok, resp = emu.ipc.send_command('autotype status')
+        if not ok or 'idle' not in resp:
+            print(f"FAIL: autotype queue not drained after reset: {resp!r}")
             return False
 
         data = b''
