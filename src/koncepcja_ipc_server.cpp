@@ -1638,9 +1638,10 @@ void init_command_registry() {
       "model` reports the live model plus `pending=<n>`.\n"
       "  apply: rebuild the machine with the staged settings (main-thread, "
       "drained once per frame).\n"
-      "  save:  Write the live configuration to the loaded config file, like\n"
-      "         the Options Save action. ERR 500 when no writable file is\n"
-      "         loaded (e.g. running from a package).");
+      "  save:  Write the configuration to the loaded config file via the\n"
+      "         autosave-on-exit path (intent snapshot for printer/\n"
+      "         scr_window/serial). ERR 500 when no writable file is loaded\n"
+      "         (e.g. running from a package).");
 
   register_command(
       "search", "TOOLS",
@@ -5682,16 +5683,16 @@ std::string handle_command(const std::string& line) {
         return note.empty() ? "OK\n" : "OK (" + note + ")\n";
       }
       if (parts[1] == "save") {
-        // Persist the live configuration like the Options ▸ Save action.
-        // The save reads board-adjacent state, so hold the machine still.
+        // Persist the configuration via the autosave-on-exit write-back
+        // (koncpc_save_configuration_preserving_intent: printer/scr_window/
+        // serial come from the captured intent, not the live values). The
+        // save reads board-adjacent state, so hold the machine still.
         CpcPauseLease lease;
         if (!lease.idle()) return z80_not_idle(lease);
         bool const ok = koncpc_save_configuration_preserving_intent();
         std::string const path = getConfigurationFilename(true);
         lease.restore_run_state();
-        if (!ok)
-          return "ERR 500 config-save-failed (no writable config file "
-                 "loaded)\n";
+        if (!ok) return "ERR 500 config-save-failed\n";
         return "OK saved to " + path + "\n";
       }
       return "ERR 400 bad-config-cmd (get|set|apply|save)\n";

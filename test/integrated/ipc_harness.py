@@ -1952,11 +1952,12 @@ def test_step_in_accuracy():
 
 
 def test_config_save_ipc():
-    """config save persists the live configuration like Options ▸ Save.
+    """config save persists the configuration via the autosave-on-exit path.
 
     The runner pins a throwaway copy of koncepcja.cfg.example as the session
     config, so `config save` must succeed and rewrite that file; making the
-    file read-only must fail with ERR 500 instead of a bare OK.
+    file read-only must fail with ERR 500 instead of a bare OK (skipped when
+    running as root, which bypasses file permissions).
     """
     print("Running IPC config save test...")
     with EmulatorRunner() as emu:
@@ -1967,7 +1968,7 @@ def test_config_save_ipc():
         if not ok:
             print(f"FAIL: config get file: {resp!r}")
             return False
-        cfg_path = resp.replace('OK', '').strip()
+        cfg_path = resp.removeprefix('OK ').strip()
         if not cfg_path or not os.path.exists(cfg_path):
             print(f"FAIL: session config file not found: {cfg_path!r}")
             return False
@@ -1985,14 +1986,20 @@ def test_config_save_ipc():
             print(f"FAIL: saved config lacks expected keys: {content[:200]!r}")
             return False
 
-        os.chmod(cfg_path, 0o444)
-        try:
-            ok, resp = emu.ipc.send_command('config save')
-            if ok or 'config-save-failed' not in resp:
-                print(f"FAIL: read-only config should fail: {resp!r}")
-                return False
-        finally:
-            os.chmod(cfg_path, 0o644)
+        # Root bypasses file permission bits, so the read-only leg is
+        # meaningless there (geteuid does not exist on Windows).
+        running_as_root = hasattr(os, 'geteuid') and os.geteuid() == 0
+        if running_as_root:
+            print("  note: running as root, skipping the read-only negative leg")
+        else:
+            os.chmod(cfg_path, 0o444)
+            try:
+                ok, resp = emu.ipc.send_command('config save')
+                if ok or 'config-save-failed' not in resp:
+                    print(f"FAIL: read-only config should fail: {resp!r}")
+                    return False
+            finally:
+                os.chmod(cfg_path, 0o644)
 
         print("PASS: IPC config save")
         return True

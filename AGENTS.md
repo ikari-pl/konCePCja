@@ -199,7 +199,7 @@ OK available commands (usage: help <command>):
 | `load <path>` | Load file (.dsk/.sna/.cpr/.bin); a successful disk/tape/snapshot/cartridge load also lands on the matching Recent list, with the path made absolute (GUI saves the config, `--headless` does not) | `load game.dsk` |
 | `devtools` | Open DevTools window (idempotent); `devtools off` closes; F12 toggles | `devtools` → `OK` |
 | `config get\|set <key> [val]` | Read/modify settings (`model`, `crtc_type`, `ram_size`, …) | `config set model 3` |
-| `config save` | Write the live configuration to the loaded config file (like Options ▸ Save); `ERR 500` when no writable file is loaded | `config save` |
+| `config save` | Write the configuration to the loaded config file via the autosave-on-exit path (intent snapshot for printer/scr_window/serial); `ERR 500` when no writable file is loaded | `config save` |
 | `config apply` | Rebuild the machine with staged settings (needed after `config set model`) | `config apply` → `OK` |
 | `tier` | Run-tier policy | `tier` → `OK policy=auto effective=fast pinned=0` |
 | `tier set <p>` | Set policy: auto/fast/wake/soldered/faithful | `tier set wake` → `OK policy=wake` |

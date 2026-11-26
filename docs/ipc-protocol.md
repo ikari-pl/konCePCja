@@ -755,7 +755,7 @@ is read, so a client connecting at launch may see it briefly.
 | `config get model` | `OK 0`-`3` — live CPC model (0=464, 1=664, 2=6128, 3=6128+). While a `config set model` is staged but not yet applied, appends ` pending=<n>` |
 | `config set model <0-3>` | Stage a model change. Returns `OK (apply required)` — it needs `config apply`, **not** plain `reset`: `reset` only resets the board and will NOT reload the model's ROMs or refit its devices |
 | `config apply` | Rebuild the machine with the staged settings. Runs on the main thread (the request is drained once per frame), so it is safe from any connection. `ERR 500 rebuild-failed code=<n>` if the rebuild fails, `ERR 504 rebuild-not-drained` if the main loop never claimed the request, `ERR 504 rebuild-still-running` if a claimed rebuild outlasted the wait |
-| `config save` | Write the live configuration to the loaded config file, like the Options ▸ Save action (machine held still under a pause lease). `OK saved to <path>`; `ERR 500 config-save-failed` when no writable config file is loaded (e.g. running from a package without a profile config), `ERR 409` when the Z80 thread does not go idle |
+| `config save` | Write the configuration to the loaded config file via the autosave-on-exit write-back path (printer/scr_window/serial come from the captured intent, not the live values; machine held still under a pause lease). `OK saved to <path>`; `ERR 500 config-save-failed` when no writable config file is loaded (e.g. running from a package without a profile config), `ERR 409` when the Z80 thread does not go idle |
 | `config set silicon_disc <0\|1>` | Enable/disable Silicon Disc |
 
 ## Status
