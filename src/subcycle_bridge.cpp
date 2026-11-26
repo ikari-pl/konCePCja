@@ -1279,6 +1279,18 @@ int process_probe_hit(Bridge& b, const ProbeHit& hit, uint64_t resume_epoch,
     }
   }
   b.machine.probe_resume();  // edge consumed: resume continues mid-instruction
+  if (hit.kind != PROBE_HIT_EXEC) {
+    // A watch / I/O hit latches mid-instruction: the access itself is still
+    // in flight (a write reaches RAM a tick later) and so is the rest of the
+    // instruction, while PC already points past it.  Stopping there showed
+    // memory without the very write that stopped it (WP_VAL=22 beside a RAM
+    // byte still 01) and registers half-updated (an LDIR's BC / DE before the
+    // byte moved).  Finish the instruction - for a repeating block
+    // instruction, the iteration - so the stop is a clean boundary, as the
+    // `wait bp` help promises ("just past the instruction that made the
+    // access").
+    b.machine.finish_instruction();
+  }
   if (hit.kind == PROBE_HIT_EXEC) {
     z80.breakpoint_reached = 1;
     // Clear the watchpoint flag: it was only ever set, never cleared on a
