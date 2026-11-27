@@ -344,7 +344,11 @@ else()
         FetchContent_MakeAvailable(googletest)
     endif()
 
-    file(GLOB TEST_SOURCES CONFIGURE_DEPENDS test/*.cpp)
+    # Recursive: the makefile uses find, so test/hw (board_smoke, crtc, asic,
+    # fuse/sst conformance, ...) must be in too — a plain GLOB silently dropped
+    # them from the MSVC test_runner (beads-r9b2). No fixture .cpp live under
+    # test/ (only test/main.cpp has main()).
+    file(GLOB_RECURSE TEST_SOURCES CONFIGURE_DEPENDS test/*.cpp)
 
     add_executable(test_runner ${TEST_SOURCES})
     target_include_directories(test_runner PRIVATE

@@ -31,6 +31,26 @@ struct StepIn {
   uint8_t data = 0xFF;
 };
 
+// C++17: no designated initializers (MSVC /std:c++17 rejects them, C7555).
+inline StepIn vsync_step(bool v) {
+  StepIn s;
+  s.vsync = v;
+  return s;
+}
+inline StepIn hsync_step(bool v) {
+  StepIn s;
+  s.hsync = v;
+  return s;
+}
+inline StepIn io_write(uint16_t addr, uint8_t data) {
+  StepIn s;
+  s.iorq = true;
+  s.wr = true;
+  s.addr = addr;
+  s.data = data;
+  return s;
+}
+
 GateArrayRegs ga_step(GaRig& rig, const StepIn& s) {
   rig.board.bus = bus_resting();
   rig.board.bus.vid.hsync = s.hsync;
@@ -80,11 +100,11 @@ TEST(GateArray, RasterCounterAdvancesOnHsyncFallingEdge) {
   GaRig rig;
   make_rig(rig);
 
-  const GateArrayRegs at_rise = ga_step(rig, StepIn{.hsync = true});
+  const GateArrayRegs at_rise = ga_step(rig, hsync_step(true));
   EXPECT_EQ(at_rise.sl_count, 0)
       << "the hardware R52 counter clocks at HSYNC end, not HSYNC start";
 
-  const GateArrayRegs at_fall = ga_step(rig, StepIn{.hsync = false});
+  const GateArrayRegs at_fall = ga_step(rig, hsync_step(false));
   EXPECT_EQ(at_fall.sl_count, 1)
       << "one completed HSYNC pulse advances the raster counter once";
 }
@@ -124,10 +144,9 @@ TEST(GateArray, VsyncResyncsCounter) {
   make_rig(rig);
   for (int i = 0; i < 10; ++i) hsync_pulse(rig);
   EXPECT_EQ(ga_step(rig, StepIn{}).sl_count, 10);
-  ga_step(
-      rig,
-      StepIn{.vsync = true});  // VSYNC rising edge arms the resync (hs_count=2)
-  ga_step(rig, StepIn{.vsync = false});
+  ga_step(rig,
+          vsync_step(true));  // VSYNC rising edge arms the resync (hs_count=2)
+  ga_step(rig, vsync_step(false));
   hsync_pulse(rig);                         // 1st HSYNC after VSYNC
   GateArrayRegs after2 = hsync_pulse(rig);  // 2nd HSYNC → resync
   EXPECT_EQ(after2.sl_count, 0)
@@ -143,8 +162,8 @@ TEST(GateArray, VsyncResyncFiresSaveMarginWhenCounterPast32) {
   for (int i = 0; i < 40; ++i) hsync_pulse(rig);  // counter to 40 (>=32, <52)
   EXPECT_EQ(ga_step(rig, StepIn{}).sl_count, 40)
       << "counter at 40, no fire yet";
-  ga_step(rig, StepIn{.vsync = true});  // VSYNC rising edge arms the resync
-  ga_step(rig, StepIn{.vsync = false});
+  ga_step(rig, vsync_step(true));  // VSYNC rising edge arms the resync
+  ga_step(rig, vsync_step(false));
   hsync_pulse(rig);                         // 1st HSYNC after VSYNC
   GateArrayRegs after2 = hsync_pulse(rig);  // 2nd HSYNC → resync + save-margin
   EXPECT_EQ(after2.sl_count, 0) << "counter still resyncs to 0";
@@ -158,8 +177,7 @@ TEST(GateArray, ModeRegisterBit4Rearms) {
   for (int i = 0; i < 52; ++i) hsync_pulse(rig);  // fire
   EXPECT_EQ(ga_step(rig, StepIn{}).irq, 1);
   // I/O write to the GA (A15=0,A14=1), mode register (data>>6==2), bit4 set.
-  GateArrayRegs r = ga_step(
-      rig, StepIn{.iorq = true, .wr = true, .addr = 0x7F00, .data = 0x90});
+  GateArrayRegs r = ga_step(rig, io_write(0x7F00, 0x90));
   EXPECT_EQ(r.irq, 0) << "mode-register bit 4 rearms/clears the interrupt";
   EXPECT_EQ(r.sl_count, 0);
 }
@@ -167,10 +185,7 @@ TEST(GateArray, ModeRegisterBit4Rearms) {
 TEST(GateArray, RegisterSide) {
   GaRig rig;
   make_rig(rig);
-  auto io = [&](uint8_t data) {
-    return ga_step(
-        rig, StepIn{.iorq = true, .wr = true, .addr = 0x7F00, .data = data});
-  };
+  auto io = [&](uint8_t data) { return ga_step(rig, io_write(0x7F00, data)); };
   // Pen select (fn 0, pen 5), then set ink (fn 1, colour 12) → ink[5] = 12.
   io(0x05);
   GateArrayRegs a = io(0x40 | 12);
@@ -204,10 +219,7 @@ TEST(GateArray, RegisterSide) {
 TEST(GateArray, ModeLatchesPerScanlineForRasterSplit) {
   GaRig rig;
   make_rig(rig);
-  auto io = [&](uint8_t data) {
-    return ga_step(
-        rig, StepIn{.iorq = true, .wr = true, .addr = 0x7F00, .data = data});
-  };
+  auto io = [&](uint8_t data) { return ga_step(rig, io_write(0x7F00, data)); };
 
   // Band 1: select MODE 0 and latch it in with an HSYNC (top of a scanline).
   io(0x80 | 0);  // fn 2, mode 0
