@@ -1951,6 +1951,42 @@ def test_step_in_accuracy():
         return True
 
 
+def test_plotter_export_reason():
+    """plotter export failure carries the OS reason in the ERR line.
+
+    A path in a nonexistent directory must fail with ERR 500 export-failed
+    plus the strerror text, not a bare ERR; a writable path must still
+    export. The success file is removed afterwards.
+    """
+    print("Running plotter export reason test...")
+    tmp_svg = 'plotter_export_test_tmp.svg'
+    with EmulatorRunner() as emu:
+        if not emu.start():
+            print("FAIL: Could not start emulator")
+            return False
+        emu.ipc.pause()
+        try:
+            ok, resp = emu.ipc.send_command('plotter export no_such_dir_xyz/out.svg')
+            # Assert the stable protocol prefix plus a non-empty reason, not a
+            # locale-dependent strerror fragment.
+            reason = resp.split('export-failed', 1)[1].strip() if 'export-failed' in resp else ''
+            if ok or 'ERR 500' not in resp or 'export-failed' not in resp or not reason:
+                print(f"FAIL: failure did not carry the reason: {resp!r}")
+                return False
+            ok, resp = emu.ipc.send_command(f'plotter export {tmp_svg}')
+            if not ok:
+                print(f"FAIL: success case failed: {resp!r}")
+                return False
+            if not os.path.exists(tmp_svg):
+                print(f"FAIL: {tmp_svg} not written (cwd={os.getcwd()})")
+                return False
+        finally:
+            if os.path.exists(tmp_svg):
+                os.remove(tmp_svg)
+        print("PASS: plotter export reason")
+        return True
+
+
 def test_step_out_nested_call():
     """Step Out finishes the current frame while skipping a nested CALL."""
     print("Running step-out nested-call test...")
@@ -5171,6 +5207,7 @@ def main():
         test_rapid_pause_resume,
         test_reg_set_halt_is_refused,
         test_step_in_accuracy,
+        test_plotter_export_reason,
         test_step_out_nested_call,
         test_step_out_gated_on_ret_not_sp,
         test_step_out_untaken_conditional_ret,

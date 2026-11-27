@@ -49,7 +49,7 @@ class HpglPlotter {
   void reset();
 
   // Export accumulated drawing to SVG file
-  bool export_svg(const std::string& path) const;
+  bool export_svg(const std::string& path, std::string* err = nullptr) const;
 
   // Get drawing segments for ImGui preview
   const std::vector<PlotSegment>& segments() const { return segments_; }
@@ -134,8 +134,11 @@ class HpglPlotter {
 
 // Free-function SVG writer over a segment list — shared by HpglPlotter and
 // the sub-cycle plotter Device's page (plotter_view.cpp).
+// On failure returns false and, when `err` is non-null, fills it with the
+// OS-level reason (open/write/close errno text) for IPC replies and toasts.
 bool plotter_export_svg_segments(const std::vector<PlotSegment>& segments,
-                                 float char_height_cm, const std::string& path);
+                                 float char_height_cm, const std::string& path,
+                                 std::string* err = nullptr);
 
 // Global plotter instance
 extern HpglPlotter g_plotter;
