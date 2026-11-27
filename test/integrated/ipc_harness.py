@@ -2017,6 +2017,39 @@ def test_trace_step():
             print(f"FAIL: machine not stopped after trace: {resp_s!r}")
             return False
 
+        # Error/boundary paths pin the dispatch: counts parse like every IPC
+        # number (hex prefixes accepted, bare hex fallback included — 'abc'
+        # is 0xABC), out-of-range is ERR 400, non-numeric is bad-trace-cmd.
+        for bad in ('trace 0', 'trace 65537', 'trace zz'):
+            ok_b, resp_b = emu.ipc.send_command(bad)
+            if ok_b or 'ERR 400' not in resp_b:
+                print(f"FAIL: {bad!r} should be ERR 400: {resp_b!r}")
+                return False
+        ok_h, resp_h = emu.ipc.send_command('trace 0x2')
+        if not ok_h or not resp_h.startswith('OK count=2'):
+            print(f"FAIL: trace 0x2 should trace 2 instructions: {resp_h!r}")
+            return False
+
+        # The bank map follows the GA ROM register mid-trace: OUT (&7F00),A
+        # with 0x84 disables the lower ROM, so slot 0 flips ROMlo -> RAM0 on
+        # the post-step line of the OUT itself (pins the ROM_config-based
+        # labels under both engines).
+        ok, resp = emu.ipc.send_command('mem write 0x6010 01007F3E84ED7900')
+        if not ok:
+            print(f"FAIL: plant ROM-toggle code: {resp!r}")
+            return False
+        if not emu.ipc.send_command('reg set PC 0x6010')[0]:
+            print("FAIL: set PC 0x6010")
+            return False
+        ok, resp = emu.ipc.send_command('trace 4')
+        if not ok or not resp.startswith('OK count=4'):
+            print(f"FAIL: trace 4 (ROM toggle): {resp!r}")
+            return False
+        lines = [l for l in resp.splitlines() if l.strip()][1:]
+        if len(lines) != 4 or 'ROMlo' not in lines[0] or 'RAM0' not in lines[2]:
+            print(f"FAIL: bank flip ROMlo->RAM0 not observed: {resp!r}")
+            return False
+
         print("PASS: trace <n> step-trace")
         return True
 

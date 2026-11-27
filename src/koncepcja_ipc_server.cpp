@@ -3524,15 +3524,18 @@ std::string handle_command(const std::string& line) {
       // trace <n> — step-trace: pause, execute N instructions one at a time,
       // dumping one line per retired instruction: PC, raw bytes, disassembly,
       // all registers (SP annotated with its delta), and the 16K-slot bank
-      // map. Leaves the machine stopped, like step.
-      if (!parts[1].empty() &&
-          std::all_of(parts[1].begin(), parts[1].end(),
-                      [](unsigned char c) { return std::isdigit(c) != 0; })) {
+      // map. Leaves the machine stopped, like step. <n> accepts every IPC
+      // number format (0x/$/#/& hex, base-0 auto-detect); the keyword
+      // subcommands below can never parse as numbers, so this gate is safe.
+      bool const is_keyword = parts[1] == "on" || parts[1] == "off" ||
+                              parts[1] == "dump" || parts[1] == "on_crash" ||
+                              parts[1] == "status";
+      if (!is_keyword) {
         int count = 0;
         try {
           count = parse_int(parts[1]);
         } catch (const std::exception&) {
-          return "ERR 400 bad-count\n";
+          return "ERR 400 bad-trace-cmd (on|off|dump|on_crash|status|<n>)\n";
         }
         if (count < 1) return "ERR 400 bad-count\n";
         if (count > 65536) return "ERR 400 too-many (max 65536)\n";
@@ -3567,49 +3570,79 @@ std::string handle_command(const std::string& line) {
                   : 0;
           return "RAM" + std::to_string(mem_pal_slot_page(cfg, slot));
         };
-        std::ostringstream resp;
-        resp << "OK count=" << count << "\n";
+        // Copy raw per-instruction records under the lease, format the reply
+        // after releasing it (the pause mutex must not be held while building
+        // a potentially 65536-line response).
+        struct TraceRec {
+          word pc;
+          uint8_t bytes[4];
+          uint8_t nbytes;
+          std::string mnemonic;
+          word sp;
+          int16_t sp_delta;
+          uint8_t a, f;
+          word bc, de, hl, ix, iy;
+          char banks[4][8];
+        };
+        std::vector<TraceRec> recs;
+        recs.reserve(static_cast<size_t>(count));
         DisassembledCode dummy;
         std::vector<dword> called;
         for (int i = 0; i < count; i++) {
-          word const pc = z80.PC.w.l;
-          int const size = z80_instruction_length(pc);
-          char bytes[16] = "";
-          for (int j = 0; j < size && j < 4; j++) {
-            std::snprintf(bytes + j * 3, sizeof(bytes) - j * 3, "%02X ",
-                          z80_read_mem(static_cast<word>(pc + j)));
-          }
+          TraceRec r{};
+          r.pc = z80.PC.w.l;
+          int const size = z80_instruction_length(r.pc);
+          r.nbytes = static_cast<uint8_t>(size < 4 ? size : 4);
+          for (int j = 0; j < r.nbytes; j++)
+            r.bytes[j] = z80_read_mem(static_cast<word>(r.pc + j));
           called.clear();  // per-instruction, not cumulative across the trace
-          DisassembledLine const line = disassemble_one(pc, dummy, called);
+          r.mnemonic = disassemble_one(r.pc, dummy, called).instruction_;
           word const sp_before = z80.SP.w.l;
           z80_step_instruction();
-          int const sp_delta =
-              static_cast<int>(z80.SP.w.l) - static_cast<int>(sp_before);
-          char sp_note[16] = "";
-          if (sp_delta != 0)
-            std::snprintf(sp_note, sizeof(sp_note), " (%+d)", sp_delta);
-          char buf[320];
-          std::snprintf(buf, sizeof(buf),
-                        "  %04X: %-14s%-20s SP=%04X%s A=%02X F=%02X BC=%04X "
-                        "DE=%04X HL=%04X IX=%04X IY=%04X banks[%s,%s,%s,%s]\n",
-                        static_cast<unsigned>(pc), bytes,
-                        line.instruction_.c_str(),
-                        static_cast<unsigned>(z80.SP.w.l), sp_note,
-                        static_cast<unsigned>(z80.AF.b.h),
-                        static_cast<unsigned>(z80.AF.b.l),
-                        static_cast<unsigned>(z80.BC.w.l),
-                        static_cast<unsigned>(z80.DE.w.l),
-                        static_cast<unsigned>(z80.HL.w.l),
-                        static_cast<unsigned>(z80.IX.w.l),
-                        static_cast<unsigned>(z80.IY.w.l),
-                        slot_label(0).c_str(), slot_label(1).c_str(),
-                        slot_label(2).c_str(), slot_label(3).c_str());
-          resp << buf;
+          r.sp = z80.SP.w.l;
+          // Signed 16-bit delta: a PUSH at SP=0x0001 wraps to 0xFFFF and is
+          // still (-2), not (+65534).
+          r.sp_delta = static_cast<int16_t>(r.sp - sp_before);
+          r.a = z80.AF.b.h;
+          r.f = z80.AF.b.l;
+          r.bc = z80.BC.w.l;
+          r.de = z80.DE.w.l;
+          r.hl = z80.HL.w.l;
+          r.ix = z80.IX.w.l;
+          r.iy = z80.IY.w.l;
+          for (int slot = 0; slot < 4; slot++)
+            std::snprintf(r.banks[slot], sizeof(r.banks[slot]), "%s",
+                          slot_label(slot).c_str());
+          recs.push_back(std::move(r));
         }
         CpcRunCause stepped;
         stepped.reason = CpcStopReason::StepDone;
         stepped.step = true;
         lease.release_stopped(stepped);
+        std::ostringstream resp;
+        resp << "OK count=" << count << "\n";
+        for (TraceRec const& r : recs) {
+          char bytes[16] = "";
+          for (int j = 0; j < r.nbytes; j++) {
+            std::snprintf(bytes + j * 3, sizeof(bytes) - j * 3, "%02X ",
+                          r.bytes[j]);
+          }
+          char sp_note[16] = "";
+          if (r.sp_delta != 0)
+            std::snprintf(sp_note, sizeof(sp_note), " (%+d)", r.sp_delta);
+          char buf[320];
+          std::snprintf(
+              buf, sizeof(buf),
+              "  %04X: %-14s%-20s SP=%04X%s A=%02X F=%02X BC=%04X "
+              "DE=%04X HL=%04X IX=%04X IY=%04X banks[%s,%s,%s,%s]\n",
+              static_cast<unsigned>(r.pc), bytes, r.mnemonic.c_str(),
+              static_cast<unsigned>(r.sp), sp_note, static_cast<unsigned>(r.a),
+              static_cast<unsigned>(r.f), static_cast<unsigned>(r.bc),
+              static_cast<unsigned>(r.de), static_cast<unsigned>(r.hl),
+              static_cast<unsigned>(r.ix), static_cast<unsigned>(r.iy),
+              r.banks[0], r.banks[1], r.banks[2], r.banks[3]);
+          resp << buf;
+        }
         return resp.str();
       }
       if (parts[1] == "on") {
@@ -3660,10 +3693,10 @@ std::string handle_command(const std::string& line) {
                  g_trace.is_active() ? 1 : 0, g_trace.entry_count());
         return {buf};
       }
-      return "ERR 400 bad-trace-cmd (on|off|dump|on_crash|status)\n";
+      return "ERR 400 bad-trace-cmd (on|off|dump|on_crash|status|<n>)\n";
     }
     if (cmd == "trace")
-      return "ERR 400 usage: trace (on|off|dump|on_crash|status)\n";
+      return "ERR 400 usage: trace (on|off|dump|on_crash|status|<n>)\n";
 
     // Frame dumps: frames dump <path_pattern> <count> [delay_cs]
     // If path ends in .gif → animated GIF; otherwise → PNG series
