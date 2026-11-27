@@ -5,6 +5,7 @@
 
 #include <gtest/gtest.h>
 
+#include <climits>
 #include <vector>
 
 #include "imgui_state.h"
@@ -13,7 +14,6 @@
 #include "video_plugin.h"
 
 extern t_CPC CPC;
-extern std::vector<video_plugin> video_plugin_list;
 
 namespace {
 
@@ -46,10 +46,18 @@ TEST_F(RendererBoundsTest, OutOfRangeIndicesAreIgnored) {
   koncpc_set_renderer(2);  // one past the end
   EXPECT_EQ(CPC.scr_style, 7u);
   EXPECT_FALSE(imgui_state.video_reinit_pending);
+
+  koncpc_set_renderer(INT_MAX);  // far past the end
+  EXPECT_EQ(CPC.scr_style, 7u);
+  EXPECT_FALSE(imgui_state.video_reinit_pending);
 }
 
 TEST_F(RendererBoundsTest, ValidIndexIsApplied) {
-  koncpc_set_renderer(1);
+  koncpc_set_renderer(0);  // low boundary is valid
+  EXPECT_EQ(CPC.scr_style, 0u);
+  EXPECT_TRUE(imgui_state.video_reinit_pending);
+
+  koncpc_set_renderer(1);  // high boundary (size - 1)
   EXPECT_EQ(CPC.scr_style, 1u);
   EXPECT_TRUE(imgui_state.video_reinit_pending);
 }
