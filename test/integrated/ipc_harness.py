@@ -1975,7 +1975,10 @@ def test_telnet_reset_clears_buffer():
         if not emu.ipc.wait_vbl(300, timeout_ms=25000):
             print("FAIL: wait_vbl at boot")
             return False
-        emu.ipc.send_command('autotype print "BEFOREMARK"~RETURN~')
+        ok, resp = emu.ipc.send_command('autotype print "BEFOREMARK"~RETURN~')
+        if not ok:
+            print(f"FAIL: autotype BEFOREMARK enqueue: {resp!r}")
+            return False
         if not emu.ipc.wait_vbl(200, timeout_ms=25000):
             print("FAIL: wait_vbl before reset")
             return False
@@ -1995,7 +1998,10 @@ def test_telnet_reset_clears_buffer():
         if not emu.ipc.wait_vbl(300, timeout_ms=25000):
             print("FAIL: wait_vbl after reset boot")
             return False
-        emu.ipc.send_command('autotype print "AFTERMARK"~RETURN~')
+        ok, resp = emu.ipc.send_command('autotype print "AFTERMARK"~RETURN~')
+        if not ok:
+            print(f"FAIL: autotype AFTERMARK enqueue: {resp!r}")
+            return False
         if not emu.ipc.wait_vbl(200, timeout_ms=25000):
             print("FAIL: wait_vbl after reset")
             return False
