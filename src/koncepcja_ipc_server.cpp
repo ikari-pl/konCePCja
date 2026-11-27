@@ -4,6 +4,7 @@
 #include "errors.h"
 #include "gfx_finder.h"
 #include "host_state.h"
+#include "hw/memory.h"
 #include "hw/tape.h"
 #include "hw_views.h"
 #include "log.h"
@@ -99,6 +100,8 @@ extern t_FDC FDC;
 extern byte* memmap_ROM[256];
 extern byte* pbExpansionROM;
 extern byte* pbROMhi;
+extern byte* membank_read[4];
+extern byte* membank_write[4];
 
 // Key tables are in cpc_key_tables.h (shared with autotype.cpp)
 // g_headless (declared in koncepcja.h) is true when running without a window
@@ -1731,7 +1734,7 @@ void init_command_registry() {
   register_command(
       "trace", "DEBUG",
       "trace on [buffer_size] | trace off | trace dump <path> | trace on_crash "
-      "<path> | trace status",
+      "<path> | trace status | trace <n>",
       "Z80 instruction trace",
       "Ring-buffer execution trace (default 65536 entries). Records every\n"
       "retired instruction (PC + A/F/BC/DE/HL/SP + opcode) under BOTH the\n"
@@ -1740,7 +1743,15 @@ void init_command_registry() {
       "  off:      Disable tracing.\n"
       "  dump:     Write trace buffer to text file.\n"
       "  on_crash: Auto-dump to file on breakpoint/watchpoint hit.\n"
-      "  status:   Show active state and entry count.");
+      "  status:   Show active state and entry count.\n"
+      "  <n>:      Step-trace (max 65536): pause, execute N instructions one\n"
+      "            at a time, print one line per retired instruction — PC, "
+      "raw\n"
+      "            bytes, disassembly, all registers with the SP delta, and\n"
+      "            the 16K-slot bank map. Leaves the machine stopped.\n"
+      "            Breakpoints are NOT honored mid-trace (same as step in).\n"
+      "            <n> parses like every IPC number: 0x/$/# hex, else base-0\n"
+      "            auto-detect (so 010 is octal 8, not ten).");
 
   register_command("timer", "DEBUG", "timer list | timer clear", "Debug timers",
                    "List debug timers with hit count, last/min/max/average "
@@ -3508,8 +3519,132 @@ std::string handle_command(const std::string& line) {
     }
 
     // Trace commands: trace on [size], trace off, trace dump <path>, trace
-    // on_crash <path>
+    // on_crash <path>, trace <n> (step-trace)
     if (cmd == "trace" && parts.size() >= 2) {
+      // trace <n> — step-trace: pause, execute N instructions one at a time,
+      // dumping one line per retired instruction: PC, raw bytes, disassembly,
+      // all registers (SP annotated with its delta), and the 16K-slot bank
+      // map. Leaves the machine stopped, like step. <n> accepts every IPC
+      // number format (0x/$/#/& hex, base-0 auto-detect); the keyword
+      // subcommands below can never parse as numbers, so this gate is safe.
+      bool const is_keyword = parts[1] == "on" || parts[1] == "off" ||
+                              parts[1] == "dump" || parts[1] == "on_crash" ||
+                              parts[1] == "status";
+      if (!is_keyword) {
+        int count = 0;
+        try {
+          count = parse_int(parts[1]);
+        } catch (const std::exception&) {
+          return "ERR 400 bad-trace-cmd (on|off|dump|on_crash|status|<n>)\n";
+        }
+        if (count < 1) return "ERR 400 bad-count\n";
+        if (count > 65536) return "ERR 400 too-many (max 65536)\n";
+        CpcPauseLease lease(CpcPauseLeaseMode::PauseOnly, kStepIdleWaitMs);
+        if (!lease.wait()) return z80_not_idle(lease);
+        struct StopOnExit {
+          CpcPauseLease& lease;
+          ~StopOnExit() { lease.release_stopped(); }
+        } const stop_on_exit{lease};
+        // One 16K slot's label: a ROM overlay or the physical RAM page under
+        // the PAL configuration. Slots 0/3 read the per-step-synced GA ROM
+        // register (membank_read/write are legacy host arrays and can be
+        // stale mid-trace under engine=1); slots 1/2 can only be expansion
+        // ROMs, so the pointer comparison is the best available there.
+        auto const slot_label = [](int slot) {
+          bool rom_overlay = false;
+          const char* rom_name = "ROMexp";
+          if (slot == 0) {
+            rom_overlay = (GateArray.ROM_config & 0x04) == 0;
+            rom_name = "ROMlo";
+          } else if (slot == 3) {
+            rom_overlay = (GateArray.ROM_config & 0x08) == 0;
+            // rom_select >= 128 is an expansion ROM, not the built-in upper
+            rom_name = (GateArray.upper_ROM < 128) ? "ROMup" : "ROMexp";
+          } else {
+            rom_overlay = membank_read[slot] != membank_write[slot];
+          }
+          if (rom_overlay) return std::string(rom_name);
+          uint8_t const cfg =
+              (CPC.ram_size > 64)
+                  ? static_cast<uint8_t>(GateArray.RAM_config & 7)
+                  : 0;
+          return "RAM" + std::to_string(mem_pal_slot_page(cfg, slot));
+        };
+        // Copy raw per-instruction records under the lease, format the reply
+        // after releasing it (the pause mutex must not be held while building
+        // a potentially 65536-line response).
+        struct TraceRec {
+          word pc;
+          uint8_t bytes[4];
+          uint8_t nbytes;
+          std::string mnemonic;
+          word sp;
+          int16_t sp_delta;
+          uint8_t a, f;
+          word bc, de, hl, ix, iy;
+          char banks[4][8];
+        };
+        std::vector<TraceRec> recs;
+        recs.reserve(static_cast<size_t>(count));
+        DisassembledCode dummy;
+        std::vector<dword> called;
+        for (int i = 0; i < count; i++) {
+          TraceRec r{};
+          r.pc = z80.PC.w.l;
+          int const size = z80_instruction_length(r.pc);
+          r.nbytes = static_cast<uint8_t>(size < 4 ? size : 4);
+          for (int j = 0; j < r.nbytes; j++)
+            r.bytes[j] = z80_read_mem(static_cast<word>(r.pc + j));
+          called.clear();  // per-instruction, not cumulative across the trace
+          r.mnemonic = disassemble_one(r.pc, dummy, called).instruction_;
+          word const sp_before = z80.SP.w.l;
+          z80_step_instruction();
+          r.sp = z80.SP.w.l;
+          // Signed 16-bit delta: a PUSH at SP=0x0001 wraps to 0xFFFF and is
+          // still (-2), not (+65534).
+          r.sp_delta = static_cast<int16_t>(r.sp - sp_before);
+          r.a = z80.AF.b.h;
+          r.f = z80.AF.b.l;
+          r.bc = z80.BC.w.l;
+          r.de = z80.DE.w.l;
+          r.hl = z80.HL.w.l;
+          r.ix = z80.IX.w.l;
+          r.iy = z80.IY.w.l;
+          for (int slot = 0; slot < 4; slot++)
+            std::snprintf(r.banks[slot], sizeof(r.banks[slot]), "%s",
+                          slot_label(slot).c_str());
+          recs.push_back(std::move(r));
+        }
+        CpcRunCause stepped;
+        stepped.reason = CpcStopReason::StepDone;
+        stepped.step = true;
+        lease.release_stopped(stepped);
+        std::ostringstream resp;
+        resp << "OK count=" << count << "\n";
+        for (TraceRec const& r : recs) {
+          char bytes[16] = "";
+          for (int j = 0; j < r.nbytes; j++) {
+            std::snprintf(bytes + j * 3, sizeof(bytes) - j * 3, "%02X ",
+                          r.bytes[j]);
+          }
+          char sp_note[16] = "";
+          if (r.sp_delta != 0)
+            std::snprintf(sp_note, sizeof(sp_note), " (%+d)", r.sp_delta);
+          char buf[320];
+          std::snprintf(
+              buf, sizeof(buf),
+              "  %04X: %-14s%-20s SP=%04X%s A=%02X F=%02X BC=%04X "
+              "DE=%04X HL=%04X IX=%04X IY=%04X banks[%s,%s,%s,%s]\n",
+              static_cast<unsigned>(r.pc), bytes, r.mnemonic.c_str(),
+              static_cast<unsigned>(r.sp), sp_note, static_cast<unsigned>(r.a),
+              static_cast<unsigned>(r.f), static_cast<unsigned>(r.bc),
+              static_cast<unsigned>(r.de), static_cast<unsigned>(r.hl),
+              static_cast<unsigned>(r.ix), static_cast<unsigned>(r.iy),
+              r.banks[0], r.banks[1], r.banks[2], r.banks[3]);
+          resp << buf;
+        }
+        return resp.str();
+      }
       if (parts[1] == "on") {
         int size = g_trace_default_size;
         if (parts.size() >= 3) size = parse_int(parts[2]);
@@ -3558,10 +3693,10 @@ std::string handle_command(const std::string& line) {
                  g_trace.is_active() ? 1 : 0, g_trace.entry_count());
         return {buf};
       }
-      return "ERR 400 bad-trace-cmd (on|off|dump|on_crash|status)\n";
+      return "ERR 400 bad-trace-cmd (on|off|dump|on_crash|status|<n>)\n";
     }
     if (cmd == "trace")
-      return "ERR 400 usage: trace (on|off|dump|on_crash|status)\n";
+      return "ERR 400 usage: trace (on|off|dump|on_crash|status|<n>)\n";
 
     // Frame dumps: frames dump <path_pattern> <count> [delay_cs]
     // If path ends in .gif → animated GIF; otherwise → PNG series
