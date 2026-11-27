@@ -1623,7 +1623,7 @@ void init_command_registry() {
 
   register_command(
       "config", "TOOLS",
-      "config get <key> | config set <key> <val> | config apply",
+      "config get <key> | config set <key> <val> | config apply | config save",
       "Access emulator settings",
       "Reads or modifies internal emulator configuration variables.\n"
       "  Keys include model (0-3), crtc_type, ram_size, silicon_disc, "
@@ -1637,7 +1637,11 @@ void init_command_registry() {
       "board and will not reload the model's ROMs. Until apply, `config get "
       "model` reports the live model plus `pending=<n>`.\n"
       "  apply: rebuild the machine with the staged settings (main-thread, "
-      "drained once per frame).");
+      "drained once per frame).\n"
+      "  save:  Write the configuration to the loaded config file via the\n"
+      "         autosave-on-exit path (intent snapshot for printer/\n"
+      "         scr_window/serial). ERR 500 when no writable file is loaded\n"
+      "         (e.g. running from a package).");
 
   register_command(
       "search", "TOOLS",
@@ -5678,7 +5682,25 @@ std::string handle_command(const std::string& line) {
         }
         return note.empty() ? "OK\n" : "OK (" + note + ")\n";
       }
-      return "ERR 400 bad-config-cmd (get|set|apply)\n";
+      if (parts[1] == "save") {
+        // Persist the configuration via the autosave-on-exit write-back
+        // (koncpc_save_configuration_preserving_intent: printer/scr_window/
+        // serial come from the captured intent, not the live values). The
+        // target is the file this session loaded — koncpc_config_file() —
+        // not a re-resolved candidate (getConfigurationFilename() walks the
+        // lookup list again and can print/chdir from this socket thread).
+        std::string const path = koncpc_config_file();
+        if (path.empty() || access(path.c_str(), W_OK) != 0)
+          return "ERR 500 config-save-failed\n";
+        // The save reads board-adjacent state, so hold the machine still.
+        CpcPauseLease lease;
+        if (!lease.idle()) return z80_not_idle(lease);
+        bool const ok = koncpc_save_configuration_preserving_intent();
+        lease.restore_run_state();
+        if (!ok) return "ERR 500 config-save-failed\n";
+        return "OK saved to " + path + "\n";
+      }
+      return "ERR 400 bad-config-cmd (get|set|apply|save)\n";
     }
 
     // --- Silicon Disc commands ---
