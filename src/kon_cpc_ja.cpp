@@ -548,6 +548,13 @@ config::ConfigMap g_config_baseline;
 // The file loadConfiguration() last read (main thread; the IPC thread gets
 // its own published copy).
 std::string g_config_file;
+// Serializes every configuration write-back: IPC `config save` runs on a
+// socket thread (under a pause lease) while the main thread's MRU drain,
+// Options Save and autosave-on-exit save concurrently — same global state
+// (g_config_baseline, CPC.printer/...) and the same INI file. Recursive
+// because koncpc_save_configuration_preserving_intent() calls
+// koncpc_save_live_configuration().
+std::recursive_mutex g_config_save_mutex;
 }  // namespace
 
 // NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other
@@ -568,6 +575,10 @@ void koncpc_capture_config_intent() {
 // translation units/tests; internal linkage would break the link
 bool koncpc_save_configuration_preserving_intent() {
   if (!g_config_loaded) return false;
+  // Serialize against every other save path: this runs on the IPC socket
+  // thread (config save), the main thread (MRU drain, autosave) and the UI
+  // thread (Options Save) — see g_config_save_mutex.
+  std::lock_guard<std::recursive_mutex> const save_lock(g_config_save_mutex);
   // printer / scr_window hold runtime state; write the captured intent so a
   // failed printer_start() or a live fullscreen toggle cannot poison the file.
   // Still required alongside Config::setBaseline(): that guard only skips a
@@ -577,7 +588,11 @@ bool koncpc_save_configuration_preserving_intent() {
   unsigned int const live_scr_window = CPC.scr_window;
   CPC.printer = g_cfg_intent_printer;
   CPC.scr_window = g_cfg_intent_scr_window;
-  std::string const cfg = getConfigurationFilename(true);
+  // Target the file this session loaded, not a re-resolved candidate:
+  // getConfigurationFilename() walks the lookup list again (and can print /
+  // chdir), and its first readable hit need not be g_config_file.
+  std::string const cfg =
+      g_config_file.empty() ? getConfigurationFilename(true) : g_config_file;
   // The serial settings get the same treatment through the override: a
   // "save without restart" edit would otherwise be overwritten by the live
   // (still old) config the next time anything writes the file.
@@ -3153,6 +3168,9 @@ void capture_device_config(t_CPC& CPC) {
 
 bool koncpc_save_live_configuration(const std::string& path,
                                     const SerialConfig* serial_override) {
+  // Same serialization as the intent-preserving path; recursive because that
+  // path calls this one while holding the mutex.
+  std::lock_guard<std::recursive_mutex> const save_lock(g_config_save_mutex);
   capture_device_config(CPC);
   if (serial_override != nullptr) CPC.devices.serial = *serial_override;
   return saveConfiguration(CPC, path);

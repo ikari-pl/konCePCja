@@ -5686,11 +5686,16 @@ std::string handle_command(const std::string& line) {
         // Persist the configuration via the autosave-on-exit write-back
         // (koncpc_save_configuration_preserving_intent: printer/scr_window/
         // serial come from the captured intent, not the live values). The
-        // save reads board-adjacent state, so hold the machine still.
+        // target is the file this session loaded — koncpc_config_file() —
+        // not a re-resolved candidate (getConfigurationFilename() walks the
+        // lookup list again and can print/chdir from this socket thread).
+        std::string const path = koncpc_config_file();
+        if (path.empty() || access(path.c_str(), W_OK) != 0)
+          return "ERR 500 config-save-failed\n";
+        // The save reads board-adjacent state, so hold the machine still.
         CpcPauseLease lease;
         if (!lease.idle()) return z80_not_idle(lease);
         bool const ok = koncpc_save_configuration_preserving_intent();
-        std::string const path = getConfigurationFilename(true);
         lease.restore_run_state();
         if (!ok) return "ERR 500 config-save-failed\n";
         return "OK saved to " + path + "\n";

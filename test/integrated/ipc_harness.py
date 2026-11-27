@@ -1976,9 +1976,18 @@ def test_config_save_ipc():
         ok, resp = emu.ipc.send_command('config set fullscreen 0')
         if not ok:
             print(f"note: config set fullscreen: {resp!r}")
+        mtime_before = os.path.getmtime(cfg_path)
         ok, resp = emu.ipc.send_command('config save')
         if not ok or 'saved to' not in resp:
             print(f"FAIL: config save: {resp!r}")
+            return False
+        if cfg_path not in resp:
+            print(f"FAIL: config save named a different file than the loaded one: {resp!r} vs {cfg_path!r}")
+            return False
+        # A real write happened: the loaded file was rewritten (mtime moved),
+        # not just reported as saved.
+        if os.path.getmtime(cfg_path) <= mtime_before:
+            print(f"FAIL: config save did not rewrite {cfg_path!r}")
             return False
         with open(cfg_path, 'r', encoding='utf-8', errors='replace') as f:
             content = f.read()
