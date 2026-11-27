@@ -1967,7 +1967,10 @@ def test_plotter_export_reason():
         emu.ipc.pause()
         try:
             ok, resp = emu.ipc.send_command('plotter export no_such_dir_xyz/out.svg')
-            if ok or 'export-failed' not in resp or 'No such file' not in resp:
+            # Assert the stable protocol prefix plus a non-empty reason, not a
+            # locale-dependent strerror fragment.
+            reason = resp.split('export-failed', 1)[1].strip() if 'export-failed' in resp else ''
+            if ok or 'ERR 500' not in resp or 'export-failed' not in resp or not reason:
                 print(f"FAIL: failure did not carry the reason: {resp!r}")
                 return False
             ok, resp = emu.ipc.send_command(f'plotter export {tmp_svg}')

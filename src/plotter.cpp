@@ -505,8 +505,10 @@ bool plotter_export_svg_segments(const std::vector<PlotSegment>& segments,
   FILE* f = fopen(path.c_str(), "w");
   if (!f) {
     if (err) *err = std::string("cannot open: ") + std::strerror(errno);
-    LOG_ERROR("HP-GL: cannot open "
-              << path << " for SVG export: " << (err ? *err : "unknown"));
+    // *err already carries the reason ("cannot open: ..."); do not prefix it
+    // again.
+    LOG_ERROR("HP-GL: SVG export to "
+              << path << " failed: " << (err ? *err : "unknown"));
     return false;
   }
 
@@ -614,8 +616,9 @@ bool plotter_export_svg_segments(const std::vector<PlotSegment>& segments,
     if (err)
       *err = std::string("write error: ") +
              (e != 0 ? std::strerror(e) : "unknown error");
-    LOG_ERROR("HP-GL: SVG export to " << path << " failed (write error: "
-                                      << (err ? *err : "unknown") << ")");
+    // *err already carries the reason ("write error: ..."); no extra prefix.
+    LOG_ERROR("HP-GL: SVG export to "
+              << path << " failed: " << (err ? *err : "unknown"));
     return false;
   }
   LOG_INFO("HP-GL: exported SVG to " << path);
