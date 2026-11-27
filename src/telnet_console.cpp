@@ -63,6 +63,18 @@ void TelnetConsole::on_txt_output(uint8_t ch) {
   output_head.store(next, std::memory_order_release);
 }
 
+void TelnetConsole::clear_output() {
+  // Called from emulator_reset, which holds a pause lease: the Z80 producer
+  // is idle and cannot be mid-write. The server thread may be mid-flush,
+  // though, so the reset must take output_mutex — otherwise it can store
+  // tail=0 between the consumer's tail load and tail store, and the
+  // consumer's advanced tail then points past a zeroed head, sending stale
+  // pre-reset bytes to the next client.
+  std::scoped_lock const lock(output_mutex);
+  output_tail.store(0, std::memory_order_release);
+  output_head.store(0, std::memory_order_release);
+}
+
 // ── Input drain (called from main loop each frame) ─────
 
 void TelnetConsole::drain_input() {
@@ -273,13 +285,16 @@ void TelnetConsole::run() {
       }
     }
 
-    // Flush output ring buffer to client
+    // Flush output ring buffer to client. The ring drain takes output_mutex
+    // (shared with clear_output()); the send stays outside it so a slow
+    // client cannot block a reset.
     if (client_fd != INVALID_SOCKET) {
-      int tail = output_tail.load(std::memory_order_relaxed);
-      int head = output_head.load(std::memory_order_acquire);
-      if (tail != head) {
-        uint8_t flush_buf[OUTPUT_BUF_SIZE];
-        int count = 0;
+      uint8_t flush_buf[OUTPUT_BUF_SIZE];
+      int count = 0;
+      {
+        std::scoped_lock const lock(output_mutex);
+        int tail = output_tail.load(std::memory_order_relaxed);
+        int const head = output_head.load(std::memory_order_acquire);
         while (tail != head && count < OUTPUT_BUF_SIZE - 1) {
           uint8_t ch = output_buf[tail];
           tail = (tail + 1) % OUTPUT_BUF_SIZE;
@@ -297,14 +312,14 @@ void TelnetConsole::run() {
           // Other control chars: skip
         }
         output_tail.store(tail, std::memory_order_release);
-        if (count > 0) {
-          int sent = ::send(client_fd, reinterpret_cast<const char*>(flush_buf),
-                            count, 0);
-          if (sent < 0) {
-            closesocket(client_fd);
-            client_fd = INVALID_SOCKET;
-            client_connected.store(false);
-          }
+      }
+      if (count > 0) {
+        int sent = ::send(client_fd, reinterpret_cast<const char*>(flush_buf),
+                          count, 0);
+        if (sent < 0) {
+          closesocket(client_fd);
+          client_fd = INVALID_SOCKET;
+          client_connected.store(false);
         }
       }
     }
@@ -401,13 +416,16 @@ void TelnetConsole::run() {
       }
     }
 
-    // Flush output ring buffer to client
+    // Flush output ring buffer to client. The ring drain takes output_mutex
+    // (shared with clear_output()); the write stays outside it so a slow
+    // client cannot block a reset.
     if (client_fd >= 0) {
-      int tail = output_tail.load(std::memory_order_relaxed);
-      int const head = output_head.load(std::memory_order_acquire);
-      if (tail != head) {
-        uint8_t flush_buf[OUTPUT_BUF_SIZE];
-        int count = 0;
+      uint8_t flush_buf[OUTPUT_BUF_SIZE];
+      int count = 0;
+      {
+        std::scoped_lock const lock(output_mutex);
+        int tail = output_tail.load(std::memory_order_relaxed);
+        int const head = output_head.load(std::memory_order_acquire);
         while (tail != head && count < OUTPUT_BUF_SIZE - 1) {
           uint8_t const ch = output_buf[tail];
           tail = (tail + 1) % OUTPUT_BUF_SIZE;
@@ -425,14 +443,14 @@ void TelnetConsole::run() {
           // Other control chars: skip
         }
         output_tail.store(tail, std::memory_order_release);
-        if (count > 0) {
-          ssize_t const sent =
-              ::write(client_fd, flush_buf, static_cast<size_t>(count));
-          if (sent < 0) {
-            ::close(client_fd);
-            client_fd = -1;
-            client_connected.store(false);
-          }
+      }
+      if (count > 0) {
+        ssize_t const sent =
+            ::write(client_fd, flush_buf, static_cast<size_t>(count));
+        if (sent < 0) {
+          ::close(client_fd);
+          client_fd = -1;
+          client_connected.store(false);
         }
       }
     }

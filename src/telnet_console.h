@@ -21,6 +21,10 @@ class TelnetConsole {
   // Called from main loop each frame — feeds pending input to autotype queue.
   void drain_input();
 
+  // Drop all buffered output. Called on CPC reset (beads-dr4) so a client
+  // connecting after the reset does not receive the previous session's text.
+  void clear_output();
+
  private:
   void run();
 
@@ -30,12 +34,15 @@ class TelnetConsole {
   int base_port_ = 6544;
   std::thread server_thread;
 
-  // Output ring buffer: Z80 hook writes (single producer), server thread reads
-  // (single consumer)
+  // Output ring buffer: Z80 hook writes (single producer, lock-free), server
+  // thread reads (single consumer). output_mutex serializes the consumer's
+  // tail update against clear_output() — without it a reset mid-flush can
+  // store a stale tail past a zeroed head and resurrect pre-reset bytes.
   static constexpr int OUTPUT_BUF_SIZE = 4096;
   uint8_t output_buf[OUTPUT_BUF_SIZE] = {};
   std::atomic<int> output_head{0};  // write position (Z80 thread)
   std::atomic<int> output_tail{0};  // read position (server thread)
+  std::mutex output_mutex;          // guards tail/head in consumer + clear
 
   // Input buffer: server thread writes, main loop reads
   std::mutex input_mutex;

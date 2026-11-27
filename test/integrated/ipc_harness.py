@@ -1951,6 +1951,92 @@ def test_step_in_accuracy():
         return True
 
 
+def test_telnet_reset_clears_buffer():
+    """A CPC reset must drop the telnet console's buffered output (beads-dr4).
+
+    With no client connected, CPC output accumulates in the console's ring
+    buffer and is flushed to whoever connects next. So: produce BEFOREMARK
+    with no client, reset, produce AFTERMARK, then connect — the client must
+    see AFTERMARK and must NOT see the pre-reset BEFOREMARK.
+    """
+    print("Running telnet reset-clears-buffer test...")
+    with EmulatorRunner() as emu:
+        if not emu.start():
+            print("FAIL: Could not start emulator")
+            return False
+        port = emu.await_logged_port('Telnet console', timeout=10.0)
+        if port is None:
+            print("  SKIP: emulator logged no telnet port")
+            return True
+        emu.ipc.timeout = 30.0  # wait vbl blocks the server for the frame run
+
+        # Let the boot finish (its banner lands in the ring), then produce
+        # pre-reset output with NO telnet client connected.
+        if not emu.ipc.wait_vbl(300, timeout_ms=25000):
+            print("FAIL: wait_vbl at boot")
+            return False
+        ok, resp = emu.ipc.send_command('autotype print "BEFOREMARK"~RETURN~')
+        if not ok:
+            print(f"FAIL: autotype BEFOREMARK enqueue: {resp!r}")
+            return False
+        if not emu.ipc.wait_vbl(200, timeout_ms=25000):
+            print("FAIL: wait_vbl before reset")
+            return False
+        # Prove the BEFOREMARK keys were actually consumed before the reset,
+        # so a missing mark can never pass as a cleared buffer.
+        ok, resp = emu.ipc.send_command('autotype status')
+        if not ok or 'idle' not in resp:
+            print(f"FAIL: autotype queue not drained before reset: {resp!r}")
+            return False
+
+        ok, resp = emu.ipc.send_command('reset')
+        if not ok:
+            print(f"FAIL: reset: {resp!r}")
+            return False
+
+        # Post-reset boot, then post-reset output (machine resumed by reset).
+        if not emu.ipc.wait_vbl(300, timeout_ms=25000):
+            print("FAIL: wait_vbl after reset boot")
+            return False
+        ok, resp = emu.ipc.send_command('autotype print "AFTERMARK"~RETURN~')
+        if not ok:
+            print(f"FAIL: autotype AFTERMARK enqueue: {resp!r}")
+            return False
+        if not emu.ipc.wait_vbl(200, timeout_ms=25000):
+            print("FAIL: wait_vbl after reset")
+            return False
+        ok, resp = emu.ipc.send_command('autotype status')
+        if not ok or 'idle' not in resp:
+            print(f"FAIL: autotype queue not drained after reset: {resp!r}")
+            return False
+
+        data = b''
+        try:
+            with socket.create_connection(('127.0.0.1', port), timeout=5.0) as sock:
+                sock.settimeout(1.0)
+                deadline = time.monotonic() + 10.0
+                while time.monotonic() < deadline and b'AFTERMARK' not in data:
+                    try:
+                        chunk = sock.recv(4096)
+                    except socket.timeout:
+                        continue
+                    if not chunk:
+                        break
+                    data += chunk
+        except OSError as e:
+            print(f"  SKIP: could not reach the telnet console: {e}")
+            return True
+
+        if b'AFTERMARK' not in data:
+            print(f"FAIL: post-reset output missing. Console said: {data[:300]!r}")
+            return False
+        if b'BEFOREMARK' in data:
+            print(f"FAIL: pre-reset output survived the reset: {data[:300]!r}")
+            return False
+        print("PASS: telnet reset-clears-buffer")
+        return True
+
+
 def test_step_out_nested_call():
     """Step Out finishes the current frame while skipping a nested CALL."""
     print("Running step-out nested-call test...")
@@ -5171,6 +5257,7 @@ def main():
         test_rapid_pause_resume,
         test_reg_set_halt_is_refused,
         test_step_in_accuracy,
+        test_telnet_reset_clears_buffer,
         test_step_out_nested_call,
         test_step_out_gated_on_ret_not_sp,
         test_step_out_untaken_conditional_ret,
